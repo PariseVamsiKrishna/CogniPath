@@ -104,6 +104,7 @@ CREATE TABLE IF NOT EXISTS student_quiz_attempts (
 	user_id INTEGER NOT NULL, 
 	quiz_id INTEGER NOT NULL, 
 	score FLOAT NOT NULL, 
+	max_score FLOAT, 
 	total_questions INTEGER NOT NULL, 
 	answers_json TEXT, 
 	completed_at TIMESTAMP WITH TIME ZONE, 
@@ -118,6 +119,7 @@ CREATE TABLE IF NOT EXISTS student_concept_retention (
 	user_id INTEGER NOT NULL, 
 	course_id INTEGER NOT NULL, 
 	concept_tag VARCHAR(255) NOT NULL, 
+	topic VARCHAR(255), 
 	repetition_interval INTEGER, 
 	difficulty_factor FLOAT, 
 	repetitions INTEGER, 
@@ -134,6 +136,7 @@ CREATE TABLE IF NOT EXISTS student_activity_logs (
 	user_id INTEGER NOT NULL, 
 	course_id INTEGER NOT NULL, 
 	action_type VARCHAR(100) NOT NULL, 
+	activity_type VARCHAR(100), 
 	query_text TEXT, 
 	response_time_ms INTEGER, 
 	metadata_info TEXT, 
@@ -243,6 +246,7 @@ CREATE TABLE IF NOT EXISTS modules (
 	title VARCHAR(255) NOT NULL, 
 	description TEXT, 
 	order_index INTEGER NOT NULL, 
+	module_number INTEGER, 
 	has_module_exam BOOLEAN NOT NULL, 
 	module_exam_id INTEGER, 
 	created_at TIMESTAMP WITH TIME ZONE, 
@@ -429,7 +433,20 @@ CREATE TABLE IF NOT EXISTS topic_ratings (
 	FOREIGN KEY(user_id) REFERENCES users (id)
 );
 
--- 3. Idempotent Column Synchronization for Existing Databases
+-- 3. Drop NOT NULL on Legacy Schema Columns
+ALTER TABLE IF EXISTS "modules" ALTER COLUMN "module_number" DROP NOT NULL;
+ALTER TABLE IF EXISTS "modules" ALTER COLUMN "module_number" SET DEFAULT 1;
+ALTER TABLE IF EXISTS "student_quiz_attempts" ALTER COLUMN "max_score" DROP NOT NULL;
+ALTER TABLE IF EXISTS "student_quiz_attempts" ALTER COLUMN "max_score" SET DEFAULT 100.0;
+ALTER TABLE IF EXISTS "student_concept_retention" ALTER COLUMN "topic" DROP NOT NULL;
+ALTER TABLE IF EXISTS "student_concept_retention" ALTER COLUMN "topic" SET DEFAULT 'General';
+ALTER TABLE IF EXISTS "student_activity_logs" ALTER COLUMN "activity_type" DROP NOT NULL;
+ALTER TABLE IF EXISTS "student_activity_logs" ALTER COLUMN "activity_type" SET DEFAULT 'GENERAL';
+ALTER TABLE IF EXISTS "topics" ALTER COLUMN "summary" DROP NOT NULL;
+ALTER TABLE IF EXISTS "documents" ALTER COLUMN "file_size" DROP NOT NULL;
+ALTER TABLE IF EXISTS "documents" ALTER COLUMN "chunks_count" DROP NOT NULL;
+
+-- 4. Idempotent Column Synchronization for Existing Databases
 ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "email" VARCHAR(255);
 ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "hashed_password" VARCHAR(255);
 ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "full_name" VARCHAR(255);
@@ -485,13 +502,15 @@ ALTER TABLE "quiz_questions" ADD COLUMN IF NOT EXISTS "source_chunk_ref" VARCHAR
 ALTER TABLE "student_quiz_attempts" ADD COLUMN IF NOT EXISTS "user_id" INTEGER;
 ALTER TABLE "student_quiz_attempts" ADD COLUMN IF NOT EXISTS "quiz_id" INTEGER;
 ALTER TABLE "student_quiz_attempts" ADD COLUMN IF NOT EXISTS "score" FLOAT;
-ALTER TABLE "student_quiz_attempts" ADD COLUMN IF NOT EXISTS "total_questions" INTEGER;
+ALTER TABLE "student_quiz_attempts" ADD COLUMN IF NOT EXISTS "max_score" FLOAT DEFAULT 100.0;
+ALTER TABLE "student_quiz_attempts" ADD COLUMN IF NOT EXISTS "total_questions" INTEGER DEFAULT 5;
 ALTER TABLE "student_quiz_attempts" ADD COLUMN IF NOT EXISTS "answers_json" TEXT;
 ALTER TABLE "student_quiz_attempts" ADD COLUMN IF NOT EXISTS "completed_at" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
 
 ALTER TABLE "student_concept_retention" ADD COLUMN IF NOT EXISTS "user_id" INTEGER;
 ALTER TABLE "student_concept_retention" ADD COLUMN IF NOT EXISTS "course_id" INTEGER;
 ALTER TABLE "student_concept_retention" ADD COLUMN IF NOT EXISTS "concept_tag" VARCHAR(255);
+ALTER TABLE "student_concept_retention" ADD COLUMN IF NOT EXISTS "topic" VARCHAR(255) DEFAULT 'General';
 ALTER TABLE "student_concept_retention" ADD COLUMN IF NOT EXISTS "repetition_interval" INTEGER DEFAULT 1;
 ALTER TABLE "student_concept_retention" ADD COLUMN IF NOT EXISTS "difficulty_factor" FLOAT DEFAULT 2.5;
 ALTER TABLE "student_concept_retention" ADD COLUMN IF NOT EXISTS "repetitions" INTEGER DEFAULT 0;
@@ -501,6 +520,7 @@ ALTER TABLE "student_concept_retention" ADD COLUMN IF NOT EXISTS "last_reviewed_
 ALTER TABLE "student_activity_logs" ADD COLUMN IF NOT EXISTS "user_id" INTEGER;
 ALTER TABLE "student_activity_logs" ADD COLUMN IF NOT EXISTS "course_id" INTEGER;
 ALTER TABLE "student_activity_logs" ADD COLUMN IF NOT EXISTS "action_type" VARCHAR(100);
+ALTER TABLE "student_activity_logs" ADD COLUMN IF NOT EXISTS "activity_type" VARCHAR(100) DEFAULT 'GENERAL';
 ALTER TABLE "student_activity_logs" ADD COLUMN IF NOT EXISTS "query_text" TEXT;
 ALTER TABLE "student_activity_logs" ADD COLUMN IF NOT EXISTS "response_time_ms" INTEGER;
 ALTER TABLE "student_activity_logs" ADD COLUMN IF NOT EXISTS "metadata_info" TEXT;
@@ -563,6 +583,7 @@ ALTER TABLE "modules" ADD COLUMN IF NOT EXISTS "course_id" INTEGER;
 ALTER TABLE "modules" ADD COLUMN IF NOT EXISTS "title" VARCHAR(255);
 ALTER TABLE "modules" ADD COLUMN IF NOT EXISTS "description" TEXT;
 ALTER TABLE "modules" ADD COLUMN IF NOT EXISTS "order_index" INTEGER DEFAULT 1;
+ALTER TABLE "modules" ADD COLUMN IF NOT EXISTS "module_number" INTEGER DEFAULT 1;
 ALTER TABLE "modules" ADD COLUMN IF NOT EXISTS "has_module_exam" BOOLEAN DEFAULT FALSE;
 ALTER TABLE "modules" ADD COLUMN IF NOT EXISTS "module_exam_id" INTEGER;
 ALTER TABLE "modules" ADD COLUMN IF NOT EXISTS "created_at" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
@@ -663,7 +684,7 @@ ALTER TABLE "topic_ratings" ADD COLUMN IF NOT EXISTS "rating" INTEGER;
 ALTER TABLE "topic_ratings" ADD COLUMN IF NOT EXISTS "feedback" VARCHAR(500);
 ALTER TABLE "topic_ratings" ADD COLUMN IF NOT EXISTS "created_at" TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP;
 
--- 4. High-Performance Query Indexes
+-- 5. High-Performance Query Indexes
 CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);
 CREATE INDEX IF NOT EXISTS idx_courses_code ON courses(code);
 CREATE INDEX IF NOT EXISTS idx_enrollments_user_course ON enrollments(user_id, course_id);

@@ -129,7 +129,8 @@ class StudentQuizAttempt(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     quiz_id = Column(Integer, ForeignKey("quizzes.id"), nullable=False)
     score = Column(Float, nullable=False)
-    total_questions = Column(Integer, nullable=False)
+    max_score = Column(Float, default=100.0, nullable=True)  # Backwards compatibility with initial schema
+    total_questions = Column(Integer, nullable=False, default=5)
     answers_json = Column(Text, nullable=True)  # JSON-encoded answers
     completed_at = Column(DateTime(timezone=True), default=utcnow)
 
@@ -144,6 +145,7 @@ class StudentConceptRetention(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
     concept_tag = Column(String(255), index=True, nullable=False)
+    topic = Column(String(255), default="General", nullable=True)  # Backwards compatibility
     repetition_interval = Column(Integer, default=1)  # Interval in days
     difficulty_factor = Column(Float, default=2.5)     # Easiness Factor (EF in SM-2)
     repetitions = Column(Integer, default=0)           # Repetition count
@@ -160,6 +162,7 @@ class StudentActivityLog(Base):
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
     action_type = Column(String(100), nullable=False)  # QUERY_TUTOR, TAKE_QUIZ, VIEW_DOC, POD_SESSION
+    activity_type = Column(String(100), default="GENERAL", nullable=True)  # Backwards compatibility
     query_text = Column(Text, nullable=True)
     response_time_ms = Column(Integer, nullable=True)
     metadata_info = Column(Text, nullable=True)  # JSON-encoded metadata
@@ -271,6 +274,7 @@ class Module(Base):
     title = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
     order_index = Column(Integer, default=1, nullable=False)
+    module_number = Column(Integer, default=1, nullable=True)  # Backwards compatibility with initial schema
     has_module_exam = Column(Boolean, default=False, nullable=False)
     module_exam_id = Column(Integer, ForeignKey("exams.id", use_alter=True, name="fk_modules_exam_id"), nullable=True)
     created_at = Column(DateTime(timezone=True), default=utcnow)

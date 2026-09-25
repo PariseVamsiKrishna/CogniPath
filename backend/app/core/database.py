@@ -140,6 +140,46 @@ async def init_db():
         if not database_url.startswith("sqlite"):
             from sqlalchemy.dialects import postgresql
             async with engine.connect() as alter_conn:
+                # 1. Drop NOT NULL on legacy columns from older schemas that might block inserts
+                legacy_relax_stmts = [
+                    'ALTER TABLE "modules" ALTER COLUMN "module_number" DROP NOT NULL',
+                    'ALTER TABLE "modules" ALTER COLUMN "module_number" SET DEFAULT 1',
+                    'ALTER TABLE "student_quiz_attempts" ALTER COLUMN "max_score" DROP NOT NULL',
+                    'ALTER TABLE "student_quiz_attempts" ALTER COLUMN "max_score" SET DEFAULT 100.0',
+                    'ALTER TABLE "student_concept_retention" ALTER COLUMN "topic" DROP NOT NULL',
+                    'ALTER TABLE "student_concept_retention" ALTER COLUMN "topic" SET DEFAULT \'General\'',
+                    'ALTER TABLE "student_activity_logs" ALTER COLUMN "activity_type" DROP NOT NULL',
+                    'ALTER TABLE "student_activity_logs" ALTER COLUMN "activity_type" SET DEFAULT \'GENERAL\'',
+                    'ALTER TABLE "topics" ALTER COLUMN "summary" DROP NOT NULL',
+                    'ALTER TABLE "documents" ALTER COLUMN "file_size" DROP NOT NULL',
+                    'ALTER TABLE "documents" ALTER COLUMN "chunks_count" DROP NOT NULL',
+                ]
+                for stmt in legacy_relax_stmts:
+                    try:
+                        await alter_conn.execute(text(stmt))
+                        await alter_conn.commit()
+                    except Exception:
+                        await alter_conn.rollback()
+
+                # 2. Dynamically drop NOT NULL on any unmapped column in public schema
+                try:
+                    res = await alter_conn.execute(text(
+                        "SELECT table_name, column_name FROM information_schema.columns "
+                        "WHERE table_schema = 'public' AND is_nullable = 'NO' AND column_default IS NULL"
+                    ))
+                    db_cols = res.fetchall()
+                    known_tables = {name: set(c.name for c in tbl.columns) for name, tbl in Base.metadata.tables.items()}
+                    for t_name, c_name in db_cols:
+                        if t_name in known_tables and c_name not in known_tables[t_name]:
+                            try:
+                                await alter_conn.execute(text(f'ALTER TABLE "{t_name}" ALTER COLUMN "{c_name}" DROP NOT NULL'))
+                                await alter_conn.commit()
+                            except Exception:
+                                await alter_conn.rollback()
+                except Exception as info_ex:
+                    logger.debug(f"information_schema relaxation notice: {info_ex}")
+
+                # 3. Add any missing columns from current models
                 for table_name, table in Base.metadata.tables.items():
                     for col in table.columns:
                         if col.primary_key:
