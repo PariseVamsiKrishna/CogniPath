@@ -137,7 +137,37 @@ async def init_db():
                 if "profile_completed" not in u_cols:
                     await conn.execute(text("ALTER TABLE users ADD COLUMN profile_completed BOOLEAN DEFAULT 0"))
 
-        logger.info("Database schema initialized successfully.")
+        if not database_url.startswith("sqlite"):
+            from sqlalchemy.dialects import postgresql
+            async with engine.connect() as alter_conn:
+                for table_name, table in Base.metadata.tables.items():
+                    for col in table.columns:
+                        if col.primary_key:
+                            continue
+                        col_type = col.type.compile(dialect=postgresql.dialect())
+                        default_clause = ""
+                        if col.server_default is not None:
+                            default_clause = f" DEFAULT {col.server_default.arg}"
+                        elif col.default is not None and getattr(col.default, 'arg', None) is not None and not callable(col.default.arg):
+                            default_val = col.default.arg
+                            if isinstance(default_val, bool):
+                                default_clause = f" DEFAULT {str(default_val).upper()}"
+                            elif isinstance(default_val, (int, float)):
+                                default_clause = f" DEFAULT {default_val}"
+                            elif isinstance(default_val, str):
+                                default_clause = f" DEFAULT '{default_val}'"
+                        elif "timestamp" in col_type.lower():
+                            default_clause = " DEFAULT CURRENT_TIMESTAMP"
+
+                        alter_sql = f'ALTER TABLE "{table_name}" ADD COLUMN IF NOT EXISTS "{col.name}" {col_type}{default_clause};'
+                        try:
+                            await alter_conn.execute(text(alter_sql))
+                            await alter_conn.commit()
+                        except Exception as sync_ex:
+                            await alter_conn.rollback()
+                            logger.debug(f"Schema sync notice for {table_name}.{col.name}: {sync_ex}")
+
+        logger.info("Database schema initialized and reconciled successfully.")
     except Exception as e:
         err_msg = str(e)
         logger.error(f"❌ Failed to initialize database: {err_msg}")
