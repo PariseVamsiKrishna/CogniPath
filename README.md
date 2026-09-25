@@ -147,5 +147,45 @@ Open `http://localhost:3000` in your browser.
 
 ---
 
+## 🌐 Cloud Deployment Guide (Vercel + Supabase + Render)
+
+CogniPath is architected for zero-friction cloud deployment:
+
+### 1. Database: Supabase (PostgreSQL)
+1. Create a project at [supabase.com](https://supabase.com).
+2. Under **Project Settings** -> **Database**, navigate to **Connection Pooling** (Mode: **Transaction**, Port: `6543`).
+3. Copy the URI connection string:
+   ```
+   postgresql://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:6543/postgres
+   ```
+4. *(Optional)* Paste `backend/supabase_schema.sql` into Supabase's **SQL Editor** to bootstrap all tables and demo users, or let FastAPI's `init_db()` auto-initialize them on first boot.
+
+### 2. Backend: Render or Railway
+1. Create a **New Web Service** pointing to this GitHub repository (`backend` folder).
+2. Set Environment Variables:
+   - `DATABASE_URL`: Your Supabase pooler connection string.
+   - `GEMINI_API_KEY`: Your Google Gemini API key.
+   - `SECRET_KEY`: Random 64-character secret.
+   - `ENVIRONMENT`: `production`.
+3. Start Command:
+   ```bash
+   uvicorn app.main:app --host 0.0.0.0 --port $PORT
+   ```
+4. Copy your live backend service URL (e.g. `https://cognipath-backend.onrender.com`).
+
+### 3. Frontend: Vercel
+1. Import this GitHub repository into [vercel.com](https://vercel.com).
+2. In Project Configuration:
+   - **Root Directory**: `frontend`
+   - **Framework Preset**: `Vite`
+   - **Build Command**: `npm run build`
+   - **Output Directory**: `dist`
+3. Under **Environment Variables**:
+   - `VITE_API_BASE_URL`: Your deployed backend URL (e.g. `https://cognipath-backend.onrender.com`).
+4. Click **Deploy**. Vercel will build and assign your production domain.
+
+---
+
 ## 🛡️ License
 Built for Smart India Hackathon (SIH 2026) under the MIT License.
+
