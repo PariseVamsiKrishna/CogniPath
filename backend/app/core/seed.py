@@ -52,12 +52,23 @@ async def ensure_curriculum_vectors(course_dsa_id: int = 1, course_ai_id: int = 
 
 async def ensure_hierarchical_curriculum_data(db):
     """Populates modules, topics, resources, exams, assignments, and badges if missing."""
+    course_1 = (await db.execute(select(Course).where(Course.code == "CS101"))).scalars().first()
+    if not course_1:
+        course_1 = (await db.execute(select(Course).order_by(Course.id.asc()))).scalars().first()
+    if not course_1:
+        logger.warning("No course found in database to attach hierarchical curriculum data to.")
+        return
+    c_id = course_1.id
+
+    educator = (await db.execute(select(User).where(User.role == "EDUCATOR"))).scalars().first()
+    ed_id = educator.id if educator else (course_1.educator_id or 1)
+
     # 1. Modules & Topics
-    m_check = await db.execute(select(Module).where(Module.course_id == 1))
+    m_check = await db.execute(select(Module).where(Module.course_id == c_id))
     if not m_check.scalars().first():
-        logger.info("Seeding hierarchical modules and topics for Course 1...")
+        logger.info(f"Seeding hierarchical modules and topics for Course {c_id}...")
         mod1 = Module(
-            course_id=1,
+            course_id=c_id,
             title="Module 1: Foundations of Binary Search Trees",
             description="Master binary search tree invariants, left-root-right structure, and recursion algorithms.",
             order_index=1
@@ -94,7 +105,7 @@ async def ensure_hierarchical_curriculum_data(db):
         await db.commit()
 
         mod2 = Module(
-            course_id=1,
+            course_id=c_id,
             title="Module 2: Self-Balancing Trees & Rotations",
             description="AVL balance factors, single/double rotations, and asymptotic complexity boundaries.",
             order_index=2
@@ -123,20 +134,20 @@ async def ensure_hierarchical_curriculum_data(db):
         await db.commit()
 
     # 2. Dual-Engine Exams
-    e_check = await db.execute(select(Exam).where(Exam.course_id == 1))
+    e_check = await db.execute(select(Exam).where(Exam.course_id == c_id))
     if not e_check.scalars().first():
-        logger.info("Seeding dual-engine exams (Module Quiz & Comprehensive Final Exam)...")
-        m1 = (await db.execute(select(Module).where(Module.course_id == 1).order_by(Module.order_index.asc()))).scalars().first()
+        logger.info(f"Seeding dual-engine exams for Course {c_id}...")
+        m1 = (await db.execute(select(Module).where(Module.course_id == c_id).order_by(Module.order_index.asc()))).scalars().first()
         mod1_id = m1.id if m1 else None
 
         exam_quiz = Exam(
-            course_id=1,
+            course_id=c_id,
             module_id=mod1_id,
             exam_type="MODULE_QUIZ",
             title="Module 1: BST Invariants & Traversals Quiz",
             time_limit_mins=15,
             passing_score=60.0,
-            created_by=1
+            created_by=ed_id
         )
         db.add(exam_quiz)
         await db.commit()
@@ -177,13 +188,13 @@ async def ensure_hierarchical_curriculum_data(db):
 
         # Final Certification Exam
         exam_final = Exam(
-            course_id=1,
+            course_id=c_id,
             module_id=None,
             exam_type="FINAL_EXAM",
             title="CS101: Comprehensive Final Certification Exam",
             time_limit_mins=30,
             passing_score=70.0,
-            created_by=1
+            created_by=ed_id
         )
         db.add(exam_final)
         await db.commit()
@@ -245,38 +256,37 @@ async def ensure_hierarchical_curriculum_data(db):
     # 3. Rubric Assignment
     a_check = await db.execute(select(Assignment))
     if not a_check.scalars().first():
-        logger.info("Seeding assignment with rubrics...")
-        m1 = (await db.execute(select(Module).where(Module.course_id == 1).order_by(Module.order_index.asc()))).scalars().first()
-        mod1_id = m1.id if m1 else 1
-
-        rubric = [
-            {"criterion": "Tree Invariant & Validation Logic", "max_points": 40.0, "description": "Accurately validates left < root < right invariant recursively across all subtree depths."},
-            {"criterion": "Asymptotic Complexity & Mathematical Proof", "max_points": 30.0, "description": "Formally proves why balanced trees maintain O(log N) bounds versus O(N) degenerate skews."},
-            {"criterion": "Code Quality, Modularity & Edge Case Handling", "max_points": 30.0, "description": "Handles null roots, single nodes, duplicate keys, and provides clean docstrings."}
-        ]
-        assign = Assignment(
-            module_id=mod1_id,
-            title="Assignment 1: BST Invariant Verifier & AVL Balancing Engine",
-            description="Implement a complete Binary Search Tree invariant validation suite in Python or C++. Provide a 2-page PDF document detailing your mathematical proof of AVL height bounds and empirical rotation benchmarks.",
-            assignment_type="PRACTICAL_PDF",
-            rubric_json=json.dumps(rubric),
-            model_answer="Valid BST implementation includes recursion with min_val and max_val constraints. Balanced height proof uses recurrence relation H(N) <= 1.44 log2(N).",
-            max_score=100.0,
-            created_at=datetime.now(timezone.utc)
-        )
-        db.add(assign)
-        await db.commit()
+        m1 = (await db.execute(select(Module).where(Module.course_id == c_id).order_by(Module.order_index.asc()))).scalars().first()
+        if m1:
+            logger.info("Seeding assignment with rubrics...")
+            rubric = [
+                {"criterion": "Tree Invariant & Validation Logic", "max_points": 40.0, "description": "Accurately validates left < root < right invariant recursively across all subtree depths."},
+                {"criterion": "Asymptotic Complexity & Mathematical Proof", "max_points": 30.0, "description": "Formally proves why balanced trees maintain O(log N) bounds versus O(N) degenerate skews."},
+                {"criterion": "Code Quality, Modularity & Edge Case Handling", "max_points": 30.0, "description": "Handles null roots, single nodes, duplicate keys, and provides clean docstrings."}
+            ]
+            assign = Assignment(
+                module_id=m1.id,
+                title="Assignment 1: BST Invariant Verifier & AVL Balancing Engine",
+                description="Implement a complete Binary Search Tree invariant validation suite in Python or C++. Provide a 2-page PDF document detailing your mathematical proof of AVL height bounds and empirical rotation benchmarks.",
+                assignment_type="PRACTICAL_PDF",
+                rubric_json=json.dumps(rubric),
+                model_answer="Valid BST implementation includes recursion with min_val and max_val constraints. Balanced height proof uses recurrence relation H(N) <= 1.44 log2(N).",
+                max_score=100.0,
+                created_at=datetime.now(timezone.utc)
+            )
+            db.add(assign)
+            await db.commit()
 
     # 4. Student Badges
     b_check = await db.execute(select(StudentBadge))
     if not b_check.scalars().first():
-        logger.info("Seeding verified credential badge for student...")
         stu_aarav = (await db.execute(select(User).where(User.email == "student@cognipath.edu"))).scalars().first()
         if stu_aarav:
-            v_hash = hashlib.sha256(f"badge_{stu_aarav.id}_course_1_BST_EXCELLENCE".encode()).hexdigest()
+            logger.info("Seeding verified credential badge for student...")
+            v_hash = hashlib.sha256(f"badge_{stu_aarav.id}_course_{c_id}_BST_EXCELLENCE".encode()).hexdigest()
             badge = StudentBadge(
                 student_id=stu_aarav.id,
-                course_id=1,
+                course_id=c_id,
                 badge_name="Binary Search Tree Architect",
                 difficulty_level="Advanced Mastery",
                 verification_hash=v_hash,
@@ -288,59 +298,62 @@ async def ensure_hierarchical_curriculum_data(db):
 async def seed_demo_data():
     """Populates realistic demonstration data on startup if database is fresh."""
     async with AsyncSessionLocal() as db:
-        # Check if users exist
-        user_check = await db.execute(select(User).limit(1))
-        if user_check.scalars().first():
-            logger.info("Database already contains data. Ensuring vector collections & hierarchy are indexed...")
+        # 1. Ensure Educator exists
+        educator = (await db.execute(select(User).where(User.email == "teacher@cognipath.edu"))).scalars().first()
+        if not educator:
+            educator = (await db.execute(select(User).where(User.role == "EDUCATOR"))).scalars().first()
+        if not educator:
+            educator = User(
+                email="teacher@cognipath.edu",
+                hashed_password=get_password_hash("password123"),
+                full_name="Prof. Rajesh Ramanujan",
+                role="EDUCATOR",
+                university="Indian Institute of Technology",
+                department="Computer Science & Engineering"
+            )
+            db.add(educator)
+            await db.commit()
+            await db.refresh(educator)
+
+        # 2. Ensure Students exist
+        student_emails = [
+            ("student@cognipath.edu", "Aarav Sharma"),
+            ("priya@cognipath.edu", "Priya Patel"),
+            ("rohit@cognipath.edu", "Rohit Verma"),
+            ("ananya@cognipath.edu", "Ananya Iyer"),
+        ]
+        students = []
+        for s_email, s_name in student_emails:
+            s_user = (await db.execute(select(User).where(User.email == s_email))).scalars().first()
+            if not s_user:
+                s_user = User(
+                    email=s_email,
+                    hashed_password=get_password_hash("password123"),
+                    full_name=s_name,
+                    role="STUDENT",
+                    university="National Institute of Technology",
+                    department="Computer Science"
+                )
+                db.add(s_user)
+                await db.commit()
+                await db.refresh(s_user)
+            students.append(s_user)
+
+        student_aarav = students[0]
+        student_priya = students[1]
+        student_rohit = students[2]
+        student_ananya = students[3]
+
+        # 3. Check if Courses exist
+        course_check = await db.execute(select(Course).limit(1))
+        if course_check.scalars().first():
+            logger.info("Database already contains courses. Ensuring vector collections & hierarchy are indexed...")
             await ensure_curriculum_vectors()
             await ensure_hierarchical_curriculum_data(db)
             return
 
         logger.info("Seeding initial COGNIPATH demonstration ecosystem...")
         now = datetime.now(timezone.utc)
-
-        # 1. Create Educator
-        educator = User(
-            email="teacher@cognipath.edu",
-            hashed_password=get_password_hash("password123"),
-            full_name="Prof. Rajesh Ramanujan",
-            role="EDUCATOR"
-        )
-        db.add(educator)
-        await db.commit()
-        await db.refresh(educator)
-
-        # 2. Create Students
-        student_aarav = User(
-            email="student@cognipath.edu",
-            hashed_password=get_password_hash("password123"),
-            full_name="Aarav Sharma",
-            role="STUDENT"
-        )
-        student_priya = User(
-            email="priya@cognipath.edu",
-            hashed_password=get_password_hash("password123"),
-            full_name="Priya Patel",
-            role="STUDENT"
-        )
-        student_rohit = User(
-            email="rohit@cognipath.edu",
-            hashed_password=get_password_hash("password123"),
-            full_name="Rohit Verma",
-            role="STUDENT"
-        )
-        student_ananya = User(
-            email="ananya@cognipath.edu",
-            hashed_password=get_password_hash("password123"),
-            full_name="Ananya Iyer",
-            role="STUDENT"
-        )
-        db.add_all([student_aarav, student_priya, student_rohit, student_ananya])
-        await db.commit()
-        await db.refresh(student_aarav)
-        await db.refresh(student_priya)
-        await db.refresh(student_rohit)
-        await db.refresh(student_ananya)
 
         # 3. Create Courses
         course_dsa = Course(
