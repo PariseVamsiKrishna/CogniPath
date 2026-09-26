@@ -28,7 +28,7 @@ export default function App() {
     { id: 2, code: 'DBMS', title: 'Database Management Systems', category: 'Database Systems', description: 'Relational database architecture, relational algebra, and SQL optimization.' }
   ]);
   const [enrolledCourses, setEnrolledCourses] = useState([]);
-  const [selectedCourseId, setSelectedCourseId] = useState(1);
+  const [selectedCourseId, setSelectedCourseId] = useState(null);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [targetLang, setTargetLang] = useState('en');
   const [isInitializing, setIsInitializing] = useState(true);
@@ -70,9 +70,6 @@ export default function App() {
       const data = await coursesAPI.list();
       if (data && data.length > 0) {
         setCourses(data);
-        if (!selectedCourseId) {
-          setSelectedCourseId(data[0].id);
-        }
       }
     } catch (err) {
       console.log('Using default course syllabus data.');
@@ -82,6 +79,7 @@ export default function App() {
   const fetchEnrolledCourses = async (currentUser, allAvailableCourses = null) => {
     if (!currentUser) {
       setEnrolledCourses([]);
+      setSelectedCourseId(null);
       return;
     }
 
@@ -94,6 +92,8 @@ export default function App() {
         localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify(data));
         if (data.length > 0) {
           setSelectedCourseId(data[0].id);
+        } else {
+          setSelectedCourseId(null);
         }
         return;
       }
@@ -109,6 +109,8 @@ export default function App() {
         setEnrolledCourses(parsed);
         if (parsed.length > 0) {
           setSelectedCourseId(parsed[0].id);
+        } else {
+          setSelectedCourseId(null);
         }
         return;
       }
@@ -124,14 +126,20 @@ export default function App() {
       }));
       setEnrolledCourses(demoEnrolled);
       localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify(demoEnrolled));
-      if (demoEnrolled.length > 0) setSelectedCourseId(demoEnrolled[0].id);
+      if (demoEnrolled.length > 0) {
+        setSelectedCourseId(demoEnrolled[0].id);
+      } else {
+        setSelectedCourseId(null);
+      }
     } else if (currentUser.role === 'EDUCATOR') {
       // Educators have all their authored courses
       const eduCourses = available.map(c => ({ ...c, progress_percentage: 100, is_enrolled: true }));
       setEnrolledCourses(eduCourses);
+      if (eduCourses.length > 0) setSelectedCourseId(eduCourses[0].id);
     } else {
       // Any new student starts with 0 enrolled courses so they can pick their own!
       setEnrolledCourses([]);
+      setSelectedCourseId(null);
       localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify([]));
     }
   };
@@ -238,6 +246,7 @@ export default function App() {
   const handleLoginSuccess = async (userData) => {
     setUser(userData);
     setIsLoginView(false);
+    setSelectedCourseId(null);
     if (window.location.hash === '#login') {
       window.history.pushState(null, '', window.location.pathname);
     }
@@ -268,6 +277,7 @@ export default function App() {
     authAPI.logout();
     setUser(null);
     setEnrolledCourses([]);
+    setSelectedCourseId(null);
     setIsLoginView(false);
     setActiveTab('dashboard');
   };

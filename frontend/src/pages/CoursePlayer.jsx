@@ -17,34 +17,53 @@ export default function CoursePlayer({
   user,
   onNavigateTab,
   courses = [],
+  allCourses = [],
+  enrolledCourses = [],
   onSelectCourse,
-  onRefreshCourses
+  onRefreshCourses,
+  onEnrollCourse,
+  onUnenrollCourse
 }) {
   const isEducator = user?.role === 'EDUCATOR';
 
-  // Active focused course ID
+  // Active focused course ID: strictly gate to enrolled courses for students
   const [focusedCourseId, setFocusedCourseId] = useState(() => {
     // Read from URL query param if present
     try {
       const params = new URLSearchParams(window.location.search);
       const qCourseId = params.get('courseId');
       if (qCourseId && !isNaN(Number(qCourseId))) {
-        return Number(qCourseId);
+        const numId = Number(qCourseId);
+        if (isEducator || courses.some((c) => c.id === numId)) {
+          return numId;
+        }
       }
     } catch (e) {}
-    return courseId;
+    // Only focus if educator or course is in enrolled courses
+    if (courseId && (isEducator || courses.some((c) => c.id === Number(courseId)))) {
+      return Number(courseId);
+    }
+    return null;
   });
 
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [showCatalogModal, setShowCatalogModal] = useState(false);
   const [ratingCourse, setRatingCourse] = useState(null);
 
-  // Sync prop changes if parent explicitly changes courseId
+  // Sync prop changes if parent explicitly changes courseId or courses list updates
   useEffect(() => {
-    if (courseId && courseId !== focusedCourseId) {
-      setFocusedCourseId(courseId);
+    if (courseId) {
+      const numId = Number(courseId);
+      if (isEducator || courses.some((c) => c.id === numId)) {
+        if (numId !== focusedCourseId) {
+          setFocusedCourseId(numId);
+        }
+      }
+    } else if (!isEducator && courses.length === 0 && focusedCourseId) {
+      // Student with 0 enrolled courses must never be stuck inside a course workspace
+      setFocusedCourseId(null);
     }
-  }, [courseId]);
+  }, [courseId, courses, isEducator, focusedCourseId]);
 
   // URL Query Param sync
   const updateURL = (cId) => {
@@ -70,6 +89,9 @@ export default function CoursePlayer({
 
   const handleBackToCourses = () => {
     setFocusedCourseId(null);
+    if (onSelectCourse) {
+      onSelectCourse(null);
+    }
     updateURL(null);
   };
 
@@ -89,10 +111,13 @@ export default function CoursePlayer({
 
   // If a specific course is selected, render View 2: Focused Course Player Workspace
   if (focusedCourseId) {
+    const isEnrolledInFocused = isEducator || courses.some((c) => c.id === focusedCourseId);
     return (
       <CourseWorkspace
         courseId={focusedCourseId}
         user={user}
+        isEnrolled={isEnrolledInFocused}
+        onEnrollCourse={onEnrollCourse}
         onBackToCourses={handleBackToCourses}
         onNavigateTab={onNavigateTab}
         onRefreshCourses={onRefreshCourses}
@@ -109,7 +134,12 @@ export default function CoursePlayer({
         onOpenExploreCatalog={() => setShowCatalogModal(true)}
         onOpenCreateCourse={isEducator ? () => setShowCreateModal(true) : undefined}
         onOpenRateModal={handleOpenRateModal}
-        onSelectRecommendedTopic={(rec) => {
+        onSelectRecommendedTopic={async (rec) => {
+          if (!isEducator && !courses.some((c) => c.id === rec.course_id)) {
+            if (onEnrollCourse) {
+              await onEnrollCourse(rec.course_id);
+            }
+          }
           handleSelectCourse(rec.course_id);
         }}
         user={user}
@@ -119,8 +149,11 @@ export default function CoursePlayer({
       <CourseCatalogModal
         isOpen={showCatalogModal}
         onClose={() => setShowCatalogModal(false)}
-        onSelectCourse={(cId) => {
-          if (onRefreshCourses) onRefreshCourses();
+        onSelectCourse={async (cId) => {
+          if (onEnrollCourse) {
+            await onEnrollCourse(cId);
+          }
+          if (onRefreshCourses) await onRefreshCourses();
           handleSelectCourse(cId);
         }}
         user={user}
