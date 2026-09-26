@@ -1,8 +1,8 @@
 import axios from 'axios';
 
-const API_BASE_URL = import.meta.env.VITE_API_BASE_URL 
-  ? `${import.meta.env.VITE_API_BASE_URL}/api/v1` 
-  : '/api/v1';
+const rawBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
+const cleanBase = rawBase.replace(/\/+$/, '').replace(/\/api\/v1\/?$/, '');
+const API_BASE_URL = cleanBase ? `${cleanBase}/api/v1` : '/api/v1';
 
 const apiClient = axios.create({
   baseURL: API_BASE_URL,
@@ -41,12 +41,16 @@ export const authAPI = {
     const res = await apiClient.post('/auth/login-json', { email, password });
     if (res.data && res.data.access_token) {
       localStorage.setItem('cognipath_token', res.data.access_token);
-      localStorage.setItem('cognipath_user', JSON.stringify(res.data.user));
+      localStorage.setItem('cognipath_user', JSON.stringify(res.data.user || res.data));
     }
     return res.data;
   },
   register: async (userData) => {
     const res = await apiClient.post('/auth/register', userData);
+    if (res.data && res.data.access_token) {
+      localStorage.setItem('cognipath_token', res.data.access_token);
+      localStorage.setItem('cognipath_user', JSON.stringify(res.data.user || res.data));
+    }
     return res.data;
   },
   getMe: async () => {
@@ -54,11 +58,22 @@ export const authAPI = {
     return res.data;
   },
   updateProfile: async (profileData) => {
-    const res = await apiClient.put('/auth/profile', profileData);
-    if (res.data) {
-      localStorage.setItem('cognipath_user', JSON.stringify(res.data));
+    try {
+      const res = await apiClient.put('/auth/profile', profileData);
+      if (res.data) {
+        localStorage.setItem('cognipath_user', JSON.stringify(res.data));
+      }
+      return res.data;
+    } catch (err) {
+      if (err.response?.status === 404 || err.response?.status === 405) {
+        const res2 = await apiClient.post('/auth/onboarding', profileData);
+        if (res2.data) {
+          localStorage.setItem('cognipath_user', JSON.stringify(res2.data));
+        }
+        return res2.data;
+      }
+      throw err;
     }
-    return res.data;
   },
   logout: () => {
     localStorage.removeItem('cognipath_token');

@@ -12,9 +12,9 @@ from app.schemas.schemas import UserCreate, UserLogin, UserResponse, Token, User
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
-@router.post("/register", response_model=UserResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/register", status_code=status.HTTP_201_CREATED)
 async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
-    """Register a new user (Student or Educator)."""
+    """Register a new user (Student or Educator) with complete profile details."""
     # Check if user already exists
     existing = await db.execute(select(User).where(User.email == user_in.email))
     if existing.scalars().first():
@@ -23,16 +23,45 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
             detail="An account with this email already exists."
         )
 
+    has_details = bool(user_in.university and user_in.department)
+
     db_user = User(
         email=user_in.email,
         hashed_password=get_password_hash(user_in.password),
-        full_name=user_in.full_name,
-        role=user_in.role.upper()
+        full_name=user_in.full_name.strip(),
+        role=user_in.role.upper(),
+        university=user_in.university,
+        department=user_in.department,
+        institutional_email=user_in.institutional_email or user_in.email,
+        student_year=user_in.student_year,
+        student_id_num=user_in.student_id_num,
+        highest_qualification=user_in.highest_qualification,
+        designation=user_in.designation,
+        profile_completed=has_details or user_in.profile_completed
     )
     db.add(db_user)
     await db.commit()
     await db.refresh(db_user)
-    return db_user
+
+    access_token = create_access_token(data={"sub": str(db_user.id), "role": db_user.role})
+    return {
+        "access_token": access_token,
+        "token_type": "bearer",
+        "user": db_user,
+        "id": db_user.id,
+        "email": db_user.email,
+        "full_name": db_user.full_name,
+        "role": db_user.role,
+        "university": db_user.university,
+        "department": db_user.department,
+        "institutional_email": db_user.institutional_email,
+        "student_year": db_user.student_year,
+        "student_id_num": db_user.student_id_num,
+        "highest_qualification": db_user.highest_qualification,
+        "designation": db_user.designation,
+        "profile_completed": db_user.profile_completed,
+        "created_at": db_user.created_at
+    }
 
 @router.post("/login", response_model=Token)
 async def login(
@@ -83,6 +112,9 @@ async def get_me(current_user: User = Depends(get_current_user)):
     return current_user
 
 @router.put("/profile", response_model=UserResponse)
+@router.post("/profile", response_model=UserResponse)
+@router.put("/onboarding", response_model=UserResponse)
+@router.post("/onboarding", response_model=UserResponse)
 async def update_profile(
     profile_in: UserProfileUpdate,
     current_user: User = Depends(get_current_user),

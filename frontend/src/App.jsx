@@ -105,6 +105,8 @@ export default function App() {
     }
     if (!userData.profile_completed) {
       setShowProfileModal(true);
+    } else {
+      setShowProfileModal(false);
     }
     if (userData.role === 'EDUCATOR') {
       setActiveTab('analytics');
