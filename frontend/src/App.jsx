@@ -15,16 +15,19 @@ import AssignmentView from './pages/AssignmentView';
 import LandingPage from './pages/LandingPage';
 import CreateCourseModal from './components/CreateCourseModal';
 import AcademicProfileModal from './components/AcademicProfileModal';
+import CourseCatalogModal from './components/CourseCatalogModal';
 import { coursesAPI, authAPI } from './services/api';
 import { Globe, X, Check } from 'lucide-react';
 
 export default function App() {
   const [user, setUser] = useState(null);
   const [showProfileModal, setShowProfileModal] = useState(false);
+  const [showCatalogModal, setShowCatalogModal] = useState(false);
   const [courses, setCourses] = useState([
-    { id: 1, code: 'CS101', title: 'Data Structures & Algorithms', category: 'Computer Science' },
-    { id: 2, code: 'AI201', title: 'Deep Learning & Neural Networks', category: 'Artificial Intelligence' }
+    { id: 1, code: 'CS101', title: 'Data Structures & Algorithms', category: 'Computer Science', description: 'Comprehensive study of linear and hierarchical data structures.' },
+    { id: 2, code: 'DBMS', title: 'Database Management Systems', category: 'Database Systems', description: 'Relational database architecture, relational algebra, and SQL optimization.' }
   ]);
+  const [enrolledCourses, setEnrolledCourses] = useState([]);
   const [selectedCourseId, setSelectedCourseId] = useState(1);
   const [activeTab, setActiveTab] = useState('dashboard');
   const [targetLang, setTargetLang] = useState('en');
@@ -62,42 +65,177 @@ export default function App() {
     };
   }, [user]);
 
-  useEffect(() => {
-    // Check local storage for active session
-    const storedUser = localStorage.getItem('cognipath_user');
-    if (storedUser) {
-      try {
-        const parsed = JSON.parse(storedUser);
-        setUser(parsed);
-        if (!parsed.profile_completed) {
-          setShowProfileModal(true);
-        }
-        if (parsed.role === 'EDUCATOR') {
-          setActiveTab('analytics');
-        } else {
-          setActiveTab('dashboard');
-        }
-      } catch (e) {
-        console.error(e);
-      }
-    }
-    fetchCourses();
-    setIsInitializing(false);
-  }, []);
-
   const fetchCourses = async () => {
     try {
       const data = await coursesAPI.list();
       if (data && data.length > 0) {
         setCourses(data);
-        setSelectedCourseId(data[0].id);
+        if (!selectedCourseId) {
+          setSelectedCourseId(data[0].id);
+        }
       }
     } catch (err) {
       console.log('Using default course syllabus data.');
     }
   };
 
-  const handleLoginSuccess = (userData) => {
+  const fetchEnrolledCourses = async (currentUser, allAvailableCourses = null) => {
+    if (!currentUser) {
+      setEnrolledCourses([]);
+      return;
+    }
+
+    const available = allAvailableCourses || courses;
+
+    try {
+      const data = await coursesAPI.getEnrolled();
+      if (data && Array.isArray(data)) {
+        setEnrolledCourses(data);
+        localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify(data));
+        if (data.length > 0) {
+          setSelectedCourseId(data[0].id);
+        }
+        return;
+      }
+    } catch (err) {
+      console.warn('API getEnrolled failed, checking local storage:', err);
+    }
+
+    // Local cached fallback per user
+    try {
+      const cached = localStorage.getItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`);
+      if (cached) {
+        const parsed = JSON.parse(cached);
+        setEnrolledCourses(parsed);
+        if (parsed.length > 0) {
+          setSelectedCourseId(parsed[0].id);
+        }
+        return;
+      }
+    } catch (e) {}
+
+    // Initial role-based defaults for new sessions
+    if (currentUser.email === 'student@cognipath.edu') {
+      // Alex Kumar default demo enrollments (CS101 + DBMS)
+      const demoEnrolled = available.slice(0, 2).map((c, i) => ({
+        ...c,
+        progress_percentage: i === 0 ? 68 : 45,
+        is_enrolled: true
+      }));
+      setEnrolledCourses(demoEnrolled);
+      localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify(demoEnrolled));
+      if (demoEnrolled.length > 0) setSelectedCourseId(demoEnrolled[0].id);
+    } else if (currentUser.role === 'EDUCATOR') {
+      // Educators have all their authored courses
+      const eduCourses = available.map(c => ({ ...c, progress_percentage: 100, is_enrolled: true }));
+      setEnrolledCourses(eduCourses);
+    } else {
+      // Any new student starts with 0 enrolled courses so they can pick their own!
+      setEnrolledCourses([]);
+      localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify([]));
+    }
+  };
+
+  const handleEnrollCourse = async (courseId) => {
+    try {
+      await coursesAPI.enroll(courseId);
+    } catch (err) {
+      console.warn('Backend enrollment API call failed, persisting locally:', err);
+    }
+
+    const targetCourse = courses.find((c) => c.id === courseId) || {
+      id: courseId,
+      title: 'Enrolled Course',
+      code: 'CS',
+      progress_percentage: 0
+    };
+
+    const newEnrolled = [
+      ...enrolledCourses.filter((c) => c.id !== courseId),
+      {
+        ...targetCourse,
+        is_enrolled: true,
+        progress_percentage: targetCourse.progress_percentage || 0
+      }
+    ];
+
+    setEnrolledCourses(newEnrolled);
+    if (user) {
+      localStorage.setItem(
+        `cognipath_enrolled_${user.id || user.email}`,
+        JSON.stringify(newEnrolled)
+      );
+    }
+    setSelectedCourseId(courseId);
+
+    // Refresh from API if possible
+    try {
+      const fresh = await coursesAPI.getEnrolled();
+      if (fresh && Array.isArray(fresh) && fresh.length > 0) {
+        setEnrolledCourses(fresh);
+      }
+    } catch (e) {}
+  };
+
+  const handleUnenrollCourse = async (courseId) => {
+    try {
+      await coursesAPI.unenroll(courseId);
+    } catch (err) {
+      console.warn('Backend unenroll API call failed, removing locally:', err);
+    }
+
+    const updated = enrolledCourses.filter((c) => c.id !== courseId);
+    setEnrolledCourses(updated);
+    if (user) {
+      localStorage.setItem(
+        `cognipath_enrolled_${user.id || user.email}`,
+        JSON.stringify(updated)
+      );
+    }
+    if (selectedCourseId === courseId) {
+      setSelectedCourseId(updated.length > 0 ? updated[0].id : null);
+    }
+  };
+
+  useEffect(() => {
+    const init = async () => {
+      let activeUser = null;
+      const storedUser = localStorage.getItem('cognipath_user');
+      if (storedUser) {
+        try {
+          activeUser = JSON.parse(storedUser);
+          setUser(activeUser);
+          if (!activeUser.profile_completed) {
+            setShowProfileModal(true);
+          }
+          if (activeUser.role === 'EDUCATOR') {
+            setActiveTab('analytics');
+          } else {
+            setActiveTab('dashboard');
+          }
+        } catch (e) {
+          console.error(e);
+        }
+      }
+      try {
+        const data = await coursesAPI.list();
+        if (data && data.length > 0) {
+          setCourses(data);
+          if (activeUser) {
+            await fetchEnrolledCourses(activeUser, data);
+          }
+        }
+      } catch (err) {
+        if (activeUser) {
+          await fetchEnrolledCourses(activeUser);
+        }
+      }
+      setIsInitializing(false);
+    };
+    init();
+  }, []);
+
+  const handleLoginSuccess = async (userData) => {
     setUser(userData);
     setIsLoginView(false);
     if (window.location.hash === '#login') {
@@ -108,6 +246,7 @@ export default function App() {
     } else {
       setShowProfileModal(false);
     }
+    await fetchEnrolledCourses(userData);
     if (userData.role === 'EDUCATOR') {
       setActiveTab('analytics');
     } else {
@@ -128,6 +267,7 @@ export default function App() {
   const handleLogout = () => {
     authAPI.logout();
     setUser(null);
+    setEnrolledCourses([]);
     setIsLoginView(false);
     setActiveTab('dashboard');
   };
@@ -245,6 +385,12 @@ export default function App() {
               user={user}
               onNavigateTab={handleNavigate}
               targetLang={targetLang}
+              enrolledCourses={enrolledCourses}
+              allCourses={courses}
+              onEnrollCourse={handleEnrollCourse}
+              onUnenrollCourse={handleUnenrollCourse}
+              onRefreshCourses={() => fetchEnrolledCourses(user)}
+              onOpenExploreCatalog={() => setShowCatalogModal(true)}
             />
           )}
 
@@ -254,9 +400,13 @@ export default function App() {
               courseId={selectedCourseId}
               user={user}
               onNavigateTab={handleNavigate}
-              courses={courses}
+              courses={enrolledCourses.length > 0 ? enrolledCourses : (user?.role === 'EDUCATOR' ? courses : [])}
+              allCourses={courses}
+              enrolledCourses={enrolledCourses}
               onSelectCourse={setSelectedCourseId}
-              onRefreshCourses={fetchCourses}
+              onRefreshCourses={() => fetchEnrolledCourses(user)}
+              onEnrollCourse={handleEnrollCourse}
+              onUnenrollCourse={handleUnenrollCourse}
             />
           )}
 
@@ -388,6 +538,18 @@ export default function App() {
           </div>
         </div>
       )}
+
+      {/* Global Course Catalog Explorer Modal */}
+      <CourseCatalogModal
+        isOpen={showCatalogModal}
+        onClose={() => setShowCatalogModal(false)}
+        onSelectCourse={async (cId) => {
+          await handleEnrollCourse(cId);
+          setShowCatalogModal(false);
+          setActiveTab('course-player');
+        }}
+        user={user}
+      />
 
       {/* Global Create & Post Course Modal */}
       <CreateCourseModal

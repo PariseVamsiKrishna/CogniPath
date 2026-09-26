@@ -86,6 +86,10 @@ export const coursesAPI = {
     const res = await apiClient.get('/courses');
     return res.data;
   },
+  getEnrolled: async () => {
+    const res = await apiClient.get('/courses/enrolled');
+    return res.data;
+  },
   get: async (id) => {
     const res = await apiClient.get(`/courses/${id}`);
     return res.data;
@@ -100,6 +104,10 @@ export const coursesAPI = {
   },
   enroll: async (courseId) => {
     const res = await apiClient.post(`/courses/${courseId}/enroll`);
+    return res.data;
+  },
+  unenroll: async (courseId) => {
+    const res = await apiClient.post(`/courses/${courseId}/unenroll`);
     return res.data;
   },
   createModule: async (courseId, moduleData) => {
@@ -288,6 +296,10 @@ export const quizzesAPI = {
 export const analyticsAPI = {
   getOverview: async () => {
     const res = await apiClient.get('/analytics/educator/overview');
+    return res.data;
+  },
+  getStudentOverview: async () => {
+    const res = await apiClient.get('/analytics/student/overview');
     return res.data;
   },
   getAtRiskStudents: async () => {

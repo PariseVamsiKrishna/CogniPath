@@ -6,15 +6,17 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, s
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
+from sqlalchemy import or_
 
 from datetime import datetime, timezone
 import json
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import get_current_user, require_roles
+from app.core.security import get_current_user, require_roles, get_optional_current_user
 from app.models.models import (
     Course, Enrollment, User, CommunityChannel, Module, Topic,
-    ModuleResource, StudentBadge, Exam, ExamQuestion, CourseRating, TopicRating
+    ModuleResource, StudentBadge, Exam, ExamQuestion, CourseRating, TopicRating,
+    StudentActivityLog
 )
 from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseHierarchyResponse,
@@ -209,14 +211,58 @@ async def explore_courses(
 
     return items
 
-@router.get("", response_model=List[CourseResponse])
-async def list_courses(db: AsyncSession = Depends(get_db)):
-    """List all available courses with enriched creator name and star ratings."""
-    result = await db.execute(select(Course))
-    courses = result.scalars().all()
+@router.get("/enrolled", response_model=List[CourseResponse])
+@router.get("/my-courses", response_model=List[CourseResponse])
+async def get_enrolled_courses(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Retrieve ONLY courses the logged-in student has enrolled in (or educator has created/enrolled in)."""
+    if current_user.role == "EDUCATOR":
+        res = await db.execute(
+            select(Course).where(
+                or_(
+                    Course.educator_id == current_user.id,
+                    Course.id.in_(
+                        select(Enrollment.course_id).where(Enrollment.user_id == current_user.id)
+                    )
+                )
+            ).order_by(Course.id.asc())
+        )
+        courses = res.scalars().all()
+    else:
+        res = await db.execute(
+            select(Course).join(Enrollment, Course.id == Enrollment.course_id).where(
+                Enrollment.user_id == current_user.id
+            ).order_by(Course.id.asc())
+        )
+        courses = res.scalars().all()
+
     out = []
     for c in courses:
         educator_name, avg_rating, total_count = await get_course_rating_stats(c, db)
+
+        # Get student's personal completion percentage for this course
+        enr_res = await db.execute(
+            select(Enrollment).where(
+                Enrollment.user_id == current_user.id,
+                Enrollment.course_id == c.id
+            )
+        )
+        enr = enr_res.scalars().first()
+        prog = enr.completion_percentage if enr else (100.0 if current_user.role == "EDUCATOR" and c.educator_id == current_user.id else 0.0)
+
+        # Find first topic as next topic
+        next_t_title = "Overview & Introduction"
+        t_res = await db.execute(
+            select(Topic).join(Module, Topic.module_id == Module.id).where(
+                Module.course_id == c.id
+            ).order_by(Module.order_index.asc(), Topic.order_index.asc())
+        )
+        first_t = t_res.scalars().first()
+        if first_t:
+            next_t_title = first_t.title
+
         out.append(CourseResponse(
             id=c.id,
             title=c.title,
@@ -229,6 +275,68 @@ async def list_courses(db: AsyncSession = Depends(get_db)):
             educator_name=educator_name,
             average_rating=avg_rating,
             total_ratings=total_count,
+            progress_percentage=prog,
+            next_topic_title=next_t_title,
+            is_enrolled=True,
+            created_at=c.created_at
+        ))
+    return out
+
+@router.get("", response_model=List[CourseResponse])
+async def list_courses(
+    enrolled_only: bool = False,
+    current_user: Optional[User] = Depends(get_optional_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """List courses with enriched creator name, star ratings, and student enrollment flag."""
+    enrolled_ids = set()
+    if current_user:
+        enr_res = await db.execute(
+            select(Enrollment.course_id).where(Enrollment.user_id == current_user.id)
+        )
+        enrolled_ids = set(enr_res.scalars().all())
+        if current_user.role == "EDUCATOR":
+            c_res = await db.execute(select(Course.id).where(Course.educator_id == current_user.id))
+            enrolled_ids.update(c_res.scalars().all())
+
+    if enrolled_only and current_user:
+        result = await db.execute(select(Course).where(Course.id.in_(enrolled_ids)).order_by(Course.id.asc()))
+    else:
+        result = await db.execute(select(Course).order_by(Course.id.asc()))
+    
+    courses = result.scalars().all()
+    out = []
+    for c in courses:
+        educator_name, avg_rating, total_count = await get_course_rating_stats(c, db)
+        is_enr = c.id in enrolled_ids
+        
+        # Get progress if enrolled
+        prog = 0.0
+        if is_enr and current_user:
+            enr_res = await db.execute(
+                select(Enrollment).where(
+                    Enrollment.user_id == current_user.id,
+                    Enrollment.course_id == c.id
+                )
+            )
+            enr = enr_res.scalars().first()
+            if enr:
+                prog = enr.completion_percentage
+
+        out.append(CourseResponse(
+            id=c.id,
+            title=c.title,
+            code=c.code,
+            description=c.description,
+            category=c.category or "Computer Science",
+            difficulty=c.difficulty or "Intermediate",
+            thumbnail_url=c.thumbnail_url,
+            educator_id=c.educator_id,
+            educator_name=educator_name,
+            average_rating=avg_rating,
+            total_ratings=total_count,
+            progress_percentage=prog,
+            is_enrolled=is_enr,
             created_at=c.created_at
         ))
     return out
@@ -543,10 +651,32 @@ async def enroll_in_course(
     if existing.scalars().first():
         return {"status": "already_enrolled", "message": "You are already enrolled in this course."}
 
-    enrollment = Enrollment(user_id=current_user.id, course_id=course_id)
+    enrollment = Enrollment(user_id=current_user.id, course_id=course_id, completion_percentage=0.0)
     db.add(enrollment)
     await db.commit()
     return {"status": "success", "message": "Successfully enrolled in course."}
+
+
+@router.post("/{course_id}/unenroll")
+@router.delete("/{course_id}/enroll")
+async def unenroll_from_course(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Unenroll from a course for the current student."""
+    res = await db.execute(
+        select(Enrollment).where(
+            Enrollment.user_id == current_user.id,
+            Enrollment.course_id == course_id
+        )
+    )
+    enrollment = res.scalars().first()
+    if enrollment:
+        await db.delete(enrollment)
+        await db.commit()
+        return {"status": "success", "message": "Successfully unenrolled from course."}
+    return {"status": "not_enrolled", "message": "You are not enrolled in this course."}
 
 
 # ==============================================================================

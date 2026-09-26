@@ -75,6 +75,9 @@ class CourseResponse(BaseModel):
     educator_name: Optional[str] = "Prof. Rajesh Ramanujan"
     average_rating: Optional[float] = 4.9
     total_ratings: Optional[int] = 0
+    progress_percentage: Optional[float] = 0.0
+    next_topic_title: Optional[str] = None
+    is_enrolled: Optional[bool] = False
     created_at: datetime
 
     class Config:
@@ -258,6 +261,25 @@ class EducatorDashboardOverview(BaseModel):
     at_risk_count: int
     at_risk_students: List[AtRiskStudent]
     topic_difficulties: List[TopicDifficultyStat]
+
+class StudentRecommendationItem(BaseModel):
+    id: str
+    topic_title: str
+    course_id: int
+    course_title: str
+    category: str
+    difficulty: str
+    reason: str
+
+class StudentDashboardOverview(BaseModel):
+    user_id: int
+    user_name: str
+    streak_days: int = 1
+    overall_score: float = 0.0
+    topics_completed: int = 0
+    total_topics: int = 0
+    enrolled_courses_count: int = 0
+    recommendations: List[StudentRecommendationItem] = []
 
 # ==========================================
 # Native Learning Pods & Community Schemas
