@@ -25,6 +25,7 @@ import {
 import { tutorAPI, analyticsAPI } from '../services/api';
 import JourneyTrackCard from '../components/JourneyTrackCard';
 import RecommendationCard from '../components/RecommendationCard';
+import CourseDeleteModal from '../components/CourseDeleteModal';
 
 export default function DashboardHome({
   user,
@@ -33,8 +34,11 @@ export default function DashboardHome({
   enrolledCourses = [],
   allCourses = [],
   onEnrollCourse,
+  onUnenrollCourse,
+  onDeleteCoursePermanently,
   onOpenExploreCatalog
 }) {
+  const [courseToDelete, setCourseToDelete] = useState(null);
   const safeEnrolled = Array.isArray(enrolledCourses) ? enrolledCourses : [];
   const safeAllCourses = Array.isArray(allCourses) ? allCourses : [];
   const firstName = user?.full_name ? user.full_name.trim().split(' ')[0] : 'Learner';
@@ -364,6 +368,8 @@ export default function DashboardHome({
                     course={course}
                     index={idx}
                     onSelectCourse={() => onNavigateTab('course-player', course.id)}
+                    onDeleteCourse={(c) => setCourseToDelete(c)}
+                    user={user}
                   />
                 ))}
               </div>
@@ -707,6 +713,25 @@ export default function DashboardHome({
           </div>
         </div>
       </div>
+
+      {/* Course Delete / Unenroll Modal */}
+      {courseToDelete && (
+        <CourseDeleteModal
+          isOpen={Boolean(courseToDelete)}
+          onClose={() => setCourseToDelete(null)}
+          course={courseToDelete}
+          isEducator={user?.role === 'EDUCATOR'}
+          isCreator={user?.role === 'EDUCATOR' && (courseToDelete.educator_id === user?.id || !courseToDelete.educator_id)}
+          onConfirm={async (c) => {
+            const isCreator = user?.role === 'EDUCATOR' && (c.educator_id === user?.id || !c.educator_id);
+            if (isCreator && onDeleteCoursePermanently) {
+              await onDeleteCoursePermanently(c.id);
+            } else if (onUnenrollCourse) {
+              await onUnenrollCourse(c.id);
+            }
+          }}
+        />
+      )}
     </div>
   );
 }

@@ -228,10 +228,10 @@ export default function LiveKshetraStudio({
           <div>
             <div className="flex items-center gap-2.5">
               <h1 className="font-heading text-2xl sm:text-3xl font-bold text-[#ECEDF7] tracking-tight">
-                Live Kshetra
+                Learning Pods
               </h1>
               <span className="text-[11px] px-2.5 py-0.5 rounded-full bg-[#FF9933]/15 text-[#FF9933] border border-[#FF9933]/30 font-bold uppercase tracking-wider">
-                Integrated Studio
+                Studio
               </span>
             </div>
             <p className="text-xs sm:text-sm text-[#8A90B4] font-medium mt-1">

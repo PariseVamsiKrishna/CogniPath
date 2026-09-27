@@ -1574,7 +1574,7 @@ export default function LearningPods({ courseId, user }) {
             <span>Live Peer Video Conferencing</span>
           </div>
           <h2 className="text-2xl font-black text-white flex items-center gap-2.5">
-            <span>Learning Pods & Collaborative Rooms</span>
+            <span>Ongoing Pods & Collaborative Rooms</span>
             <span className="text-xs px-2.5 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 font-semibold">
               Meet & Zoom Compatible WebRTC
             </span>

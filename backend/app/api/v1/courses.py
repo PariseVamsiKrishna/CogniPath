@@ -1,12 +1,13 @@
 import os
 import re
 import shutil
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_
+from sqlalchemy import or_, delete
 
 from datetime import datetime, timezone
 import json
@@ -14,9 +15,10 @@ from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_roles, get_optional_current_user
 from app.models.models import (
-    Course, Enrollment, User, CommunityChannel, Module, Topic,
-    ModuleResource, StudentBadge, Exam, ExamQuestion, CourseRating, TopicRating,
-    StudentActivityLog
+    Course, Enrollment, User, CommunityChannel, CommunityMessage, Module, Topic,
+    ModuleResource, StudentBadge, Exam, ExamQuestion, ExamSubmission, CourseRating, TopicRating,
+    StudentActivityLog, Document, Quiz, QuizQuestion, StudentQuizAttempt, StudentConceptRetention,
+    LearningPod, PodMessage, Assignment, AssignmentSubmission
 )
 from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseHierarchyResponse,
@@ -31,6 +33,9 @@ from app.schemas.schemas import (
 )
 from app.services.ingestion_service import ingestion_service
 from app.services.exam_service import exam_service
+from app.services.chroma_service import chroma_service
+
+logger = logging.getLogger("cognipath.courses")
 
 router = APIRouter(prefix="/courses", tags=["Courses & Hierarchical Content Delivery"])
 module_router = APIRouter(tags=["Module End Assessments"])
@@ -677,6 +682,101 @@ async def unenroll_from_course(
         await db.commit()
         return {"status": "success", "message": "Successfully unenrolled from course."}
     return {"status": "not_enrolled", "message": "You are not enrolled in this course."}
+
+
+@router.delete("/{course_id}", status_code=status.HTTP_200_OK)
+async def delete_course_permanently(
+    course_id: int,
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Permanently delete a course, its syllabus modules, topics, enrollments,
+    assessments, Chroma vectors, and associated resources.
+    Requires user to be the course creator (educator) or ADMIN.
+    """
+    c_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = c_res.scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    # Only creator or ADMIN can permanently delete
+    if current_user.role != "ADMIN" and course.educator_id != current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the educator who created this course can permanently delete it."
+        )
+
+    # 1. Clean up community messages & channels
+    ch_res = await db.execute(select(CommunityChannel).where(CommunityChannel.course_id == course_id))
+    channels = ch_res.scalars().all()
+    for ch in channels:
+        await db.execute(delete(CommunityMessage).where(CommunityMessage.channel_id == ch.id))
+        await db.delete(ch)
+
+    # 2. Clean up learning pods & pod messages
+    pod_res = await db.execute(select(LearningPod).where(LearningPod.course_id == course_id))
+    pods = pod_res.scalars().all()
+    for pod in pods:
+        await db.execute(delete(PodMessage).where(PodMessage.pod_id == pod.id))
+        await db.delete(pod)
+
+    # 3. Clean up quizzes, quiz attempts & questions
+    q_res = await db.execute(select(Quiz).where(Quiz.course_id == course_id))
+    quizzes = q_res.scalars().all()
+    for q in quizzes:
+        await db.execute(delete(StudentQuizAttempt).where(StudentQuizAttempt.quiz_id == q.id))
+        await db.execute(delete(QuizQuestion).where(QuizQuestion.quiz_id == q.id))
+        await db.delete(q)
+
+    # 4. Clean up exams, exam submissions & questions
+    e_res = await db.execute(select(Exam).where(Exam.course_id == course_id))
+    exams = e_res.scalars().all()
+    for ex in exams:
+        await db.execute(delete(ExamSubmission).where(ExamSubmission.exam_id == ex.id))
+        await db.execute(delete(ExamQuestion).where(ExamQuestion.exam_id == ex.id))
+        await db.delete(ex)
+
+    # 5. Clean up assignments & submissions
+    a_res = await db.execute(select(Assignment).where(Assignment.course_id == course_id))
+    assignments = a_res.scalars().all()
+    for a in assignments:
+        await db.execute(delete(AssignmentSubmission).where(AssignmentSubmission.assignment_id == a.id))
+        await db.delete(a)
+
+    # 6. Clean up modules, topics, resources & topic ratings
+    m_res = await db.execute(select(Module).where(Module.course_id == course_id))
+    modules = m_res.scalars().all()
+    for m in modules:
+        t_res = await db.execute(select(Topic).where(Topic.module_id == m.id))
+        topics = t_res.scalars().all()
+        for t in topics:
+            await db.execute(delete(TopicRating).where(TopicRating.topic_id == t.id))
+            await db.delete(t)
+        await db.execute(delete(ModuleResource).where(ModuleResource.module_id == m.id))
+        await db.delete(m)
+
+    # 7. Clean up enrollments, documents, retentions, badges, ratings
+    await db.execute(delete(Enrollment).where(Enrollment.course_id == course_id))
+    await db.execute(delete(Document).where(Document.course_id == course_id))
+    await db.execute(delete(StudentConceptRetention).where(StudentConceptRetention.course_id == course_id))
+    await db.execute(delete(StudentBadge).where(StudentBadge.course_id == course_id))
+    await db.execute(delete(CourseRating).where(CourseRating.course_id == course_id))
+
+    # 8. Delete course itself
+    await db.delete(course)
+    await db.commit()
+
+    # 9. Clean up Chroma vector store
+    try:
+        chroma_service.delete_collection(course_id)
+    except Exception as e:
+        logger.warning("Chroma collection cleanup error: %s", e)
+
+    return {
+        "status": "success",
+        "message": f"Course '{course.title}' (ID: {course_id}) has been permanently deleted along with all syllabus modules, student enrollments, and vector indexes."
+    }
 
 
 # ==============================================================================

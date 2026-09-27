@@ -4,6 +4,7 @@ import CourseWorkspace from '../components/CourseWorkspace';
 import CreateCourseModal from '../components/CreateCourseModal';
 import CourseCatalogModal from '../components/CourseCatalogModal';
 import CourseRatingModal from '../components/CourseRatingModal';
+import CourseDeleteModal from '../components/CourseDeleteModal';
 
 /**
  * CoursePlayer - Redesigned Student Learning Interface
@@ -22,9 +23,11 @@ export default function CoursePlayer({
   onSelectCourse,
   onRefreshCourses,
   onEnrollCourse,
-  onUnenrollCourse
+  onUnenrollCourse,
+  onDeleteCoursePermanently
 }) {
   const isEducator = user?.role === 'EDUCATOR';
+  const [courseToDelete, setCourseToDelete] = useState(null);
 
   // Active focused course ID: strictly gate to enrolled courses for students
   const [focusedCourseId, setFocusedCourseId] = useState(() => {
@@ -134,6 +137,7 @@ export default function CoursePlayer({
         onOpenExploreCatalog={() => setShowCatalogModal(true)}
         onOpenCreateCourse={isEducator ? () => setShowCreateModal(true) : undefined}
         onOpenRateModal={handleOpenRateModal}
+        onDeleteCourse={(course) => setCourseToDelete(course)}
         onSelectRecommendedTopic={async (rec) => {
           if (!isEducator && !courses.some((c) => c.id === rec.course_id)) {
             if (onEnrollCourse) {
@@ -180,6 +184,26 @@ export default function CoursePlayer({
           isOpen={showCreateModal}
           onClose={() => setShowCreateModal(false)}
           onCourseCreated={handleCourseCreated}
+        />
+      )}
+
+      {/* Course Delete / Unenroll Confirmation Modal */}
+      {courseToDelete && (
+        <CourseDeleteModal
+          isOpen={Boolean(courseToDelete)}
+          onClose={() => setCourseToDelete(null)}
+          course={courseToDelete}
+          isEducator={isEducator}
+          isCreator={isEducator && (courseToDelete.educator_id === user?.id || !courseToDelete.educator_id)}
+          onConfirm={async (c) => {
+            const isCreator = isEducator && (c.educator_id === user?.id || !c.educator_id);
+            if (isCreator && onDeleteCoursePermanently) {
+              await onDeleteCoursePermanently(c.id);
+            } else if (onUnenrollCourse) {
+              await onUnenrollCourse(c.id);
+            }
+            if (onRefreshCourses) await onRefreshCourses();
+          }}
         />
       )}
     </div>

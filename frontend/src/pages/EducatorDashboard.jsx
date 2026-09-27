@@ -19,17 +19,23 @@ import {
   Compass,
   FileCheck,
   Plus,
-  BookOpen
+  BookOpen,
+  Trash2
 } from 'lucide-react';
 import { analyticsAPI, documentsAPI, curriculumAuditAPI } from '../services/api';
+import CourseDeleteModal from '../components/CourseDeleteModal';
 
 export default function EducatorDashboard({
   courseId,
   courses = [],
   onSelectCourse,
   onNavigateTab,
-  onOpenCreateCourse
+  onOpenCreateCourse,
+  onDeleteCoursePermanently,
+  onRefreshCourses
 }) {
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const activeCourse = courses.find((c) => c.id === courseId) || courses[0];
   const [overview, setOverview] = useState({
     total_students: 32,
     active_students_last_week: 26,
@@ -202,6 +208,20 @@ export default function EducatorDashboard({
             </div>
           )}
 
+          {courses.length > 0 && (
+            <select
+              value={activeCourse?.id || ''}
+              onChange={(e) => onSelectCourse && onSelectCourse(Number(e.target.value))}
+              className="px-3 py-2 rounded-xl bg-[#1e2638] text-slate-200 border border-[#2b354d] text-xs font-semibold focus:outline-none focus:border-indigo-500"
+            >
+              {courses.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code ? `${c.code}: ` : ''}{c.title}
+                </option>
+              ))}
+            </select>
+          )}
+
           {onOpenCreateCourse && (
             <button
               onClick={onOpenCreateCourse}
@@ -215,12 +235,23 @@ export default function EducatorDashboard({
 
           {onNavigateTab && (
             <button
-              onClick={() => onNavigateTab('course-player', courseId)}
+              onClick={() => onNavigateTab('course-player', activeCourse?.id || courseId)}
               className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#1e2638] hover:bg-slate-700 text-slate-200 text-xs font-bold transition border border-[#2b354d]"
               title="Open Course Curriculum Player & Editor"
             >
               <BookOpen className="h-4 w-4 text-indigo-400" />
               <span>Curriculum Studio</span>
+            </button>
+          )}
+
+          {activeCourse && (
+            <button
+              onClick={() => setShowDeleteModal(true)}
+              className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-red-950/40 hover:bg-red-900/60 text-red-300 text-xs font-bold transition border border-red-500/30 hover:border-red-500/50 shadow-sm"
+              title="Permanently Delete This Course"
+            >
+              <Trash2 className="h-4 w-4 text-red-400" />
+              <span>Delete Course</span>
             </button>
           )}
         </div>
@@ -565,6 +596,23 @@ export default function EducatorDashboard({
             </div>
           </div>
         </div>
+      )}
+
+      {/* Course Delete Modal for Educator */}
+      {showDeleteModal && activeCourse && (
+        <CourseDeleteModal
+          isOpen={showDeleteModal}
+          onClose={() => setShowDeleteModal(false)}
+          course={activeCourse}
+          isEducator={true}
+          isCreator={true}
+          onConfirm={async (c) => {
+            if (onDeleteCoursePermanently) {
+              await onDeleteCoursePermanently(c.id);
+            }
+            if (onRefreshCourses) await onRefreshCourses();
+          }}
+        />
       )}
     </div>
   );

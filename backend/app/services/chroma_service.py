@@ -247,4 +247,16 @@ class ChromaService:
         collection = self.get_or_create_collection(course_id)
         return collection.count()
 
+    def delete_collection(self, course_id: int):
+        """Permanently deletes the vector collection for a course."""
+        name = self._get_collection_name(course_id)
+        if self._client:
+            try:
+                self._client.delete_collection(name=name)
+                logger.info("Chroma collection '%s' deleted successfully.", name)
+            except Exception as e:
+                logger.warning("Could not delete chroma collection %s: %s", name, e)
+        if name in self._in_memory_collections:
+            del self._in_memory_collections[name]
+
 chroma_service = ChromaService()

@@ -9,7 +9,8 @@ import {
   Check,
   Code2,
   Sparkles,
-  BookOpen
+  BookOpen,
+  Trash2
 } from 'lucide-react';
 
 // Preset thematic accents per requirements:
@@ -112,6 +113,8 @@ export default function JourneyTrackCard({
   index = 0,
   onSelectCourse,
   onOpenRateModal,
+  onDeleteCourse,
+  user
 }) {
   const accent = COURSE_ACCENTS[index % COURSE_ACCENTS.length];
 
@@ -335,7 +338,7 @@ export default function JourneyTrackCard({
         </div>
       </div>
 
-      {/* Card Footer: Next Up & Pill-Shaped Resume CTA */}
+      {/* Card Footer: Next Up & Pill-Shaped Actions */}
       <div className="pt-4 mt-4 border-t border-[#262C4C] flex items-center justify-between gap-3">
         <div className="min-w-0 pr-2">
           <span className="text-[10px] uppercase font-bold text-[#8A90B4] tracking-wider block">
@@ -346,17 +349,33 @@ export default function JourneyTrackCard({
           </span>
         </div>
 
-        <button
-          type="button"
-          onClick={(e) => {
-            e.stopPropagation();
-            if (onSelectCourse) onSelectCourse(course.id);
-          }}
-          className={`px-4 py-2 rounded-full font-bold text-xs flex items-center gap-1.5 transition-all shrink-0 ${accent.resumeBtn}`}
-        >
-          <Play className="h-3.5 w-3.5 fill-current" />
-          <span>Resume</span>
-        </button>
+        <div className="flex items-center gap-2 shrink-0">
+          {onDeleteCourse && (
+            <button
+              type="button"
+              onClick={(e) => {
+                e.stopPropagation();
+                onDeleteCourse(course);
+              }}
+              className="p-2 rounded-full text-[#8A90B4] hover:text-red-400 hover:bg-red-500/15 border border-[#262C4C] hover:border-red-500/30 transition shadow-sm"
+              title={user?.role === 'EDUCATOR' ? 'Permanently Delete Course' : 'Delete / Drop Course'}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          )}
+
+          <button
+            type="button"
+            onClick={(e) => {
+              e.stopPropagation();
+              if (onSelectCourse) onSelectCourse(course.id);
+            }}
+            className={`px-4 py-2 rounded-full font-bold text-xs flex items-center gap-1.5 transition-all shrink-0 ${accent.resumeBtn}`}
+          >
+            <Play className="h-3.5 w-3.5 fill-current" />
+            <span>Resume</span>
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -46,6 +46,7 @@ export default function EnrolledCoursesGrid({
   onOpenExploreCatalog,
   onOpenCreateCourse,
   onOpenRateModal,
+  onDeleteCourse,
   onSelectRecommendedTopic,
   user
 }) {
@@ -105,6 +106,8 @@ export default function EnrolledCoursesGrid({
                 index={idx}
                 onSelectCourse={onSelectCourse}
                 onOpenRateModal={onOpenRateModal}
+                onDeleteCourse={onDeleteCourse}
+                user={user}
               />
             ))}
           </div>

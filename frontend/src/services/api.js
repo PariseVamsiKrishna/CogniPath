@@ -110,6 +110,10 @@ export const coursesAPI = {
     const res = await apiClient.post(`/courses/${courseId}/unenroll`);
     return res.data;
   },
+  deleteCourse: async (courseId) => {
+    const res = await apiClient.delete(`/courses/${courseId}`);
+    return res.data;
+  },
   createModule: async (courseId, moduleData) => {
     const res = await apiClient.post(`/courses/${courseId}/modules`, moduleData);
     return res.data;
@@ -365,6 +369,18 @@ export const communitiesAPI = {
   },
   upvote: async (messageId) => {
     const res = await apiClient.post(`/communities/messages/${messageId}/upvote`);
+    return res.data;
+  },
+  getMembers: async (courseId) => {
+    const res = await apiClient.get(`/communities/courses/${courseId}/members`);
+    return res.data;
+  },
+  kickMember: async (courseId, userId) => {
+    const res = await apiClient.delete(`/communities/courses/${courseId}/members/${userId}`);
+    return res.data;
+  },
+  closeCommunity: async (courseId) => {
+    const res = await apiClient.delete(`/communities/courses/${courseId}/close`);
     return res.data;
   }
 };

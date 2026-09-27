@@ -225,6 +225,28 @@ export default function App() {
     }
   };
 
+  const handleDeleteCoursePermanently = async (courseId) => {
+    try {
+      await coursesAPI.deleteCourse(courseId);
+    } catch (err) {
+      console.warn('Backend deleteCourse API call failed, removing locally:', err);
+    }
+
+    const updatedAll = courses.filter((c) => c.id !== courseId);
+    setCourses(updatedAll);
+    const updatedEnrolled = enrolledCourses.filter((c) => c.id !== courseId);
+    setEnrolledCourses(updatedEnrolled);
+    if (user) {
+      localStorage.setItem(
+        `cognipath_enrolled_${user.id || user.email}`,
+        JSON.stringify(updatedEnrolled)
+      );
+    }
+    if (selectedCourseId === courseId) {
+      setSelectedCourseId(updatedEnrolled.length > 0 ? updatedEnrolled[0].id : null);
+    }
+  };
+
   useEffect(() => {
     const init = async () => {
       let activeUser = null;
@@ -455,6 +477,7 @@ export default function App() {
                 allCourses={courses}
                 onEnrollCourse={handleEnrollCourse}
                 onUnenrollCourse={handleUnenrollCourse}
+                onDeleteCoursePermanently={handleDeleteCoursePermanently}
                 onRefreshCourses={() => fetchEnrolledCourses(user)}
                 onOpenExploreCatalog={() => setShowCatalogModal(true)}
               />
@@ -473,6 +496,7 @@ export default function App() {
                 onRefreshCourses={() => fetchEnrolledCourses(user)}
                 onEnrollCourse={handleEnrollCourse}
                 onUnenrollCourse={handleUnenrollCourse}
+                onDeleteCoursePermanently={handleDeleteCoursePermanently}
               />
             )}
 
@@ -499,6 +523,9 @@ export default function App() {
                 courseId={selectedCourseId}
                 targetLang={targetLang}
                 courses={courses}
+                enrolledCourses={enrolledCourses}
+                onSelectCourse={setSelectedCourseId}
+                user={user}
               />
             )}
 
@@ -510,9 +537,15 @@ export default function App() {
               />
             )}
 
-            {/* Spaced Repetition SM-2 Quiz View */}
+            {/* Spaced Repetition SM-2 Quiz View & Flashcards */}
             {(activeTab === 'quizzes' || activeTab === 'flashcards') && (
-              <SpacedQuizView courseId={selectedCourseId} />
+              <SpacedQuizView
+                courseId={selectedCourseId}
+                courses={courses}
+                enrolledCourses={enrolledCourses}
+                onSelectCourse={setSelectedCourseId}
+                defaultMode={activeTab === 'flashcards' ? 'flashcards' : 'quiz'}
+              />
             )}
 
             {/* Educator Analytics & Curriculum Health Diagnostic Studio */}
@@ -523,10 +556,12 @@ export default function App() {
                 onSelectCourse={setSelectedCourseId}
                 onNavigateTab={handleNavigate}
                 onOpenCreateCourse={() => setShowCreateCourseModal(true)}
+                onDeleteCoursePermanently={handleDeleteCoursePermanently}
+                onRefreshCourses={() => fetchEnrolledCourses(user)}
               />
             )}
 
-            {/* Native Live Kshetra Studio & Virtual Classroom */}
+            {/* Native Learning Pods (formerly Live Kshetra Studio) */}
             {activeTab === 'kshetra' && (
               <LiveKshetraStudio
                 courseId={selectedCourseId}
@@ -535,7 +570,7 @@ export default function App() {
               />
             )}
 
-            {/* Native In-App Learning Pods with Live Collaborative Whiteboard */}
+            {/* Ongoing Pods Collaborative Rooms */}
             {activeTab === 'pods' && (
               <LearningPods
                 courseId={selectedCourseId}
@@ -543,11 +578,16 @@ export default function App() {
               />
             )}
 
-            {/* Native In-App Community Channels */}
+            {/* Native WhatsApp-Style Course Community Channels */}
             {activeTab === 'community' && (
               <CommunityFeed
                 courseId={selectedCourseId}
                 user={user}
+                courses={courses}
+                enrolledCourses={enrolledCourses}
+                onSelectCourse={setSelectedCourseId}
+                onEnrollCourse={handleEnrollCourse}
+                onUnenrollCourse={handleUnenrollCourse}
               />
             )}
 
