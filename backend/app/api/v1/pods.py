@@ -211,126 +211,94 @@ async def get_educator_quota(
 @router.get("/kshetra-embed/{code}", response_class=HTMLResponse)
 async def get_kshetra_embed(code: str):
     """
-    Live Kshetra Embedded Video Conferencing Proxy.
-    Fetches https://live-kshetra.vercel.app/join/{code}, rewrites asset references to absolute,
-    and strips X-Frame-Options to seamlessly mount Live Kshetra inside CogniPath Learning Pods.
+    Live Kshetra Native Bridge.
+    Seamlessly mounts and bridges room sessions directly within CogniPath without external dependencies.
     """
     clean_code = code.strip().replace(" ", "-").lower()
-    target_url = f"https://live-kshetra.vercel.app/join/{clean_code}"
-
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-        "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+    html_content = f"""
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <title>Live Kshetra • {clean_code}</title>
+      <style>
+        body {{
+          background-color: #0b0f19;
+          color: #ecedf7;
+          font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          height: 100vh;
+          margin: 0;
+          text-align: center;
+        }}
+        .card {{
+          background: #12162b;
+          border: 1px solid #262c4c;
+          border-radius: 20px;
+          padding: 32px;
+          max-width: 440px;
+          box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+        }}
+        .badge {{
+          background: rgba(255, 153, 51, 0.15);
+          color: #FF9933;
+          border: 1px solid rgba(255, 153, 51, 0.3);
+          padding: 4px 12px;
+          border-radius: 9999px;
+          font-size: 11px;
+          font-weight: bold;
+          text-transform: uppercase;
+        }}
+        .code-box {{
+          background: #171c36;
+          border: 1px solid #8b7cff;
+          border-radius: 12px;
+          padding: 10px 16px;
+          font-family: monospace;
+          font-size: 16px;
+          font-weight: bold;
+          color: #5fe3b0;
+          margin: 16px 0;
+        }}
+        .btn {{
+          background: linear-gradient(135deg, #FF9933, #FF6F9C);
+          color: #0a0d1c;
+          text-decoration: none;
+          font-weight: 700;
+          font-size: 13px;
+          padding: 12px 24px;
+          border-radius: 9999px;
+          display: inline-block;
+          box-shadow: 0 4px 14px rgba(255, 153, 51, 0.4);
+        }}
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <span class="badge">Live Kshetra Native</span>
+        <h2 style="margin: 14px 0 6px 0; font-size: 18px;">Virtual Classroom Ready</h2>
+        <p style="color: #8a90b4; font-size: 12px; margin: 0;">Connected to meeting room:</p>
+        <div class="code-box">{clean_code}</div>
+        <a class="btn" href="/?room={clean_code}#join={clean_code}" target="_parent">Enter Meeting Room</a>
+      </div>
+      <script>
+        try {{
+          if (window.parent && window.parent !== window) {{
+            window.parent.location.href = '/?room={clean_code}#join={clean_code}';
+          }}
+        }} catch(e) {{}}
+      </script>
+    </body>
+    </html>
+    """
+    custom_headers = {
+        "Access-Control-Allow-Origin": "*",
+        "Permissions-Policy": "camera=*, microphone=*, display-capture=*, clipboard-write=*"
     }
-
-    try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(target_url, headers=headers)
-            html = resp.text
-
-            # Rewrite relative asset paths to absolute Live Kshetra production assets
-            html = html.replace('src="/assets/', 'src="https://live-kshetra.vercel.app/assets/')
-            html = html.replace('href="/assets/', 'href="https://live-kshetra.vercel.app/assets/')
-
-            # Inject client-side route bootstrap script
-            injection = f"""
-            <script>
-              try {{
-                if (window.location.pathname !== '/join/{clean_code}') {{
-                  window.history.replaceState(null, '', '/join/{clean_code}');
-                }}
-              }} catch (err) {{
-                console.warn('[LiveKshetra] Route initialization warning:', err);
-              }}
-            </script>
-            """
-            html = html.replace('<div id="root"></div>', f'{injection}<div id="root"></div>')
-
-            custom_headers = {
-                "Access-Control-Allow-Origin": "*",
-                "Permissions-Policy": "camera=*, microphone=*, display-capture=*, clipboard-write=*"
-            }
-            return HTMLResponse(content=html, status_code=200, headers=custom_headers)
-    except Exception as e:
-        logger.error(f"Live Kshetra proxy error: {e}")
-        fallback_html = f"""
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-          <meta charset="UTF-8">
-          <style>
-            body {{
-              background-color: #0A0D1C;
-              color: #ECEDF7;
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-              display: flex;
-              flex-direction: column;
-              align-items: center;
-              justify-content: center;
-              height: 100vh;
-              margin: 0;
-              text-align: center;
-              padding: 20px;
-            }}
-            .card {{
-              background: #12162B;
-              border: 1px solid #262C4C;
-              border-radius: 20px;
-              padding: 32px;
-              max-width: 480px;
-              box-shadow: 0 10px 30px rgba(0,0,0,0.5);
-            }}
-            .badge {{
-              background: rgba(255, 153, 51, 0.15);
-              color: #FF9933;
-              border: 1px solid rgba(255, 153, 51, 0.3);
-              padding: 4px 12px;
-              border-radius: 9999px;
-              font-size: 11px;
-              font-weight: bold;
-              text-transform: uppercase;
-              letter-spacing: 0.05em;
-            }}
-            .title {{ font-size: 20px; font-weight: 800; margin: 16px 0 8px 0; color: #ECEDF7; }}
-            .code-box {{
-              background: #171C36;
-              border: 1px solid #8B7CFF;
-              border-radius: 12px;
-              padding: 10px 16px;
-              font-family: monospace;
-              font-size: 16px;
-              font-weight: bold;
-              color: #5FE3B0;
-              letter-spacing: 0.1em;
-              margin: 16px 0;
-            }}
-            .btn {{
-              background: linear-gradient(135deg, #FF9933, #FF6F9C);
-              color: #0A0D1C;
-              text-decoration: none;
-              font-weight: 700;
-              font-size: 14px;
-              padding: 12px 24px;
-              border-radius: 12px;
-              display: inline-block;
-              box-shadow: 0 4px 14px rgba(255, 153, 51, 0.4);
-            }}
-          </style>
-        </head>
-        <body>
-          <div class="card">
-            <span class="badge">Live Kshetra Video Pod</span>
-            <h2 class="title">Join Learning Session</h2>
-            <p style="color: #8A90B4; font-size: 13px;">Zero-Trust Encrypted Real-Time Video Collaboration</p>
-            <div class="code-box">{clean_code}</div>
-            <a class="btn" href="https://live-kshetra.vercel.app/join/{clean_code}" target="_blank" rel="noopener noreferrer">
-              Launch Live Kshetra Room ↗
-            </a>
-          </div>
-        </body>
-        </html>
-        """
-        return HTMLResponse(content=fallback_html, status_code=200)
+    return HTMLResponse(content=html_content, status_code=200, headers=custom_headers)
 
 
 @router.get("/kshetra-meta/{code}")

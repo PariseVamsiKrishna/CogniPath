@@ -1264,7 +1264,7 @@ export default function LearningPods({ courseId, user }) {
     const rawCode = customCode || kshetraCodeInput;
     const cleanCode = cleanKshetraCode(rawCode);
     if (!cleanCode) {
-      alert('Please enter a valid Live Kshetra meeting code or URL (e.g. sih-tree-rotations or https://live-kshetra.vercel.app/join/sih-math-101)');
+      alert('Please enter a valid Live Kshetra meeting code or link (e.g. sih-tree-rotations or sih-math-101)');
       return;
     }
 
@@ -1691,7 +1691,7 @@ export default function LearningPods({ courseId, user }) {
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
             {pods.map((pod) => {
               const podKshetraCode = pod.kshetra_meeting_code || `sih-pod-${pod.id}`;
-              const kshetraExternalUrl = `https://live-kshetra.vercel.app/join/${podKshetraCode}`;
+              const kshetraExternalUrl = `${window.location.origin}?room=${podKshetraCode}#join=${podKshetraCode}`;
               return (
                 <div
                   key={pod.id}
@@ -2607,13 +2607,15 @@ export default function LearningPods({ courseId, user }) {
                       Direct WebRTC Join Link
                     </span>
                     <p className="text-xs text-[#ECEDF7] font-mono break-all p-2.5 rounded-xl bg-[#12162B] border border-[#262C4C]">
-                      {`https://live-kshetra.vercel.app/join/${activePod.kshetra_meeting_code || `sih-pod-${activePod.id}`}`}
+                      {`${window.location.origin}?room=${activePod.kshetra_meeting_code || `sih-pod-${activePod.id}`}#join=${activePod.kshetra_meeting_code || `sih-pod-${activePod.id}`}`}
                     </p>
                     <div className="flex items-center gap-2">
                       <button
                         type="button"
                         onClick={() => {
-                          const link = `https://live-kshetra.vercel.app/join/${
+                          const link = `${window.location.origin}?room=${
+                            activePod.kshetra_meeting_code || `sih-pod-${activePod.id}`
+                          }#join=${
                             activePod.kshetra_meeting_code || `sih-pod-${activePod.id}`
                           }`;
                           navigator.clipboard.writeText(link);
@@ -2625,17 +2627,16 @@ export default function LearningPods({ courseId, user }) {
                         {copiedLink ? <Check className="h-3.5 w-3.5 text-[#5FE3B0]" /> : <Copy className="h-3.5 w-3.5" />}
                         <span>{copiedLink ? 'Link Copied!' : 'Copy Direct Link'}</span>
                       </button>
-                      <a
-                        href={`https://live-kshetra.vercel.app/join/${
-                          activePod.kshetra_meeting_code || `sih-pod-${activePod.id}`
-                        }`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="py-2 px-3 rounded-xl bg-gradient-to-r from-[#FF9933] to-[#FF6F9C] text-[#0A0D1C] font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md shadow-[#FF9933]/20"
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setViewMode('kshetra');
+                        }}
+                        className="py-2 px-3 rounded-xl bg-gradient-to-r from-[#FF9933] to-[#FF6F9C] text-[#0A0D1C] font-black text-xs uppercase tracking-wider flex items-center justify-center gap-1.5 shadow-md shadow-[#FF9933]/20 cursor-pointer"
                       >
                         <ExternalLink className="h-3.5 w-3.5" />
-                        <span>Popout ↗</span>
-                      </a>
+                        <span>Open Kshetra</span>
+                      </button>
                     </div>
                   </div>
 
@@ -2654,7 +2655,7 @@ export default function LearningPods({ courseId, user }) {
                       type="button"
                       onClick={() => {
                         const code = activePod.kshetra_meeting_code || `sih-pod-${activePod.id}`;
-                        const inviteText = `🎓 Join our SmartLearn Live Kshetra Pod!\n📌 Topic: ${activePod.title}\n🔑 Meeting Code: ${code}\n🔗 Direct Link: https://live-kshetra.vercel.app/join/${code}\n(Zero-trust video mesh, real-time collaborative whiteboard & @Tutor AI assistance included!)`;
+                        const inviteText = `🎓 Join our CogniPath Live Kshetra Pod!\n📌 Topic: ${activePod.title}\n🔑 Meeting Code: ${code}\n🔗 Direct Link: ${window.location.origin}?room=${code}#join=${code}\n(Zero-trust video mesh, real-time collaborative whiteboard & @Tutor AI assistance included!)`;
                         navigator.clipboard.writeText(inviteText);
                         setCopiedInviteMessage(true);
                         setTimeout(() => setCopiedInviteMessage(false), 2500);
@@ -2837,11 +2838,11 @@ export default function LearningPods({ courseId, user }) {
                   type="text"
                   value={newPodKshetraCode}
                   onChange={(e) => setNewPodKshetraCode(e.target.value)}
-                  placeholder="e.g. sih-tree-rotations or paste live-kshetra URL"
+                  placeholder="e.g. sih-tree-rotations or custom room code"
                   className="w-full bg-slate-950 border border-slate-800 focus:border-[#FF9933] rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 font-mono focus:outline-none"
                 />
                 <p className="text-[11px] text-slate-400 mt-1">
-                  Custom room on <a href="https://live-kshetra.vercel.app/" target="_blank" rel="noreferrer" className="text-[#FF9933] hover:underline">live-kshetra.vercel.app</a>. Participants can join inside LMS or externally.
+                  Native zero-trust WebRTC room with collaborative whiteboard and @Tutor AI assistance.
                 </p>
               </div>
 

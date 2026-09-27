@@ -12,6 +12,7 @@ import LearningRoadmapView from './pages/LearningRoadmapView';
 import CoursePlayer from './pages/CoursePlayer';
 import ExamStudio from './pages/ExamStudio';
 import AssignmentView from './pages/AssignmentView';
+import LiveKshetraStudio from './pages/LiveKshetraStudio';
 import LandingPage from './pages/LandingPage';
 import CreateCourseModal from './components/CreateCourseModal';
 import AcademicProfileModal from './components/AcademicProfileModal';
@@ -53,10 +54,17 @@ export default function App() {
     const handleHashChange = () => {
       if (window.location.hash === '#login' || window.location.pathname === '/login') {
         setIsLoginView(true);
+      } else if (
+        window.location.hash === '#kshetra' ||
+        window.location.search.includes('room=') ||
+        window.location.hash.includes('join=')
+      ) {
+        setActiveTab('kshetra');
       } else if (!user) {
         setIsLoginView(false);
       }
     };
+    handleHashChange();
     window.addEventListener('popstate', handleHashChange);
     window.addEventListener('hashchange', handleHashChange);
     return () => {
@@ -467,6 +475,15 @@ export default function App() {
               onSelectCourse={setSelectedCourseId}
               onNavigateTab={handleNavigate}
               onOpenCreateCourse={() => setShowCreateCourseModal(true)}
+            />
+          )}
+
+          {/* Native Live Kshetra Studio & Virtual Classroom */}
+          {activeTab === 'kshetra' && (
+            <LiveKshetraStudio
+              courseId={selectedCourseId}
+              user={user}
+              onNavigateTab={handleNavigate}
             />
           )}
 
