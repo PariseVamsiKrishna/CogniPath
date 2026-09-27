@@ -35,6 +35,8 @@ export default function DashboardHome({
   onEnrollCourse,
   onOpenExploreCatalog
 }) {
+  const safeEnrolled = Array.isArray(enrolledCourses) ? enrolledCourses : [];
+  const safeAllCourses = Array.isArray(allCourses) ? allCourses : [];
   const firstName = user?.full_name ? user.full_name.trim().split(' ')[0] : 'Learner';
 
   // Greeting by current time
@@ -92,14 +94,15 @@ export default function DashboardHome({
       if (cached) return JSON.parse(cached);
     } catch (e) {}
 
-    const totalTopicsEstimate = enrolledCourses.length * 12;
-    const avgProg = enrolledCourses.length > 0
-      ? enrolledCourses.reduce((acc, c) => acc + (c.progress_percentage || 0), 0) / enrolledCourses.length
+    const initialCourses = Array.isArray(enrolledCourses) ? enrolledCourses : [];
+    const totalTopicsEstimate = initialCourses.length * 12;
+    const avgProg = initialCourses.length > 0
+      ? initialCourses.reduce((acc, c) => acc + (c.progress_percentage || 0), 0) / initialCourses.length
       : 0;
     const completedTopicsEstimate = Math.round((avgProg / 100) * (totalTopicsEstimate || 12));
 
     return {
-      streak_days: enrolledCourses.length > 0 ? 1 : 0,
+      streak_days: initialCourses.length > 0 ? 1 : 0,
       overall_score: avgProg > 0 ? Math.round(avgProg) : 0,
       topics_completed: completedTopicsEstimate,
       total_topics: totalTopicsEstimate,
@@ -125,9 +128,9 @@ export default function DashboardHome({
       } catch (err) {
         // Fallback calculations for offline or demo
         if (isMounted) {
-          const totalTopicsEstimate = enrolledCourses.length * 12;
-          const avgProg = enrolledCourses.length > 0
-            ? enrolledCourses.reduce((acc, c) => acc + (c.progress_percentage || 0), 0) / enrolledCourses.length
+          const totalTopicsEstimate = safeEnrolled.length * 12;
+          const avgProg = safeEnrolled.length > 0
+            ? safeEnrolled.reduce((acc, c) => acc + (c.progress_percentage || 0), 0) / safeEnrolled.length
             : 0;
           setStats((prev) => ({
             ...prev,
@@ -177,7 +180,7 @@ export default function DashboardHome({
     setIsAsking(true);
 
     try {
-      const activeCourseId = enrolledCourses.length > 0 ? enrolledCourses[0].id : 1;
+      const activeCourseId = safeEnrolled.length > 0 ? safeEnrolled[0].id : 1;
       const res = await tutorAPI.query({
         course_id: activeCourseId,
         query,
@@ -233,8 +236,8 @@ export default function DashboardHome({
     }
   ];
 
-  const quickEnrollCourses = (allCourses && allCourses.length > 0 ? allCourses : fallbackPreviewCourses)
-    .filter((c) => !enrolledCourses.some((e) => e.id === c.id))
+  const quickEnrollCourses = (safeAllCourses.length > 0 ? safeAllCourses : fallbackPreviewCourses)
+    .filter((c) => !safeEnrolled.some((e) => e?.id === c.id))
     .slice(0, 3);
 
   // Recommendations list
@@ -293,8 +296,8 @@ export default function DashboardHome({
                 <span className="inline-block animate-bounce">👋</span>
               </h1>
               <p className="text-sm text-[#8A90B4] font-medium">
-                {enrolledCourses.length > 0
-                  ? `You are currently enrolled in ${enrolledCourses.length} active ${enrolledCourses.length === 1 ? 'course' : 'courses'}. Track your progress below.`
+                {safeEnrolled.length > 0
+                  ? `You are currently enrolled in ${safeEnrolled.length} active ${safeEnrolled.length === 1 ? 'course' : 'courses'}. Track your progress below.`
                   : "Welcome to your personal CogniPath workspace! Enroll in courses below to begin your adaptive learning journey."}
               </p>
             </div>
@@ -320,9 +323,9 @@ export default function DashboardHome({
               <div>
                 <h2 className="font-heading text-xl font-bold text-[#ECEDF7] tracking-tight flex items-center gap-2">
                   <span>Continue Learning</span>
-                  {enrolledCourses.length > 0 && (
+                  {safeEnrolled.length > 0 && (
                     <span className="text-xs font-bold px-2 py-0.5 rounded-full bg-[#8B7CFF]/15 text-[#8B7CFF] border border-[#8B7CFF]/30">
-                      {enrolledCourses.length} Enrolled
+                      {safeEnrolled.length} Enrolled
                     </span>
                   )}
                 </h2>
@@ -353,11 +356,11 @@ export default function DashboardHome({
             </div>
 
             {/* Enrolled Courses Grid or Empty State */}
-            {enrolledCourses && enrolledCourses.length > 0 ? (
+            {safeEnrolled.length > 0 ? (
               <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-5">
-                {enrolledCourses.map((course, idx) => (
+                {safeEnrolled.map((course, idx) => (
                   <JourneyTrackCard
-                    key={course.id}
+                    key={course.id || idx}
                     course={course}
                     index={idx}
                     onSelectCourse={() => onNavigateTab('course-player', course.id)}
@@ -464,7 +467,7 @@ export default function DashboardHome({
                   key={rec.id}
                   recommendation={rec}
                   onStartLearning={() => {
-                    if (rec.course_id && enrolledCourses.some((c) => c.id === rec.course_id)) {
+                    if (rec.course_id && safeEnrolled.some((c) => c?.id === rec.course_id)) {
                       onNavigateTab('course-player', rec.course_id);
                     } else {
                       onNavigateTab('tutor');
@@ -693,7 +696,7 @@ export default function DashboardHome({
                 <div className="font-heading text-xl font-bold text-[#ECEDF7] mt-1">
                   {stats.topics_completed}
                   <span className="text-sm font-semibold text-[#8A90B4]/60">
-                    /{stats.total_topics || (enrolledCourses.length * 12 || 12)}
+                    /{stats.total_topics || (safeEnrolled.length * 12 || 12)}
                   </span>
                 </div>
               </div>

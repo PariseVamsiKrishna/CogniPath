@@ -283,16 +283,14 @@ export default function AcademicProfileModal({
         <div className="absolute -top-24 -left-24 w-64 h-64 bg-[#8B7CFF]/15 rounded-full blur-3xl pointer-events-none" />
         <div className="absolute -bottom-24 -right-24 w-64 h-64 bg-[#FF6F9C]/15 rounded-full blur-3xl pointer-events-none" />
 
-        {/* Close button (allowed if not strict first-time onboarding or if dismissible) */}
-        {!isOnboarding && (
-          <button
-            type="button"
-            onClick={onClose}
-            className="absolute top-5 right-5 p-2 rounded-full text-[#8A90B4] hover:text-[#ECEDF7] hover:bg-[#171C36] border border-transparent hover:border-[#262C4C] transition"
-          >
-            <X className="h-5 w-5" />
-          </button>
-        )}
+        {/* Close button */}
+        <button
+          type="button"
+          onClick={onClose}
+          className="absolute top-5 right-5 p-2 rounded-full text-[#8A90B4] hover:text-[#ECEDF7] hover:bg-[#171C36] border border-transparent hover:border-[#262C4C] transition cursor-pointer"
+        >
+          <X className="h-5 w-5" />
+        </button>
 
         {/* Header Title & Platform Badging */}
         <div className="flex items-start gap-4 mb-6">
@@ -699,15 +697,13 @@ export default function AcademicProfileModal({
 
           {/* Action Buttons */}
           <div className="pt-3 flex items-center justify-end gap-3">
-            {!isOnboarding && (
-              <button
-                type="button"
-                onClick={onClose}
-                className="px-5 py-2.5 rounded-xl bg-[#171C36] hover:bg-[#262C4C] border border-[#262C4C] text-xs font-semibold text-[#8A90B4] hover:text-[#ECEDF7] transition"
-              >
-                Cancel
-              </button>
-            )}
+            <button
+              type="button"
+              onClick={onClose}
+              className="px-5 py-2.5 rounded-xl bg-[#171C36] hover:bg-[#262C4C] border border-[#262C4C] text-xs font-semibold text-[#8A90B4] hover:text-[#ECEDF7] transition cursor-pointer"
+            >
+              {isOnboarding ? 'Skip for Now' : 'Cancel'}
+            </button>
 
             <button
               type="submit"

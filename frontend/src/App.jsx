@@ -17,6 +17,7 @@ import LandingPage from './pages/LandingPage';
 import CreateCourseModal from './components/CreateCourseModal';
 import AcademicProfileModal from './components/AcademicProfileModal';
 import CourseCatalogModal from './components/CourseCatalogModal';
+import ErrorBoundary from './components/ErrorBoundary';
 import { coursesAPI, authAPI } from './services/api';
 import { Globe, X, Check } from 'lucide-react';
 
@@ -52,16 +53,27 @@ export default function App() {
 
   useEffect(() => {
     const handleHashChange = () => {
-      if (window.location.hash === '#login' || window.location.pathname === '/login') {
-        setIsLoginView(true);
-      } else if (
+      if (user) {
+        setIsLoginView(false);
+        if (window.location.hash === '#login' || window.location.pathname === '/login') {
+          try {
+            window.history.replaceState(null, '', '/');
+          } catch (e) {}
+        }
+      } else {
+        if (window.location.hash === '#login' || window.location.pathname === '/login') {
+          setIsLoginView(true);
+        } else {
+          setIsLoginView(false);
+        }
+      }
+
+      if (
         window.location.hash === '#kshetra' ||
         window.location.search.includes('room=') ||
         window.location.hash.includes('join=')
       ) {
         setActiveTab('kshetra');
-      } else if (!user) {
-        setIsLoginView(false);
       }
     };
     handleHashChange();
@@ -220,14 +232,14 @@ export default function App() {
       if (storedUser) {
         try {
           activeUser = JSON.parse(storedUser);
-          setUser(activeUser);
-          if (!activeUser.profile_completed) {
-            setShowProfileModal(true);
-          }
-          if (activeUser.role === 'EDUCATOR') {
-            setActiveTab('analytics');
-          } else {
-            setActiveTab('dashboard');
+          if (activeUser && (activeUser.email || activeUser.id)) {
+            setUser(activeUser);
+            setIsLoginView(false);
+            if (activeUser.role === 'EDUCATOR') {
+              setActiveTab('analytics');
+            } else {
+              setActiveTab('dashboard');
+            }
           }
         } catch (e) {
           console.error(e);
@@ -252,22 +264,40 @@ export default function App() {
   }, []);
 
   const handleLoginSuccess = async (userData) => {
-    setUser(userData);
+    const validUser = (userData && typeof userData === 'object') ? (userData.user || userData) : null;
+    if (!validUser || (!validUser.email && !validUser.id)) {
+      console.error('Invalid user data received in handleLoginSuccess:', userData);
+      return;
+    }
+
+    // Persist verified user session
+    try {
+      localStorage.setItem('cognipath_user', JSON.stringify(validUser));
+      if (!localStorage.getItem('cognipath_token')) {
+        localStorage.setItem('cognipath_token', 'local_jwt_' + (validUser.id || Date.now()));
+      }
+    } catch (e) {}
+
+    setUser(validUser);
     setIsLoginView(false);
     setSelectedCourseId(null);
-    if (window.location.hash === '#login') {
-      window.history.pushState(null, '', window.location.pathname);
-    }
-    if (!userData.profile_completed) {
-      setShowProfileModal(true);
-    } else {
-      setShowProfileModal(false);
-    }
-    await fetchEnrolledCourses(userData);
-    if (userData.role === 'EDUCATOR') {
-      setActiveTab('analytics');
-    } else {
-      setActiveTab('dashboard');
+    setShowProfileModal(false);
+
+    try {
+      if (window.location.hash === '#login' || window.location.hash.includes('login') || window.location.pathname === '/login') {
+        window.history.replaceState(null, '', '/');
+      }
+    } catch (e) {}
+
+    // Immediately display user role workspace without delay
+    const targetTab = validUser.role === 'EDUCATOR' ? 'analytics' : 'dashboard';
+    setActiveTab(targetTab);
+
+    // Fetch personal enrollments in background
+    try {
+      await fetchEnrolledCourses(validUser);
+    } catch (err) {
+      console.warn('Enrolled courses background fetch notice:', err);
     }
   };
 
@@ -397,119 +427,150 @@ export default function App() {
             ? 'overflow-hidden flex flex-col'
             : 'overflow-y-auto'
         }`}>
-          {/* Dashboard Home View */}
-          {activeTab === 'dashboard' && (
-            <DashboardHome
-              user={user}
-              onNavigateTab={handleNavigate}
-              targetLang={targetLang}
-              enrolledCourses={enrolledCourses}
-              allCourses={courses}
-              onEnrollCourse={handleEnrollCourse}
-              onUnenrollCourse={handleUnenrollCourse}
-              onRefreshCourses={() => fetchEnrolledCourses(user)}
-              onOpenExploreCatalog={() => setShowCatalogModal(true)}
-            />
-          )}
+          <ErrorBoundary onReset={() => setActiveTab(user.role === 'EDUCATOR' ? 'analytics' : 'dashboard')}>
+            {/* Dashboard Home View */}
+            {activeTab === 'dashboard' && (
+              <DashboardHome
+                user={user}
+                onNavigateTab={handleNavigate}
+                targetLang={targetLang}
+                enrolledCourses={enrolledCourses}
+                allCourses={courses}
+                onEnrollCourse={handleEnrollCourse}
+                onUnenrollCourse={handleUnenrollCourse}
+                onRefreshCourses={() => fetchEnrolledCourses(user)}
+                onOpenExploreCatalog={() => setShowCatalogModal(true)}
+              />
+            )}
 
-          {/* Hierarchical Course Delivery & View-Only PDF Player */}
-          {(activeTab === 'course-player' || activeTab === 'courses') && (
-            <CoursePlayer
-              courseId={selectedCourseId}
-              user={user}
-              onNavigateTab={handleNavigate}
-              courses={enrolledCourses.length > 0 ? enrolledCourses : (user?.role === 'EDUCATOR' ? courses : [])}
-              allCourses={courses}
-              enrolledCourses={enrolledCourses}
-              onSelectCourse={setSelectedCourseId}
-              onRefreshCourses={() => fetchEnrolledCourses(user)}
-              onEnrollCourse={handleEnrollCourse}
-              onUnenrollCourse={handleUnenrollCourse}
-            />
-          )}
+            {/* Hierarchical Course Delivery & View-Only PDF Player */}
+            {(activeTab === 'course-player' || activeTab === 'courses') && (
+              <CoursePlayer
+                courseId={selectedCourseId}
+                user={user}
+                onNavigateTab={handleNavigate}
+                courses={enrolledCourses.length > 0 ? enrolledCourses : (user?.role === 'EDUCATOR' ? courses : [])}
+                allCourses={courses}
+                enrolledCourses={enrolledCourses}
+                onSelectCourse={setSelectedCourseId}
+                onRefreshCourses={() => fetchEnrolledCourses(user)}
+                onEnrollCourse={handleEnrollCourse}
+                onUnenrollCourse={handleUnenrollCourse}
+              />
+            )}
 
-          {/* Dual-Engine Assessment System (Exams, Quizzes & AI Suggestion Studio) */}
-          {activeTab === 'exam-studio' && (
-            <ExamStudio
-              courseId={selectedCourseId}
-              user={user}
-              onNavigateTab={handleNavigate}
-            />
-          )}
+            {/* Dual-Engine Assessment System (Exams, Quizzes & AI Suggestion Studio) */}
+            {activeTab === 'exam-studio' && (
+              <ExamStudio
+                courseId={selectedCourseId}
+                user={user}
+                onNavigateTab={handleNavigate}
+              />
+            )}
 
-          {/* Assignment Engine & AI Auto-Evaluation with Criteria Rubrics */}
-          {activeTab === 'assignments' && (
-            <AssignmentView
-              courseId={selectedCourseId}
-              user={user}
-            />
-          )}
+            {/* Assignment Engine & AI Auto-Evaluation with Criteria Rubrics */}
+            {activeTab === 'assignments' && (
+              <AssignmentView
+                courseId={selectedCourseId}
+                user={user}
+              />
+            )}
 
-          {/* AI Tutor View with Socratic Mode & Concept Mindmaps */}
-          {activeTab === 'tutor' && (
-            <StudentPortal
-              courseId={selectedCourseId}
-              targetLang={targetLang}
-              courses={courses}
-            />
-          )}
+            {/* AI Tutor View with Socratic Mode & Concept Mindmaps */}
+            {activeTab === 'tutor' && (
+              <StudentPortal
+                courseId={selectedCourseId}
+                targetLang={targetLang}
+                courses={courses}
+              />
+            )}
 
-          {/* Adaptive Learning Roadmap & Knowledge Gap Radar */}
-          {activeTab === 'roadmap' && (
-            <LearningRoadmapView
-              courseId={selectedCourseId}
-              onNavigateTab={setActiveTab}
-            />
-          )}
+            {/* Adaptive Learning Roadmap & Knowledge Gap Radar */}
+            {activeTab === 'roadmap' && (
+              <LearningRoadmapView
+                courseId={selectedCourseId}
+                onNavigateTab={setActiveTab}
+              />
+            )}
 
-          {/* Spaced Repetition SM-2 Quiz View */}
-          {(activeTab === 'quizzes' || activeTab === 'flashcards') && (
-            <SpacedQuizView courseId={selectedCourseId} />
-          )}
+            {/* Spaced Repetition SM-2 Quiz View */}
+            {(activeTab === 'quizzes' || activeTab === 'flashcards') && (
+              <SpacedQuizView courseId={selectedCourseId} />
+            )}
 
-          {/* Educator Analytics & Curriculum Health Diagnostic Studio */}
-          {activeTab === 'analytics' && (
-            <EducatorDashboard
-              courseId={selectedCourseId}
-              courses={courses}
-              onSelectCourse={setSelectedCourseId}
-              onNavigateTab={handleNavigate}
-              onOpenCreateCourse={() => setShowCreateCourseModal(true)}
-            />
-          )}
+            {/* Educator Analytics & Curriculum Health Diagnostic Studio */}
+            {activeTab === 'analytics' && (
+              <EducatorDashboard
+                courseId={selectedCourseId}
+                courses={courses}
+                onSelectCourse={setSelectedCourseId}
+                onNavigateTab={handleNavigate}
+                onOpenCreateCourse={() => setShowCreateCourseModal(true)}
+              />
+            )}
 
-          {/* Native Live Kshetra Studio & Virtual Classroom */}
-          {activeTab === 'kshetra' && (
-            <LiveKshetraStudio
-              courseId={selectedCourseId}
-              user={user}
-              onNavigateTab={handleNavigate}
-            />
-          )}
+            {/* Native Live Kshetra Studio & Virtual Classroom */}
+            {activeTab === 'kshetra' && (
+              <LiveKshetraStudio
+                courseId={selectedCourseId}
+                user={user}
+                onNavigateTab={handleNavigate}
+              />
+            )}
 
-          {/* Native In-App Learning Pods with Live Collaborative Whiteboard */}
-          {activeTab === 'pods' && (
-            <LearningPods
-              courseId={selectedCourseId}
-              user={user}
-            />
-          )}
+            {/* Native In-App Learning Pods with Live Collaborative Whiteboard */}
+            {activeTab === 'pods' && (
+              <LearningPods
+                courseId={selectedCourseId}
+                user={user}
+              />
+            )}
 
-          {/* Native In-App Community Channels */}
-          {activeTab === 'community' && (
-            <CommunityFeed
-              courseId={selectedCourseId}
-              user={user}
-            />
-          )}
+            {/* Native In-App Community Channels */}
+            {activeTab === 'community' && (
+              <CommunityFeed
+                courseId={selectedCourseId}
+                user={user}
+              />
+            )}
 
-          {/* Platform Overview & SIH Landing View */}
-          {activeTab === 'landing' && (
-            <LandingPage
-              onOpenLogin={() => {}}
-              onQuickLogin={handleQuickLogin}
-            />
-          )}
+            {/* Platform Overview & SIH Landing View */}
+            {activeTab === 'landing' && (
+              <LandingPage
+                onOpenLogin={() => {}}
+                onQuickLogin={handleQuickLogin}
+              />
+            )}
+
+            {/* Robust Fallback in case activeTab is unhandled */}
+            {![
+              'dashboard', 'course-player', 'courses', 'exam-studio',
+              'assignments', 'tutor', 'roadmap', 'quizzes', 'flashcards',
+              'analytics', 'kshetra', 'pods', 'community', 'landing'
+            ].includes(activeTab) && (
+              user.role === 'EDUCATOR' ? (
+                <EducatorDashboard
+                  courseId={selectedCourseId}
+                  courses={courses}
+                  onSelectCourse={setSelectedCourseId}
+                  onNavigateTab={handleNavigate}
+                  onOpenCreateCourse={() => setShowCreateCourseModal(true)}
+                />
+              ) : (
+                <DashboardHome
+                  user={user}
+                  onNavigateTab={handleNavigate}
+                  targetLang={targetLang}
+                  enrolledCourses={enrolledCourses}
+                  allCourses={courses}
+                  onEnrollCourse={handleEnrollCourse}
+                  onUnenrollCourse={handleUnenrollCourse}
+                  onRefreshCourses={() => fetchEnrolledCourses(user)}
+                  onOpenExploreCatalog={() => setShowCatalogModal(true)}
+                />
+              )
+            )}
+          </ErrorBoundary>
         </main>
       </div>
 
@@ -591,7 +652,7 @@ export default function App() {
         onClose={() => setShowProfileModal(false)}
         user={user}
         onProfileUpdated={handleProfileUpdated}
-        isOnboarding={user ? !user.profile_completed : false}
+        isOnboarding={false}
       />
     </div>
   );
