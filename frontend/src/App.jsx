@@ -334,20 +334,33 @@ export default function App() {
   };
 
   const handleQuickLogin = async (demoEmail, demoRole) => {
+    const defaultUser = {
+      id: demoRole === 'EDUCATOR' ? 1 : 2,
+      email: demoEmail,
+      full_name: demoRole === 'EDUCATOR' ? 'Prof. Rajesh Ramanujan' : 'Alex Kumar',
+      role: demoRole,
+      university:
+        demoRole === 'EDUCATOR'
+          ? 'Indian Institute of Technology Bombay (IIT Bombay)'
+          : 'Birla Institute of Technology & Science (BITS Pilani)',
+      department: 'Computer Science & Engineering (CSE)',
+      profile_completed: true
+    };
+
     try {
       const data = await authAPI.login(demoEmail, 'password123');
-      handleLoginSuccess(data.user);
+      const candidate = (data && typeof data === 'object') ? (data.user || data) : null;
+      if (candidate && (candidate.email || candidate.id)) {
+        handleLoginSuccess({ ...candidate, profile_completed: true });
+        return;
+      }
     } catch (err) {
-      const mockUser = {
-        id: demoRole === 'EDUCATOR' ? 1 : 2,
-        email: demoEmail,
-        full_name: demoRole === 'EDUCATOR' ? 'Prof. Rajesh Ramanujan' : 'Alex Kumar',
-        role: demoRole
-      };
-      localStorage.setItem('cognipath_token', 'mock_token_sih2026');
-      localStorage.setItem('cognipath_user', JSON.stringify(mockUser));
-      handleLoginSuccess(mockUser);
+      console.warn('Backend quick login notice, using demo profile:', err?.message);
     }
+
+    localStorage.setItem('cognipath_token', 'mock_token_sih2026');
+    localStorage.setItem('cognipath_user', JSON.stringify(defaultUser));
+    handleLoginSuccess(defaultUser);
   };
 
   const handleSwitchRole = () => {
@@ -396,7 +409,11 @@ export default function App() {
   }
 
   return (
-    <div className="h-screen max-h-screen overflow-hidden bg-[#0A0D1C] flex flex-col text-[#ECEDF7] antialiased selection:bg-[#8B7CFF] selection:text-white">
+    <ErrorBoundary onReset={() => {
+      localStorage.removeItem('cognipath_user');
+      window.location.reload();
+    }}>
+      <div className="h-screen max-h-screen overflow-hidden bg-[#0A0D1C] flex flex-col text-[#ECEDF7] antialiased selection:bg-[#8B7CFF] selection:text-white">
       {/* Top Navbar */}
       <Navbar
         user={user}
@@ -655,5 +672,6 @@ export default function App() {
         isOnboarding={false}
       />
     </div>
+    </ErrorBoundary>
   );
 }

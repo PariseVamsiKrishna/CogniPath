@@ -349,35 +349,43 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
     setError('');
     setSuccess('');
     setLoading(true);
+    const mockUser = {
+      id: demoRole === 'EDUCATOR' ? 1 : 2,
+      email: demoEmail,
+      full_name: demoRole === 'EDUCATOR' ? 'Prof. Rajesh Ramanujan' : 'Alex Kumar',
+      role: demoRole,
+      university:
+        demoRole === 'EDUCATOR'
+          ? 'Indian Institute of Technology Bombay (IIT Bombay)'
+          : 'Birla Institute of Technology & Science (BITS Pilani)',
+      department: 'Computer Science & Engineering (CSE)',
+      institutional_email:
+        demoRole === 'EDUCATOR'
+          ? 'rajesh.cs@iitb.ac.in'
+          : 'alex.2022@pilani.bits-pilani.ac.in',
+      student_year: '3rd Year',
+      highest_qualification: 'Ph.D. / Doctorate',
+      designation: 'Professor',
+      profile_completed: true
+    };
+
     try {
       const data = await authAPI.login(demoEmail, 'password123');
-      onLoginSuccess(data.user);
+      const candidate = (data && typeof data === 'object') ? (data.user || data) : null;
+      if (candidate && (candidate.email || candidate.id)) {
+        localStorage.setItem('cognipath_user', JSON.stringify({ ...candidate, profile_completed: true }));
+        onLoginSuccess({ ...candidate, profile_completed: true });
+        return;
+      }
     } catch (err) {
-      const mockUser = {
-        id: demoRole === 'EDUCATOR' ? 1 : 2,
-        email: demoEmail,
-        full_name: demoRole === 'EDUCATOR' ? 'Prof. Rajesh Ramanujan' : 'Alex Kumar',
-        role: demoRole,
-        university:
-          demoRole === 'EDUCATOR'
-            ? 'Indian Institute of Technology Bombay (IIT Bombay)'
-            : 'Birla Institute of Technology & Science (BITS Pilani)',
-        department: 'Computer Science & Engineering (CSE)',
-        institutional_email:
-          demoRole === 'EDUCATOR'
-            ? 'rajesh.cs@iitb.ac.in'
-            : 'alex.2022@pilani.bits-pilani.ac.in',
-        student_year: '3rd Year',
-        highest_qualification: 'Ph.D. / Doctorate',
-        designation: 'Professor',
-        profile_completed: true
-      };
-      localStorage.setItem('cognipath_token', 'mock_token_sih2026');
-      localStorage.setItem('cognipath_user', JSON.stringify(mockUser));
-      onLoginSuccess(mockUser);
+      console.warn('Backend login notice, using demo profile:', err?.message);
     } finally {
       setLoading(false);
     }
+
+    localStorage.setItem('cognipath_token', 'mock_token_sih2026');
+    localStorage.setItem('cognipath_user', JSON.stringify(mockUser));
+    onLoginSuccess(mockUser);
   };
 
   return (

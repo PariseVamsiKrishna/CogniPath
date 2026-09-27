@@ -12,7 +12,8 @@ import {
   Globe,
   ShieldCheck,
   Sparkles,
-  PanelLeftClose
+  PanelLeftClose,
+  Users
 } from 'lucide-react';
 
 export default function Sidebar({
