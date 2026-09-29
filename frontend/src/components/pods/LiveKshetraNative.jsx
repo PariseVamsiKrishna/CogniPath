@@ -49,12 +49,27 @@ const WHITEBOARD_COLORS = [
   '#f59e0b'  // Amber
 ];
 
+function SignalBars({ strength }) {
+  // strength 0-4
+  const bars = [1, 2, 3, 4];
+  const colors = { 4: '#10b981', 3: '#10b981', 2: '#f59e0b', 1: '#f97316', 0: '#ef4444' };
+  const color = colors[strength] || '#6b7280';
+  return (
+    <div className="flex items-end gap-0.5" title={`Signal: ${['No signal','Poor','Fair','Good','Excellent'][strength]}`}>
+      {bars.map(b => (
+        <div key={b} style={{ height: `${b * 4}px`, width: '3px', borderRadius: '1px', background: b <= strength ? color : '#374151' }} />
+      ))}
+    </div>
+  );
+}
+
 function RemotePeerTile({
   peer,
   stream,
   isHost,
   onMutePeer,
-  onKickPeer
+  onKickPeer,
+  signalStrength = 3
 }) {
   const videoRef = useRef(null);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
@@ -62,6 +77,7 @@ function RemotePeerTile({
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
+      videoRef.current.muted = false;
       const playPromise = videoRef.current.play();
       if (playPromise !== undefined) {
         playPromise
@@ -154,6 +170,7 @@ function RemotePeerTile({
           </span>
         )}
         {peer.handRaised && <span className="animate-bounce">✋</span>}
+        <SignalBars strength={signalStrength} />
       </div>
 
       {/* Peer Mic Status */}
@@ -257,6 +274,7 @@ export default function LiveKshetraNative({
 
   // WebRTC Mesh & WebSocket Refs and State
   const [remoteStreams, setRemoteStreams] = useState({});
+  const [remoteStats, setRemoteStats] = useState({});
   const peerConnectionsRef = useRef({});
   const wsRef = useRef(null);
   const pingTimerRef = useRef(null);
@@ -806,8 +824,42 @@ export default function LiveKshetraNative({
   }, [cleanCode]);
 
   // ---------------------------------------------------------------------------
-  // 3. TIMERS (SESSION & RECORDING)
+  // 3. TIMERS (SESSION, RECORDING, & STATS)
   // ---------------------------------------------------------------------------
+  useEffect(() => {
+    const statsTimer = setInterval(async () => {
+      const newStats = {};
+      for (const [clientId, pc] of Object.entries(peerConnectionsRef.current)) {
+        if (pc.connectionState === 'connected') {
+          try {
+            const stats = await pc.getStats();
+            let rtt = null;
+            stats.forEach((report) => {
+              if (report.type === 'candidate-pair' && report.state === 'succeeded') {
+                if (report.currentRoundTripTime !== undefined) {
+                  rtt = report.currentRoundTripTime * 1000;
+                }
+              }
+            });
+            if (rtt !== null) {
+              if (rtt < 50) newStats[clientId] = 4;
+              else if (rtt < 100) newStats[clientId] = 3;
+              else if (rtt < 200) newStats[clientId] = 2;
+              else if (rtt < 500) newStats[clientId] = 1;
+              else newStats[clientId] = 0;
+            }
+          } catch (e) {
+            console.warn('[WebRTC] getStats error', e);
+          }
+        }
+      }
+      if (Object.keys(newStats).length > 0) {
+        setRemoteStats(prev => ({ ...prev, ...newStats }));
+      }
+    }, 3000);
+    return () => clearInterval(statsTimer);
+  }, []);
+
   useEffect(() => {
     const timer = setInterval(() => {
       setElapsedSeconds((prev) => prev + 1);
@@ -1514,6 +1566,7 @@ export default function LiveKshetraNative({
                     </span>
                   )}
                   {handRaised && <span className="animate-bounce">✋</span>}
+                  <SignalBars strength={4} />
                 </div>
 
                 {/* Mic Status Badge */}
@@ -1535,6 +1588,7 @@ export default function LiveKshetraNative({
                   isHost={isHostState}
                   onMutePeer={handleMutePeer}
                   onKickPeer={handleKickPeer}
+                  signalStrength={remoteStats[peer.client_id || peer.id] ?? 3}
                 />
               ))}
 
