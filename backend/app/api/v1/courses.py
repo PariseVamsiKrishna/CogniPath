@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, s
 from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_, delete
+from sqlalchemy import or_, delete, update
 
 from datetime import datetime, timezone
 import json
@@ -18,7 +18,8 @@ from app.models.models import (
     Course, Enrollment, User, CommunityChannel, CommunityMessage, Module, Topic,
     ModuleResource, StudentBadge, Exam, ExamQuestion, ExamSubmission, CourseRating, TopicRating,
     StudentActivityLog, Document, Quiz, QuizQuestion, StudentQuizAttempt, StudentConceptRetention,
-    LearningPod, PodMessage, Assignment, AssignmentSubmission
+    LearningPod, PodMessage, PodBlacklist, Assignment, AssignmentSubmission,
+    StudentSkillMastery, CurriculumAuditReport
 )
 from app.schemas.schemas import (
     CourseCreate, CourseResponse, CourseHierarchyResponse,
@@ -140,7 +141,7 @@ async def explore_courses(
     q: Optional[str] = None,
     category: Optional[str] = None,
     sort_by: str = "rating",  # "rating" | "popular" | "newest"
-    current_user: Optional[User] = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -456,7 +457,7 @@ async def rate_topic(
 @router.get("/topics/{topic_id}/ratings", response_model=TopicRatingSummary)
 async def get_topic_ratings(
     topic_id: int,
-    current_user: Optional[User] = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Get rating summary and current user rating for a topic."""
@@ -572,7 +573,7 @@ async def rate_course(
 @router.get("/{course_id}/ratings", response_model=CourseRatingsSummary)
 async def get_course_ratings(
     course_id: int,
-    current_user: Optional[User] = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve full reviews and star rating distribution for a course."""
@@ -647,6 +648,11 @@ async def enroll_in_course(
     db: AsyncSession = Depends(get_db)
 ):
     """Enroll student into course."""
+    c_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = c_res.scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found or has been deleted.")
+
     existing = await db.execute(
         select(Enrollment).where(
             Enrollment.user_id == current_user.id,
@@ -707,6 +713,11 @@ async def delete_course_permanently(
             detail="Only the educator who created this course can permanently delete it."
         )
 
+    # 0. Break circular foreign key on module_exam_id before deleting exams/modules
+    await db.execute(
+        update(Module).where(Module.course_id == course_id).values(module_exam_id=None)
+    )
+
     # 1. Clean up community messages & channels
     ch_res = await db.execute(select(CommunityChannel).where(CommunityChannel.course_id == course_id))
     channels = ch_res.scalars().all()
@@ -714,10 +725,11 @@ async def delete_course_permanently(
         await db.execute(delete(CommunityMessage).where(CommunityMessage.channel_id == ch.id))
         await db.delete(ch)
 
-    # 2. Clean up learning pods & pod messages
+    # 2. Clean up learning pods, pod blacklists & pod messages
     pod_res = await db.execute(select(LearningPod).where(LearningPod.course_id == course_id))
     pods = pod_res.scalars().all()
     for pod in pods:
+        await db.execute(delete(PodBlacklist).where(PodBlacklist.pod_id == pod.id))
         await db.execute(delete(PodMessage).where(PodMessage.pod_id == pod.id))
         await db.delete(pod)
 
@@ -737,37 +749,40 @@ async def delete_course_permanently(
         await db.execute(delete(ExamQuestion).where(ExamQuestion.exam_id == ex.id))
         await db.delete(ex)
 
-    # 5. Clean up assignments & submissions
-    a_res = await db.execute(select(Assignment).where(Assignment.course_id == course_id))
-    assignments = a_res.scalars().all()
-    for a in assignments:
-        await db.execute(delete(AssignmentSubmission).where(AssignmentSubmission.assignment_id == a.id))
-        await db.delete(a)
-
-    # 6. Clean up modules, topics, resources & topic ratings
+    # 5. Clean up assignments, submissions, topics, resources & topic ratings per module
     m_res = await db.execute(select(Module).where(Module.course_id == course_id))
     modules = m_res.scalars().all()
     for m in modules:
+        a_res = await db.execute(select(Assignment).where(Assignment.module_id == m.id))
+        assignments = a_res.scalars().all()
+        for a in assignments:
+            await db.execute(delete(AssignmentSubmission).where(AssignmentSubmission.assignment_id == a.id))
+            await db.delete(a)
+
         t_res = await db.execute(select(Topic).where(Topic.module_id == m.id))
         topics = t_res.scalars().all()
         for t in topics:
             await db.execute(delete(TopicRating).where(TopicRating.topic_id == t.id))
             await db.delete(t)
+
         await db.execute(delete(ModuleResource).where(ModuleResource.module_id == m.id))
         await db.delete(m)
 
-    # 7. Clean up enrollments, documents, retentions, badges, ratings
+    # 6. Clean up enrollments, documents, retentions, badges, ratings, activity logs, mastery, audit reports
     await db.execute(delete(Enrollment).where(Enrollment.course_id == course_id))
     await db.execute(delete(Document).where(Document.course_id == course_id))
     await db.execute(delete(StudentConceptRetention).where(StudentConceptRetention.course_id == course_id))
     await db.execute(delete(StudentBadge).where(StudentBadge.course_id == course_id))
     await db.execute(delete(CourseRating).where(CourseRating.course_id == course_id))
+    await db.execute(delete(StudentActivityLog).where(StudentActivityLog.course_id == course_id))
+    await db.execute(delete(StudentSkillMastery).where(StudentSkillMastery.course_id == course_id))
+    await db.execute(delete(CurriculumAuditReport).where(CurriculumAuditReport.course_id == course_id))
 
-    # 8. Delete course itself
+    # 7. Delete course itself
     await db.delete(course)
     await db.commit()
 
-    # 9. Clean up Chroma vector store
+    # 8. Clean up Chroma vector store
     try:
         chroma_service.delete_collection(course_id)
     except Exception as e:
@@ -1201,7 +1216,7 @@ async def save_module_exam(
 @router.get("/tabs-summary", response_model=TabsSummaryResponse)
 @module_router.get("/user/courses/tabs-summary", response_model=TabsSummaryResponse)
 async def get_tabs_summary(
-    current_user: Optional[User] = Depends(get_current_user),
+    current_user: Optional[User] = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """

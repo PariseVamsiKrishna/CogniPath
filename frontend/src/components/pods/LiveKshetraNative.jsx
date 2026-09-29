@@ -110,16 +110,19 @@ function RemotePeerTile({
     };
   }, [stream]);
 
-  // Video track rendering (ALWAYS muted to guarantee autoplay without policy blocks)
+  // Video track rendering (ALWAYS active and muted to guarantee continuous frame decoding)
   useEffect(() => {
     if (videoRef.current && stream) {
       videoRef.current.srcObject = stream;
       videoRef.current.muted = true;
-      videoRef.current.play().catch((err) => {
-        console.warn('[WebRTC] Video play notice:', err);
-      });
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise.catch((err) => {
+          console.warn('[WebRTC] Video play notice:', err);
+        });
+      }
     }
-  }, [stream]);
+  }, [stream, hasVideoTrack, peer.videoOn]);
 
   // Audio track playback via dedicated HTML5 Audio element
   useEffect(() => {
@@ -147,6 +150,8 @@ function RemotePeerTile({
     }
   };
 
+  const showAvatar = !hasVideoTrack || peer.videoOn === false;
+
   return (
     <div
       className={`relative rounded-2xl bg-[#0e1424] border transition-all duration-300 flex flex-col items-center justify-center overflow-hidden min-h-[190px] shadow-xl group ${
@@ -158,14 +163,34 @@ function RemotePeerTile({
       {/* Dedicated Hidden Audio Element for Reliable Remote Audio Playback */}
       <audio ref={audioRef} autoPlay playsInline />
 
-      {/* Remote Video Stream (Muted so browser NEVER blocks visual rendering) */}
+      {/* Remote Video Stream (Always mounted & playing, muted to bypass autoplay restrictions) */}
       <video
         ref={videoRef}
         autoPlay
         playsInline
         muted
-        className={`w-full h-full object-cover ${hasVideoTrack && peer.videoOn !== false ? 'block' : 'hidden'}`}
+        className="w-full h-full object-cover"
       />
+
+      {/* Avatar Overlay when Camera is Off or Video Track is Initializing */}
+      {showAvatar && !autoplayBlocked && (
+        <div className="absolute inset-0 bg-[#0e1424] flex flex-col items-center justify-center space-y-3 z-10">
+          <div
+            className={`h-20 w-20 rounded-full flex items-center justify-center text-xl font-bold font-heading shadow-xl transition-transform ${
+              peer.isSpeaking && peer.audioOn !== false ? 'scale-110 ring-4 ring-emerald-400/30' : ''
+            }`}
+            style={{
+              background: `linear-gradient(135deg, ${peer.color || '#8B7CFF'}, #171C36)`,
+              color: '#ECEDF7'
+            }}
+          >
+            {peer.avatar || peer.name?.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase() || 'P'}
+          </div>
+          <span className="text-xs font-semibold text-slate-400">
+            {peer.videoOn === false ? 'Camera turned off' : 'Connecting stream...'}
+          </span>
+        </div>
+      )}
 
       {/* Autoplay Audio Blocked Overlay */}
       {autoplayBlocked && (
@@ -180,28 +205,8 @@ function RemotePeerTile({
         </button>
       )}
 
-      {/* Avatar Fallback if Camera is Off or stream video not yet ready */}
-      {(!hasVideoTrack || peer.videoOn === false) && !autoplayBlocked && (
-        <div className="flex flex-col items-center justify-center space-y-3">
-          <div
-            className={`h-20 w-20 rounded-full flex items-center justify-center text-xl font-bold font-heading shadow-xl transition-transform ${
-              peer.isSpeaking && peer.audioOn !== false ? 'scale-110 ring-4 ring-emerald-400/30' : ''
-            }`}
-            style={{
-              background: `linear-gradient(135deg, ${peer.color || '#8B7CFF'}, #171C36)`,
-              color: '#ECEDF7'
-            }}
-          >
-            {peer.avatar || peer.name?.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase() || 'P'}
-          </div>
-          <span className="text-xs font-semibold text-slate-400">
-            {peer.videoOn === false ? 'Camera turned off' : 'Connected'}
-          </span>
-        </div>
-      )}
-
       {/* Peer Name Tag */}
-      <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-[#0A0D1C]/80 backdrop-blur-md px-3 py-1 rounded-xl border border-white/10 text-xs font-bold">
+      <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-[#0A0D1C]/80 backdrop-blur-md px-3 py-1 rounded-xl border border-white/10 text-xs font-bold z-20">
         <span>{peer.name}</span>
         {(peer.role === 'EDUCATOR' || peer.is_host) && (
           <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#FFC15E]/20 text-[#FFC15E] border border-[#FFC15E]/40">
@@ -214,7 +219,7 @@ function RemotePeerTile({
 
       {/* Peer Mic Status */}
       <div
-        className={`absolute top-3 right-3 p-1.5 rounded-full ${
+        className={`absolute top-3 right-3 p-1.5 rounded-full z-20 ${
           peer.audioOn !== false ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
         }`}
       >
@@ -223,7 +228,7 @@ function RemotePeerTile({
 
       {/* Host Quick Actions (Mute / Kick on hover) */}
       {isHost && (
-        <div className="absolute top-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5 bg-[#0A0D1C]/90 px-2 py-1 rounded-xl border border-white/10 z-10">
+        <div className="absolute top-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5 bg-[#0A0D1C]/90 px-2 py-1 rounded-xl border border-white/10 z-30">
           {peer.audioOn !== false && (
             <button
               type="button"
@@ -477,7 +482,23 @@ export default function LiveKshetraNative({
       { urls: 'stun:stun2.l.google.com:19302' },
       { urls: 'stun:stun3.l.google.com:19302' },
       { urls: 'stun:stun4.l.google.com:19302' },
-      { urls: 'stun:stun.cloudflare.com:3478' }
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      { urls: 'stun:openrelay.metered.ca:80' },
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelay',
+        credential: 'openrelay'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelay',
+        credential: 'openrelay'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+        username: 'openrelay',
+        credential: 'openrelay'
+      }
     ];
     if (import.meta.env.VITE_TURN_URL) {
       iceServers.push({
