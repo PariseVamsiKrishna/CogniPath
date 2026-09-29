@@ -32,10 +32,14 @@ export default function EducatorDashboard({
   onNavigateTab,
   onOpenCreateCourse,
   onDeleteCoursePermanently,
-  onRefreshCourses
+  onRefreshCourses,
+  user
 }) {
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const activeCourse = courses.find((c) => c.id === courseId) || courses[0];
+  const isCreator = Boolean(
+    activeCourse && (user?.role === 'ADMIN' || activeCourse.educator_id === user?.id)
+  );
   const [overview, setOverview] = useState({
     total_students: 32,
     active_students_last_week: 26,
@@ -244,7 +248,7 @@ export default function EducatorDashboard({
             </button>
           )}
 
-          {activeCourse && (
+          {activeCourse && isCreator && (
             <button
               onClick={() => setShowDeleteModal(true)}
               className="flex items-center gap-2 px-3.5 py-2.5 rounded-xl bg-red-950/40 hover:bg-red-900/60 text-red-300 text-xs font-bold transition border border-red-500/30 hover:border-red-500/50 shadow-sm"
@@ -605,7 +609,7 @@ export default function EducatorDashboard({
           onClose={() => setShowDeleteModal(false)}
           course={activeCourse}
           isEducator={true}
-          isCreator={true}
+          isCreator={isCreator}
           onConfirm={async (c) => {
             if (onDeleteCoursePermanently) {
               await onDeleteCoursePermanently(c.id);

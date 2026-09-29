@@ -558,6 +558,7 @@ export default function App() {
                 onOpenCreateCourse={() => setShowCreateCourseModal(true)}
                 onDeleteCoursePermanently={handleDeleteCoursePermanently}
                 onRefreshCourses={() => fetchEnrolledCourses(user)}
+                user={user}
               />
             )}
 
