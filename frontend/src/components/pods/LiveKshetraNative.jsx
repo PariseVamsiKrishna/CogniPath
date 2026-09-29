@@ -356,14 +356,34 @@ export default function LiveKshetraNative({
           localVideoRef.current.srcObject = stream;
         }
 
-        // Add tracks to any already-created peer connections
-        Object.values(peerConnectionsRef.current).forEach((pc) => {
-          stream.getTracks().forEach((track) => {
-            try {
-              pc.addTrack(track, stream);
-            } catch (e) {}
-          });
+        // Add tracks to any already-created peer connections and re-negotiate
+        const pcsNeedingRenegotiation = [];
+        Object.entries(peerConnectionsRef.current).forEach(([peerId, pc]) => {
+          const existingSenders = pc.getSenders().filter(s => s.track !== null);
+          if (existingSenders.length === 0) {
+            stream.getTracks().forEach((track) => {
+              try { pc.addTrack(track, stream); } catch (e) {}
+            });
+            pcsNeedingRenegotiation.push({ peerId, pc });
+          }
         });
+        if (pcsNeedingRenegotiation.length > 0 && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          for (const { peerId, pc } of pcsNeedingRenegotiation) {
+            try {
+              const offer = await pc.createOffer();
+              await pc.setLocalDescription(offer);
+              wsRef.current.send(JSON.stringify({
+                type: 'SIGNAL_OFFER',
+                from_client: myClientId,
+                to_client: peerId,
+                sdp: pc.localDescription
+              }));
+              console.log('[WebRTC] Re-negotiated offer with tracks for', peerId);
+            } catch (err) {
+              console.warn('[WebRTC] Re-negotiation error:', err);
+            }
+          }
+        }
 
         // Setup Audio Analyser
         try {
@@ -464,13 +484,18 @@ export default function LiveKshetraNative({
     // Attach remote stream when received
     pc.ontrack = (event) => {
       console.log(`[WebRTC] Received remote track from ${targetClientId}:`, event.track.kind);
-      const [remoteStream] = event.streams;
-      if (remoteStream) {
-        setRemoteStreams((prev) => ({
-          ...prev,
-          [targetClientId]: remoteStream
-        }));
+      let remoteStream = event.streams && event.streams[0];
+      if (!remoteStream) {
+        if (!peerStreamsRef.current[targetClientId]) {
+          peerStreamsRef.current[targetClientId] = new MediaStream();
+        }
+        peerStreamsRef.current[targetClientId].addTrack(event.track);
+        remoteStream = peerStreamsRef.current[targetClientId];
       }
+      setRemoteStreams((prev) => ({
+        ...prev,
+        [targetClientId]: remoteStream
+      }));
     };
 
     // Relay local ICE candidates to specific peer
@@ -501,6 +526,7 @@ export default function LiveKshetraNative({
 
   // ICE candidate buffer: holds candidates received before remoteDescription is set
   const iceCandidateBufferRef = useRef({});
+  const peerStreamsRef = useRef({});
 
   // Helper: create and send an offer to a target peer
   const createAndSendOffer = async (targetClientId, ws) => {
@@ -699,6 +725,7 @@ export default function LiveKshetraNative({
                 delete peerConnectionsRef.current[targetId];
               }
               delete iceCandidateBufferRef.current[targetId];
+              delete peerStreamsRef.current[targetId];
               setRemoteStreams((prev) => {
                 const next = { ...prev };
                 delete next[targetId];
@@ -782,6 +809,15 @@ export default function LiveKshetraNative({
               if (canvas) {
                 const ctx = canvas.getContext('2d');
                 ctx.clearRect(0, 0, canvas.width, canvas.height);
+              }
+            } else if (data.type === 'REACTION') {
+              if (data.from_client !== myClientId && data.emoji) {
+                const id = Date.now() + Math.random();
+                const xPos = 20 + Math.random() * 60;
+                setFloatingReactions((prev) => [...prev, { id, emoji: data.emoji, x: xPos }]);
+                setTimeout(() => {
+                  setFloatingReactions((prev) => prev.filter((r) => r.id !== id));
+                }, 2400);
               }
             } else if (data.type === 'KICKED_BY_HOST') {
               alert(`You were removed from the room: ${data.reason || 'Removed by host'}`);
@@ -1024,6 +1060,16 @@ export default function LiveKshetraNative({
     setFloatingReactions((prev) => [...prev, { id, emoji, x: xPos }]);
     setShowReactions(false);
     playChime(750, 0.08);
+
+    // Broadcast to all peers via WebSocket
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({
+        type: 'REACTION',
+        from_client: myClientId,
+        user_name: userName,
+        emoji
+      }));
+    }
 
     setTimeout(() => {
       setFloatingReactions((prev) => prev.filter((r) => r.id !== id));

@@ -656,6 +656,15 @@ async def pod_websocket_endpoint(
                         except Exception:
                             pass
 
+            elif msg_type == "REACTION":
+                # Broadcast emoji reaction to all other peers in the room
+                for cid, sock in list(pod_manager.peer_sockets.get(room_key, {}).items()):
+                    if cid != client_id:
+                        try:
+                            await sock.send_text(raw_data)
+                        except Exception:
+                            pass
+
             elif msg_type == "END_POD_FOR_ALL":
                 is_auth_host = (
                     parsed_user_id and (parsed_user_id == host_id or role == "EDUCATOR")
