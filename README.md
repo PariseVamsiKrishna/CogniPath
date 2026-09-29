@@ -3,7 +3,7 @@
 *Developed by Team AKAZA*
 
 ---
-link :https://cogni-path-git-main-parisevamsikrishnas-projects.vercel.app/
+link :https://cogni-path-rose.vercel.app/
 
 ## 🚀 Overview & Vision
 Traditional Learning Management Systems (LMS) act as static repositories for lecture notes and assignments. They fail to understand individual learning struggles, detect early signs of academic distress, or provide instant context-grounded assistance.
