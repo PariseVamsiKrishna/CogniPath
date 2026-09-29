@@ -351,6 +351,10 @@ export default function JourneyTrackCard({
 
         <div className="flex items-center gap-2 shrink-0">
           {onDeleteCourse && (
+            user?.role === 'STUDENT' || 
+            (user?.role === 'EDUCATOR' && course.educator_id === user?.id) || 
+            user?.role === 'ADMIN'
+          ) && (
             <button
               type="button"
               onClick={(e) => {
@@ -358,7 +362,11 @@ export default function JourneyTrackCard({
                 onDeleteCourse(course);
               }}
               className="p-2 rounded-full text-[#8A90B4] hover:text-red-400 hover:bg-red-500/15 border border-[#262C4C] hover:border-red-500/30 transition shadow-sm"
-              title={user?.role === 'EDUCATOR' ? 'Permanently Delete Course' : 'Delete / Drop Course'}
+              title={
+                user?.role === 'STUDENT' 
+                  ? 'Drop Course (Unenroll)' 
+                  : 'Permanently Delete Course'
+              }
             >
               <Trash2 className="h-3.5 w-3.5" />
             </button>

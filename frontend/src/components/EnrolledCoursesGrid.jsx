@@ -55,6 +55,61 @@ export default function EnrolledCoursesGrid({
   return (
     <div className="min-h-full ambient-canvas p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-10">
       {/* ===================================================================== */}
+      {/* SECTION 0: MY CREATED COURSES (EDUCATOR ONLY)                         */}
+      {/* ===================================================================== */}
+      {isEducator && (
+        <section className="space-y-5">
+          <div className="flex items-center justify-between border-b border-[#262C4C] pb-4">
+            <div>
+              <h2 className="font-heading text-xl font-bold text-[#ECEDF7] tracking-tight flex items-center gap-2">
+                <span>My Created Courses</span>
+                <span className="text-xs font-bold px-2.5 py-0.5 rounded-full bg-amber-500/15 text-amber-400 border border-amber-500/30">
+                  Creator
+                </span>
+              </h2>
+              <p className="text-xs text-[#8A90B4] mt-1">Courses you have created and are managing</p>
+            </div>
+            {onOpenCreateCourse && (
+              <button onClick={onOpenCreateCourse} className="px-4 py-2 rounded-full bg-gradient-to-r from-[#FF9933] to-[#FFC15E] hover:opacity-90 text-[#0A0D1C] font-bold text-xs flex items-center gap-2 transition shadow-md">
+                <Plus className="h-3.5 w-3.5" />
+                Create New Course
+              </button>
+            )}
+          </div>
+          {courses.filter(c => c.educator_id === user?.id).length > 0 ? (
+            <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
+              {courses.filter(c => c.educator_id === user?.id).map((course, idx) => (
+                <JourneyTrackCard
+                  key={course.id || idx}
+                  course={course}
+                  index={idx}
+                  onSelectCourse={onSelectCourse}
+                  onOpenRateModal={onOpenRateModal}
+                  onDeleteCourse={onDeleteCourse}
+                  user={user}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="p-8 rounded-2xl bg-[#12162B] border border-[#262C4C] text-center space-y-4">
+              <div className="h-14 w-14 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center mx-auto">
+                <BookOpen className="h-7 w-7 text-amber-400" />
+              </div>
+              <div>
+                <h3 className="font-heading text-base font-bold text-[#ECEDF7]">No courses created yet</h3>
+                <p className="text-xs text-[#8A90B4] mt-1">Create your first course to get started</p>
+              </div>
+              {onOpenCreateCourse && (
+                <button onClick={onOpenCreateCourse} className="px-5 py-2 rounded-full bg-amber-500 hover:bg-amber-400 text-[#0A0D1C] font-bold text-xs transition">
+                  Create First Course
+                </button>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* ===================================================================== */}
       {/* SECTION 1: CONTINUE LEARNING HEADER & JOURNEY TRACK CARD GRID         */}
       {/* ===================================================================== */}
       <section className="space-y-6">
@@ -106,7 +161,7 @@ export default function EnrolledCoursesGrid({
                 index={idx}
                 onSelectCourse={onSelectCourse}
                 onOpenRateModal={onOpenRateModal}
-                onDeleteCourse={onDeleteCourse}
+                onDeleteCourse={user?.role === 'ADMIN' || course.educator_id === user?.id ? onDeleteCourse : (user?.role === 'STUDENT' ? onDeleteCourse : null)}
                 user={user}
               />
             ))}
