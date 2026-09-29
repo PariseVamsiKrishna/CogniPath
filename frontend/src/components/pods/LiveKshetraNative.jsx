@@ -471,10 +471,39 @@ export default function LiveKshetraNative({
 
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Peer ${targetClientId} connection state:`, pc.connectionState);
+      if (pc.connectionState === 'failed') {
+        console.warn(`[WebRTC] Connection to ${targetClientId} failed. Restarting ICE...`);
+        pc.restartIce();
+      }
     };
 
     peerConnectionsRef.current[targetClientId] = pc;
     return pc;
+  };
+
+  // ICE candidate buffer: holds candidates received before remoteDescription is set
+  const iceCandidateBufferRef = useRef({});
+
+  // Helper: create and send an offer to a target peer
+  const createAndSendOffer = async (targetClientId, ws) => {
+    const pc = getOrCreatePeerConnection(targetClientId, true);
+    try {
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(
+          JSON.stringify({
+            type: 'SIGNAL_OFFER',
+            from_client: myClientId,
+            to_client: targetClientId,
+            sdp: pc.localDescription
+          })
+        );
+        console.log(`[WebRTC] Offer sent to ${targetClientId}`);
+      }
+    } catch (err) {
+      console.error('[WebRTC] Offer initiation error:', err);
+    }
   };
 
   // WebSocket Signaling Connection
@@ -520,12 +549,15 @@ export default function LiveKshetraNative({
 
             if (data.type === 'PEER_JOINED') {
               if (data.client_id === myClientId) {
-                // Self joined room
+                // ---- SELF JOINED: I just connected to the room ----
                 if (data.is_host) setIsHostState(true);
+
+                // Build the peer list from the server participant directory
+                const existingPeers = [];
                 if (data.participants && Array.isArray(data.participants)) {
-                  const existingPeers = data.participants
-                    .filter((p) => p.client_id !== myClientId)
-                    .map((p) => ({
+                  for (const p of data.participants) {
+                    if (p.client_id === myClientId) continue; // skip self
+                    existingPeers.push({
                       id: p.client_id,
                       client_id: p.client_id,
                       name: p.name || 'Participant',
@@ -537,11 +569,21 @@ export default function LiveKshetraNative({
                       isSpeaking: false,
                       color: '#8B7CFF',
                       avatar: (p.name || 'P').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
-                    }));
+                    });
+                  }
+                }
+                if (existingPeers.length > 0) {
                   setPeers(existingPeers);
+                  // CRITICAL FIX: As the new joiner, I initiate offers to every existing peer.
+                  // 300ms delay so the server has time to register my socket in peer_sockets.
+                  await new Promise((r) => setTimeout(r, 300));
+                  for (const p of existingPeers) {
+                    console.log(`[WebRTC] I joined. Sending offer to existing peer: ${p.client_id}`);
+                    await createAndSendOffer(p.client_id, ws);
+                  }
                 }
               } else {
-                // Remote peer joined
+                // ---- REMOTE PEER JOINED: someone else joined while I am already here ----
                 playChime(720, 0.15);
                 showToast(`${data.user_name || 'Participant'} joined the pod`);
                 setPeers((prev) => {
@@ -566,29 +608,24 @@ export default function LiveKshetraNative({
                   ];
                 });
 
-                // Establish WebRTC connection by creating an offer to the new peer
-                const pc = getOrCreatePeerConnection(data.client_id, true);
-                try {
-                  const offer = await pc.createOffer();
-                  await pc.setLocalDescription(offer);
-                  if (ws.readyState === WebSocket.OPEN) {
-                    ws.send(
-                      JSON.stringify({
-                        type: 'SIGNAL_OFFER',
-                        from_client: myClientId,
-                        to_client: data.client_id,
-                        sdp: pc.localDescription
-                      })
-                    );
-                  }
-                } catch (err) {
-                  console.error('[WebRTC] Offer initiation error:', err);
-                }
+                // 300ms delay so new peer socket is registered on server
+                await new Promise((r) => setTimeout(r, 300));
+
+                // I am an existing peer — send offer to the newly arrived peer
+                console.log(`[WebRTC] New peer arrived: ${data.client_id}. Sending offer.`);
+                await createAndSendOffer(data.client_id, ws);
               }
             } else if (data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
+              console.log(`[WebRTC] Received offer from ${data.from_client}`);
               const pc = getOrCreatePeerConnection(data.from_client, false);
               try {
                 await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                // Flush buffered ICE candidates
+                const buffered = iceCandidateBufferRef.current[data.from_client] || [];
+                for (const candidate of buffered) {
+                  try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                }
+                delete iceCandidateBufferRef.current[data.from_client];
                 const answer = await pc.createAnswer();
                 await pc.setLocalDescription(answer);
                 if (ws.readyState === WebSocket.OPEN) {
@@ -600,27 +637,42 @@ export default function LiveKshetraNative({
                       sdp: pc.localDescription
                     })
                   );
+                  console.log(`[WebRTC] Answer sent to ${data.from_client}`);
                 }
               } catch (err) {
                 console.error('[WebRTC] Answer response error:', err);
               }
             } else if (data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
+              console.log(`[WebRTC] Received answer from ${data.from_client}`);
               const pc = peerConnectionsRef.current[data.from_client];
               if (pc) {
                 try {
                   await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                  // Flush buffered ICE candidates
+                  const buffered = iceCandidateBufferRef.current[data.from_client] || [];
+                  for (const candidate of buffered) {
+                    try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                  }
+                  delete iceCandidateBufferRef.current[data.from_client];
                 } catch (err) {
                   console.error('[WebRTC] Set remote description error:', err);
                 }
               }
             } else if (data.type === 'SIGNAL_ICE' && data.to_client === myClientId && data.candidate) {
               const pc = peerConnectionsRef.current[data.from_client];
-              if (pc) {
+              if (pc && pc.remoteDescription) {
                 try {
                   await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
                 } catch (err) {
                   console.error('[WebRTC] ICE candidate error:', err);
                 }
+              } else {
+                // Buffer ICE candidates until remoteDescription is set
+                if (!iceCandidateBufferRef.current[data.from_client]) {
+                  iceCandidateBufferRef.current[data.from_client] = [];
+                }
+                iceCandidateBufferRef.current[data.from_client].push(data.candidate);
+                console.log(`[WebRTC] Buffered ICE candidate from ${data.from_client}`);
               }
             } else if (data.type === 'PEER_LEFT') {
               const targetId = data.client_id;
@@ -628,6 +680,7 @@ export default function LiveKshetraNative({
                 peerConnectionsRef.current[targetId].close();
                 delete peerConnectionsRef.current[targetId];
               }
+              delete iceCandidateBufferRef.current[targetId];
               setRemoteStreams((prev) => {
                 const next = { ...prev };
                 delete next[targetId];
@@ -748,6 +801,7 @@ export default function LiveKshetraNative({
         } catch (e) {}
       });
       peerConnectionsRef.current = {};
+      iceCandidateBufferRef.current = {};
     };
   }, [cleanCode]);
 
