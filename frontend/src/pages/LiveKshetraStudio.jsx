@@ -44,6 +44,7 @@ export default function LiveKshetraStudio({
   const [enteredCode, setEnteredCode] = useState('');
   const [showScheduleModal, setShowScheduleModal] = useState(false);
   const [scheduledCode, setScheduledCode] = useState('');
+  const [isMeetingCreator, setIsMeetingCreator] = useState(false);
   const [copiedCode, setCopiedCode] = useState(false);
   const [copiedLink, setCopiedLink] = useState(false);
 
@@ -146,6 +147,7 @@ export default function LiveKshetraStudio({
     if (previewStreamRef.current) {
       previewStreamRef.current.getTracks().forEach((t) => t.stop());
     }
+    setIsMeetingCreator(true);
     setActiveMeetingCode(code);
   };
 
@@ -180,6 +182,7 @@ export default function LiveKshetraStudio({
     if (previewStreamRef.current) {
       previewStreamRef.current.getTracks().forEach((t) => t.stop());
     }
+    setIsMeetingCreator(false);
     setActiveMeetingCode(clean);
   };
 
@@ -205,10 +208,13 @@ export default function LiveKshetraStudio({
       <div className="h-full w-full bg-[#0b0f19]">
         <LiveKshetraNative
           meetingCode={activeMeetingCode}
-          podTitle={`Live Kshetra • ${activeMeetingCode}`}
+          podTitle={`Learning Pod • ${activeMeetingCode}`}
           user={user}
-          isHost={isEducator}
-          onClose={() => setActiveMeetingCode(null)}
+          isHost={isEducator || isMeetingCreator}
+          onClose={() => {
+            setActiveMeetingCode(null);
+            setIsMeetingCreator(false);
+          }}
         />
       </div>
     );
@@ -478,6 +484,7 @@ export default function LiveKshetraStudio({
                 type="button"
                 onClick={() => {
                   setShowScheduleModal(false);
+                  setIsMeetingCreator(true);
                   setActiveMeetingCode(scheduledCode);
                 }}
                 className="flex-1 py-3 rounded-2xl bg-gradient-to-r from-[#FF9933] to-[#FF6F9C] text-[#0A0D1C] font-heading font-bold text-xs uppercase tracking-wider shadow-md transition"

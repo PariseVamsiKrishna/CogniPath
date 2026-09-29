@@ -49,9 +49,152 @@ const WHITEBOARD_COLORS = [
   '#f59e0b'  // Amber
 ];
 
+function RemotePeerTile({
+  peer,
+  stream,
+  isHost,
+  onMutePeer,
+  onKickPeer
+}) {
+  const videoRef = useRef(null);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+
+  useEffect(() => {
+    if (videoRef.current && stream) {
+      videoRef.current.srcObject = stream;
+      const playPromise = videoRef.current.play();
+      if (playPromise !== undefined) {
+        playPromise
+          .then(() => setAutoplayBlocked(false))
+          .catch((err) => {
+            console.warn('[WebRTC] Autoplay restricted:', err);
+            setAutoplayBlocked(true);
+          });
+      }
+    }
+  }, [stream]);
+
+  // Audio track muting in stream
+  useEffect(() => {
+    if (stream) {
+      stream.getAudioTracks().forEach((track) => {
+        track.enabled = peer.audioOn !== false;
+      });
+    }
+    if (videoRef.current) {
+      videoRef.current.muted = peer.audioOn === false;
+    }
+  }, [peer.audioOn, stream]);
+
+  const hasVideoTrack = Boolean(
+    stream &&
+    stream.getVideoTracks().length > 0 &&
+    stream.getVideoTracks().some((t) => t.enabled && t.readyState === 'live')
+  );
+
+  return (
+    <div
+      className={`relative rounded-2xl bg-[#0e1424] border transition-all duration-300 flex flex-col items-center justify-center overflow-hidden min-h-[190px] shadow-xl group ${
+        peer.isSpeaking && peer.audioOn !== false
+          ? 'ring-2 ring-emerald-400 border-emerald-400 shadow-lg shadow-emerald-400/20'
+          : 'border-[#1e2638]'
+      }`}
+    >
+      {/* Remote Video Stream */}
+      <video
+        ref={videoRef}
+        autoPlay
+        playsInline
+        className={`w-full h-full object-cover ${hasVideoTrack && peer.videoOn !== false ? 'block' : 'hidden'}`}
+      />
+
+      {/* Autoplay blocked overlay */}
+      {autoplayBlocked && (
+        <button
+          type="button"
+          onClick={() => {
+            if (videoRef.current) {
+              videoRef.current.play().then(() => setAutoplayBlocked(false)).catch(console.error);
+            }
+          }}
+          className="absolute inset-0 z-20 bg-black/75 flex flex-col items-center justify-center p-3 text-center cursor-pointer hover:bg-black/60 transition"
+        >
+          <Volume2 className="h-7 w-7 text-[#FF9933] mb-1.5 animate-bounce" />
+          <span className="text-xs font-bold text-white">Click to Hear Audio</span>
+          <span className="text-[10px] text-slate-300 mt-0.5">Browser policy required click</span>
+        </button>
+      )}
+
+      {/* Avatar Fallback if Camera is Off or stream not yet loaded */}
+      {(!hasVideoTrack || peer.videoOn === false) && !autoplayBlocked && (
+        <div className="flex flex-col items-center justify-center space-y-3">
+          <div
+            className={`h-20 w-20 rounded-full flex items-center justify-center text-xl font-bold font-heading shadow-xl transition-transform ${
+              peer.isSpeaking && peer.audioOn !== false ? 'scale-110 ring-4 ring-emerald-400/30' : ''
+            }`}
+            style={{
+              background: `linear-gradient(135deg, ${peer.color || '#8B7CFF'}, #171C36)`,
+              color: '#ECEDF7'
+            }}
+          >
+            {peer.avatar || peer.name?.split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase() || 'P'}
+          </div>
+          <span className="text-xs font-semibold text-slate-400">
+            {peer.videoOn === false ? 'Camera turned off' : 'Connected'}
+          </span>
+        </div>
+      )}
+
+      {/* Peer Name Tag */}
+      <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-[#0A0D1C]/80 backdrop-blur-md px-3 py-1 rounded-xl border border-white/10 text-xs font-bold">
+        <span>{peer.name}</span>
+        {(peer.role === 'EDUCATOR' || peer.is_host) && (
+          <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#FFC15E]/20 text-[#FFC15E] border border-[#FFC15E]/40">
+            {peer.is_host ? 'Host' : 'Educator'}
+          </span>
+        )}
+        {peer.handRaised && <span className="animate-bounce">✋</span>}
+      </div>
+
+      {/* Peer Mic Status */}
+      <div
+        className={`absolute top-3 right-3 p-1.5 rounded-full ${
+          peer.audioOn !== false ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
+        }`}
+      >
+        {peer.audioOn !== false ? <Mic className="h-3.5 w-3.5" /> : <MicOff className="h-3.5 w-3.5" />}
+      </div>
+
+      {/* Host Quick Actions (Mute / Kick on hover) */}
+      {isHost && (
+        <div className="absolute top-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5 bg-[#0A0D1C]/90 px-2 py-1 rounded-xl border border-white/10 z-10">
+          {peer.audioOn !== false && (
+            <button
+              type="button"
+              onClick={() => onMutePeer(peer.client_id || peer.id)}
+              className="p-1 rounded text-rose-400 hover:bg-rose-500/20 transition cursor-pointer"
+              title="Mute Participant"
+            >
+              <VolumeX className="h-3.5 w-3.5" />
+            </button>
+          )}
+          <button
+            type="button"
+            onClick={() => onKickPeer(peer.client_id || peer.id)}
+            className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-rose-500/20 transition cursor-pointer"
+            title="Remove from call"
+          >
+            <UserX className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function LiveKshetraNative({
   meetingCode = 'sih-kshetra-live',
-  podTitle = 'Live Kshetra Studio',
+  podTitle = 'Learning Pod',
   user = null,
   isHost = false,
   onClose,
@@ -60,6 +203,10 @@ export default function LiveKshetraNative({
   const cleanCode = (meetingCode || 'sih-pod-live').trim().replace(/\s+/g, '-').toLowerCase();
   const userName = user?.full_name || 'Learner';
   const userRole = user?.role || 'STUDENT';
+
+  // Client ID for WebRTC signaling mesh
+  const myClientId = useRef('peer_' + Math.random().toString(36).substring(2, 9)).current;
+  const [isHostState, setIsHostState] = useState(Boolean(isHost));
 
   // Session Layout
   const [isFullscreen, setIsFullscreen] = useState(false);
@@ -108,9 +255,17 @@ export default function LiveKshetraNative({
   const analyserRef = useRef(null);
   const animFrameRef = useRef(null);
 
+  // WebRTC Mesh & WebSocket Refs and State
+  const [remoteStreams, setRemoteStreams] = useState({});
+  const peerConnectionsRef = useRef({});
+  const wsRef = useRef(null);
+  const pingTimerRef = useRef(null);
+
   // Whiteboard Canvas State & Refs
   const canvasRef = useRef(null);
   const isDrawingRef = useRef(false);
+  const lastXRef = useRef(0);
+  const lastYRef = useRef(0);
   const [penColor, setPenColor] = useState('#FF9933');
   const [brushSize, setBrushSize] = useState(3);
   const [isEraser, setIsEraser] = useState(false);
@@ -123,9 +278,9 @@ export default function LiveKshetraNative({
       : [
           {
             id: 'm1',
-            sender: 'Live Kshetra Bot',
+            sender: 'CogniPath Bot',
             senderRole: 'SYSTEM',
-            text: `Welcome to ${podTitle}! Zero-trust WebRTC peer encryption is active.`,
+            text: `Welcome to ${podTitle}! WebRTC peer-to-peer audio & video mesh is active.`,
             timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
             isSystem: true
           }
@@ -135,42 +290,8 @@ export default function LiveKshetraNative({
   const [unreadChatCount, setUnreadChatCount] = useState(0);
   const chatEndRef = useRef(null);
 
-  // Peers State (Dynamic simulated realistic peers if room has few attendees)
-  const [peers, setPeers] = useState([
-    {
-      id: 'peer_priya',
-      name: 'Priya Patel',
-      role: 'STUDENT',
-      audioOn: true,
-      videoOn: true,
-      handRaised: false,
-      isSpeaking: false,
-      color: '#8B7CFF',
-      avatar: 'PP'
-    },
-    {
-      id: 'peer_rohan',
-      name: 'Rohan Verma',
-      role: 'STUDENT',
-      audioOn: false,
-      videoOn: true,
-      handRaised: false,
-      isSpeaking: false,
-      color: '#5FE3B0',
-      avatar: 'RV'
-    },
-    {
-      id: 'peer_prof',
-      name: 'Prof. Rajesh Ramanujan',
-      role: 'EDUCATOR',
-      audioOn: true,
-      videoOn: false,
-      handRaised: false,
-      isSpeaking: true,
-      color: '#FF9933',
-      avatar: 'RR'
-    }
-  ]);
+  // Peers State: Real participants only (Starts empty - NO default mock participants!)
+  const [peers, setPeers] = useState([]);
 
   // Audio synthesize tones
   const playChime = (frequency = 600, duration = 0.15) => {
@@ -191,7 +312,7 @@ export default function LiveKshetraNative({
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(''), 3000);
+    setTimeout(() => setToastMessage(''), 3500);
   };
 
   // ---------------------------------------------------------------------------
@@ -216,6 +337,15 @@ export default function LiveKshetraNative({
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
+
+        // Add tracks to any already-created peer connections
+        Object.values(peerConnectionsRef.current).forEach((pc) => {
+          stream.getTracks().forEach((track) => {
+            try {
+              pc.addTrack(track, stream);
+            } catch (e) {}
+          });
+        });
 
         // Setup Audio Analyser
         try {
@@ -279,7 +409,350 @@ export default function LiveKshetraNative({
   }, []);
 
   // ---------------------------------------------------------------------------
-  // 2. TIMERS (SESSION & RECORDING)
+  // 2. WEBRTC PEER CONNECTION FACTORY & SIGNALING
+  // ---------------------------------------------------------------------------
+  const getOrCreatePeerConnection = (targetClientId, isInitiator = false) => {
+    if (peerConnectionsRef.current[targetClientId]) {
+      return peerConnectionsRef.current[targetClientId];
+    }
+
+    const iceServers = [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' }
+    ];
+    if (import.meta.env.VITE_TURN_URL) {
+      iceServers.push({
+        urls: import.meta.env.VITE_TURN_URL,
+        username: import.meta.env.VITE_TURN_USERNAME || '',
+        credential: import.meta.env.VITE_TURN_CREDENTIAL || ''
+      });
+    }
+
+    const pc = new RTCPeerConnection({ iceServers });
+
+    // Attach local media stream tracks
+    if (localStreamRef.current) {
+      localStreamRef.current.getTracks().forEach((track) => {
+        try {
+          pc.addTrack(track, localStreamRef.current);
+        } catch (e) {
+          console.warn('[WebRTC] addTrack warning:', e);
+        }
+      });
+    }
+
+    // Attach remote stream when received
+    pc.ontrack = (event) => {
+      console.log(`[WebRTC] Received remote track from ${targetClientId}:`, event.track.kind);
+      const [remoteStream] = event.streams;
+      if (remoteStream) {
+        setRemoteStreams((prev) => ({
+          ...prev,
+          [targetClientId]: remoteStream
+        }));
+      }
+    };
+
+    // Relay local ICE candidates to specific peer
+    pc.onicecandidate = (event) => {
+      if (event.candidate && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+        wsRef.current.send(
+          JSON.stringify({
+            type: 'SIGNAL_ICE',
+            from_client: myClientId,
+            to_client: targetClientId,
+            candidate: event.candidate
+          })
+        );
+      }
+    };
+
+    pc.onconnectionstatechange = () => {
+      console.log(`[WebRTC] Peer ${targetClientId} connection state:`, pc.connectionState);
+    };
+
+    peerConnectionsRef.current[targetClientId] = pc;
+    return pc;
+  };
+
+  // WebSocket Signaling Connection
+  useEffect(() => {
+    let ws = null;
+    let isMounted = true;
+
+    async function connectSignaling() {
+      let wsUrl = '';
+      const apiBase = import.meta.env.VITE_API_BASE_URL;
+      if (apiBase && (apiBase.startsWith('http://') || apiBase.startsWith('https://'))) {
+        const parsed = new URL(apiBase);
+        const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+        wsUrl = `${wsProto}//${parsed.host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(
+          userName
+        )}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
+      } else {
+        const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const host = window.location.host;
+        wsUrl = `${protocol}//${host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(
+          userName
+        )}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
+      }
+
+      try {
+        console.log('[WebSocket] Connecting to signaling server:', wsUrl);
+        ws = new WebSocket(wsUrl);
+        wsRef.current = ws;
+
+        ws.onopen = () => {
+          console.log('[WebSocket] Connected to room:', cleanCode);
+          if (pingTimerRef.current) clearInterval(pingTimerRef.current);
+          pingTimerRef.current = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
+            }
+          }, 25000);
+        };
+
+        ws.onmessage = async (event) => {
+          try {
+            const data = JSON.parse(event.data);
+
+            if (data.type === 'PEER_JOINED') {
+              if (data.client_id === myClientId) {
+                // Self joined room
+                if (data.is_host) setIsHostState(true);
+                if (data.participants && Array.isArray(data.participants)) {
+                  const existingPeers = data.participants
+                    .filter((p) => p.client_id !== myClientId)
+                    .map((p) => ({
+                      id: p.client_id,
+                      client_id: p.client_id,
+                      name: p.name || 'Participant',
+                      role: p.role || 'STUDENT',
+                      is_host: Boolean(p.is_host),
+                      audioOn: p.audio_on !== false,
+                      videoOn: p.video_on !== false,
+                      handRaised: Boolean(p.hand_raised),
+                      isSpeaking: false,
+                      color: '#8B7CFF',
+                      avatar: (p.name || 'P').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
+                    }));
+                  setPeers(existingPeers);
+                }
+              } else {
+                // Remote peer joined
+                playChime(720, 0.15);
+                showToast(`${data.user_name || 'Participant'} joined the pod`);
+                setPeers((prev) => {
+                  if (prev.some((p) => p.client_id === data.client_id || p.id === data.client_id)) {
+                    return prev;
+                  }
+                  return [
+                    ...prev,
+                    {
+                      id: data.client_id,
+                      client_id: data.client_id,
+                      name: data.user_name || 'Participant',
+                      role: data.role || 'STUDENT',
+                      is_host: Boolean(data.is_host),
+                      audioOn: data.audio_on !== false,
+                      videoOn: data.video_on !== false,
+                      handRaised: Boolean(data.hand_raised),
+                      isSpeaking: false,
+                      color: '#8B7CFF',
+                      avatar: (data.user_name || 'P').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
+                    }
+                  ];
+                });
+
+                // Establish WebRTC connection by creating an offer to the new peer
+                const pc = getOrCreatePeerConnection(data.client_id, true);
+                try {
+                  const offer = await pc.createOffer();
+                  await pc.setLocalDescription(offer);
+                  if (ws.readyState === WebSocket.OPEN) {
+                    ws.send(
+                      JSON.stringify({
+                        type: 'SIGNAL_OFFER',
+                        from_client: myClientId,
+                        to_client: data.client_id,
+                        sdp: pc.localDescription
+                      })
+                    );
+                  }
+                } catch (err) {
+                  console.error('[WebRTC] Offer initiation error:', err);
+                }
+              }
+            } else if (data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
+              const pc = getOrCreatePeerConnection(data.from_client, false);
+              try {
+                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                if (ws.readyState === WebSocket.OPEN) {
+                  ws.send(
+                    JSON.stringify({
+                      type: 'SIGNAL_ANSWER',
+                      from_client: myClientId,
+                      to_client: data.from_client,
+                      sdp: pc.localDescription
+                    })
+                  );
+                }
+              } catch (err) {
+                console.error('[WebRTC] Answer response error:', err);
+              }
+            } else if (data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
+              const pc = peerConnectionsRef.current[data.from_client];
+              if (pc) {
+                try {
+                  await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                } catch (err) {
+                  console.error('[WebRTC] Set remote description error:', err);
+                }
+              }
+            } else if (data.type === 'SIGNAL_ICE' && data.to_client === myClientId && data.candidate) {
+              const pc = peerConnectionsRef.current[data.from_client];
+              if (pc) {
+                try {
+                  await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
+                } catch (err) {
+                  console.error('[WebRTC] ICE candidate error:', err);
+                }
+              }
+            } else if (data.type === 'PEER_LEFT') {
+              const targetId = data.client_id;
+              if (peerConnectionsRef.current[targetId]) {
+                peerConnectionsRef.current[targetId].close();
+                delete peerConnectionsRef.current[targetId];
+              }
+              setRemoteStreams((prev) => {
+                const next = { ...prev };
+                delete next[targetId];
+                return next;
+              });
+              setPeers((prev) => prev.filter((p) => p.client_id !== targetId && p.id !== targetId));
+              showToast(`${data.user_name || 'Participant'} left`);
+            } else if (data.type === 'FORCE_MUTE_PARTICIPANT') {
+              if (localStreamRef.current) {
+                localStreamRef.current.getAudioTracks().forEach((track) => {
+                  track.enabled = false;
+                });
+              }
+              setAudioOn(false);
+              showToast(data.reason || 'You were muted by the meeting host');
+              if (ws.readyState === WebSocket.OPEN) {
+                ws.send(
+                  JSON.stringify({
+                    type: 'MEDIA_STATE_CHANGE',
+                    client_id: myClientId,
+                    audio_on: false,
+                    video_on: videoOn
+                  })
+                );
+              }
+            } else if (data.type === 'ALL_PEERS_MUTED') {
+              if (data.muted_by !== myClientId) {
+                if (localStreamRef.current) {
+                  localStreamRef.current.getAudioTracks().forEach((track) => {
+                    track.enabled = false;
+                  });
+                }
+                setAudioOn(false);
+                showToast('All participants have been muted by the host');
+              }
+              setPeers((prev) =>
+                prev.map((p) => (p.client_id === data.muted_by ? p : { ...p, audioOn: false }))
+              );
+            } else if (data.type === 'HOST_MUTED_PEER') {
+              setPeers((prev) =>
+                prev.map((p) =>
+                  p.client_id === data.client_id || p.id === data.client_id ? { ...p, audioOn: false } : p
+                )
+              );
+            } else if (data.type === 'MEDIA_STATE_CHANGE') {
+              setPeers((prev) =>
+                prev.map((p) => {
+                  if (p.client_id === data.client_id || p.id === data.client_id) {
+                    return {
+                      ...p,
+                      audioOn: data.audio_on !== undefined ? data.audio_on : p.audioOn,
+                      videoOn: data.video_on !== undefined ? data.video_on : p.videoOn,
+                      handRaised: data.hand_raised !== undefined ? data.hand_raised : p.handRaised
+                    };
+                  }
+                  return p;
+                })
+              );
+            } else if (data.type === 'CHAT_MESSAGE') {
+              if (data.sender_name !== userName || data.is_ai_tutor) {
+                setMessages((prev) => [
+                  ...prev,
+                  {
+                    id: Date.now().toString() + Math.random(),
+                    sender: data.sender_name,
+                    senderRole: data.is_ai_tutor ? 'AI_COACH' : 'STUDENT',
+                    text: data.content,
+                    citations: data.citations,
+                    isAI: Boolean(data.is_ai_tutor),
+                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+                  }
+                ]);
+                if (activeDrawer !== 'chat') {
+                  setUnreadChatCount((c) => c + 1);
+                }
+              }
+            } else if (data.type === 'WHITEBOARD_DRAW') {
+              drawRemoteStroke(data.x0, data.y0, data.x1, data.y1, data.color, data.size);
+            } else if (data.type === 'WHITEBOARD_CLEAR') {
+              const canvas = canvasRef.current;
+              if (canvas) {
+                const ctx = canvas.getContext('2d');
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+              }
+            } else if (data.type === 'KICKED_BY_HOST') {
+              alert(`You were removed from the room: ${data.reason || 'Removed by host'}`);
+              if (onClose) onClose();
+            } else if (data.type === 'EVENT_ROOM_CLOSED') {
+              alert(`Meeting ended: ${data.reason || 'Host closed the room'}`);
+              if (onClose) onClose();
+            }
+          } catch (e) {
+            console.error('[WebSocket] Message parsing error:', e);
+          }
+        };
+
+        ws.onclose = () => {
+          console.log('[WebSocket] Connection closed');
+        };
+      } catch (err) {
+        console.error('[WebSocket] Setup failed:', err);
+      }
+    }
+
+    connectSignaling();
+
+    return () => {
+      isMounted = false;
+      if (pingTimerRef.current) clearInterval(pingTimerRef.current);
+      if (ws) {
+        try {
+          ws.close();
+        } catch (e) {}
+      }
+      Object.values(peerConnectionsRef.current).forEach((pc) => {
+        try {
+          pc.close();
+        } catch (e) {}
+      });
+      peerConnectionsRef.current = {};
+    };
+  }, [cleanCode]);
+
+  // ---------------------------------------------------------------------------
+  // 3. TIMERS (SESSION & RECORDING)
   // ---------------------------------------------------------------------------
   useEffect(() => {
     const timer = setInterval(() => {
@@ -307,7 +780,7 @@ export default function LiveKshetraNative({
   };
 
   // ---------------------------------------------------------------------------
-  // 3. MEDIA TOGGLES (MIC, CAM, SCREEN SHARE)
+  // 4. MEDIA TOGGLES (MIC, CAM, SCREEN SHARE)
   // ---------------------------------------------------------------------------
   const toggleAudio = () => {
     const nextState = !audioOn;
@@ -316,6 +789,16 @@ export default function LiveKshetraNative({
       localStreamRef.current.getAudioTracks().forEach((track) => {
         track.enabled = nextState;
       });
+    }
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'MEDIA_STATE_CHANGE',
+          client_id: myClientId,
+          audio_on: nextState,
+          video_on: videoOn
+        })
+      );
     }
   };
 
@@ -326,6 +809,16 @@ export default function LiveKshetraNative({
       localStreamRef.current.getVideoTracks().forEach((track) => {
         track.enabled = nextState;
       });
+    }
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'MEDIA_STATE_CHANGE',
+          client_id: myClientId,
+          audio_on: audioOn,
+          video_on: nextState
+        })
+      );
     }
   };
 
@@ -338,6 +831,15 @@ export default function LiveKshetraNative({
       }
       if (localVideoRef.current && localStreamRef.current) {
         localVideoRef.current.srcObject = localStreamRef.current;
+        const cameraTrack = localStreamRef.current.getVideoTracks()[0];
+        if (cameraTrack) {
+          Object.values(peerConnectionsRef.current).forEach((pc) => {
+            const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+            if (sender) {
+              sender.replaceTrack(cameraTrack);
+            }
+          });
+        }
       }
       setScreenSharing(false);
       showToast('Screen sharing ended');
@@ -348,15 +850,39 @@ export default function LiveKshetraNative({
           audio: true
         });
         screenStreamRef.current = stream;
+        const screenTrack = stream.getVideoTracks()[0];
+
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
+
+        // Replace video track across all active peer connections
+        Object.values(peerConnectionsRef.current).forEach((pc) => {
+          const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+          if (sender) {
+            sender.replaceTrack(screenTrack);
+          }
+        });
+
         setScreenSharing(true);
         showToast('Screen sharing started');
 
-        stream.getVideoTracks()[0].onended = () => {
+        screenTrack.onended = () => {
+          if (screenStreamRef.current) {
+            screenStreamRef.current.getTracks().forEach((t) => t.stop());
+            screenStreamRef.current = null;
+          }
           if (localVideoRef.current && localStreamRef.current) {
             localVideoRef.current.srcObject = localStreamRef.current;
+            const cameraTrack = localStreamRef.current.getVideoTracks()[0];
+            if (cameraTrack) {
+              Object.values(peerConnectionsRef.current).forEach((pc) => {
+                const sender = pc.getSenders().find((s) => s.track && s.track.kind === 'video');
+                if (sender) {
+                  sender.replaceTrack(cameraTrack);
+                }
+              });
+            }
           }
           setScreenSharing(false);
           showToast('Screen sharing ended');
@@ -372,10 +898,19 @@ export default function LiveKshetraNative({
     setHandRaised(next);
     playChime(next ? 880 : 440, 0.15);
     showToast(next ? 'Hand raised ✋' : 'Hand lowered');
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'MEDIA_STATE_CHANGE',
+          client_id: myClientId,
+          hand_raised: next
+        })
+      );
+    }
   };
 
   // ---------------------------------------------------------------------------
-  // 4. FLOATING EMOJI REACTIONS
+  // 5. FLOATING EMOJI REACTIONS
   // ---------------------------------------------------------------------------
   const triggerReaction = (emoji) => {
     const id = Date.now() + Math.random();
@@ -384,14 +919,13 @@ export default function LiveKshetraNative({
     setShowReactions(false);
     playChime(750, 0.08);
 
-    // Auto-remove reaction after animation completes
     setTimeout(() => {
       setFloatingReactions((prev) => prev.filter((r) => r.id !== id));
     }, 2400);
   };
 
   // ---------------------------------------------------------------------------
-  // 5. SESSION RECORDING (MediaRecorder)
+  // 6. SESSION RECORDING (MediaRecorder)
   // ---------------------------------------------------------------------------
   const toggleRecording = async () => {
     if (isRecording) {
@@ -449,39 +983,33 @@ export default function LiveKshetraNative({
   };
 
   // ---------------------------------------------------------------------------
-  // 6. IN-MEETING CHAT & AI TUTOR CO-PILOT
+  // 7. IN-MEETING CHAT & AI TUTOR CO-PILOT
   // ---------------------------------------------------------------------------
   const handleSendChat = (e) => {
     e?.preventDefault();
     if (!chatInput.trim()) return;
 
+    const content = chatInput.trim();
     const userMsg = {
       id: Date.now().toString(),
       sender: userName,
       senderRole: userRole,
-      text: chatInput.trim(),
+      text: content,
       timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
     };
 
     setMessages((prev) => [...prev, userMsg]);
-    const currentInput = chatInput.trim();
     setChatInput('');
 
-    // Check if user is asking the AI Tutor (@tutor or contains question mark)
-    if (currentInput.toLowerCase().includes('@tutor') || currentInput.startsWith('/ai')) {
-      setTimeout(() => {
-        const queryClean = currentInput.replace(/@tutor|\/ai/gi, '').trim() || 'Help summarize the topic discussed';
-        const aiResponse = {
-          id: (Date.now() + 1).toString(),
-          sender: 'Cogni AI Tutor ✨',
-          senderRole: 'AI_COACH',
-          text: `Here is a quick concept breakdown for: "${queryClean}" — Remember to review the course syllabus slides on this topic!`,
-          timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          isAI: true
-        };
-        setMessages((prev) => [...prev, aiResponse]);
-        playChime(700, 0.1);
-      }, 900);
+    // Send chat via WebSocket to room
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'CHAT_MESSAGE',
+          sender_name: userName,
+          content: content
+        })
+      );
     }
 
     if (activeDrawer !== 'chat') {
@@ -503,8 +1031,22 @@ export default function LiveKshetraNative({
   };
 
   // ---------------------------------------------------------------------------
-  // 7. WHITEBOARD ENGINE
+  // 8. WHITEBOARD ENGINE (COLLABORATIVE REAL-TIME)
   // ---------------------------------------------------------------------------
+  const drawRemoteStroke = (x0, y0, x1, y1, color, size) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    ctx.beginPath();
+    ctx.moveTo(x0, y0);
+    ctx.lineTo(x1, y1);
+    ctx.strokeStyle = color;
+    ctx.lineWidth = size;
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
+    ctx.stroke();
+  };
+
   const startDrawing = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -512,6 +1054,8 @@ export default function LiveKshetraNative({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
     isDrawingRef.current = true;
+    lastXRef.current = x;
+    lastYRef.current = y;
 
     const ctx = canvas.getContext('2d');
     ctx.beginPath();
@@ -526,20 +1070,35 @@ export default function LiveKshetraNative({
     const x = e.clientX - rect.left;
     const y = e.clientY - rect.top;
 
+    const strokeColor = isEraser ? '#0b0f19' : penColor;
+    const strokeWidth = isEraser ? brushSize * 4 : brushSize;
+
     const ctx = canvas.getContext('2d');
-    ctx.lineWidth = brushSize;
+    ctx.lineWidth = strokeWidth;
     ctx.lineCap = 'round';
     ctx.lineJoin = 'round';
-
-    if (isEraser) {
-      ctx.strokeStyle = '#0e1424';
-      ctx.lineWidth = brushSize * 4;
-    } else {
-      ctx.strokeStyle = penColor;
-    }
+    ctx.strokeStyle = strokeColor;
 
     ctx.lineTo(x, y);
     ctx.stroke();
+
+    // Broadcast stroke to peers
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'WHITEBOARD_DRAW',
+          x0: lastXRef.current,
+          y0: lastYRef.current,
+          x1: x,
+          y1: y,
+          color: strokeColor,
+          size: strokeWidth
+        })
+      );
+    }
+
+    lastXRef.current = x;
+    lastYRef.current = y;
   };
 
   const stopDrawing = () => {
@@ -557,6 +1116,10 @@ export default function LiveKshetraNative({
     const ctx = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
     setStrokeHistory([]);
+
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'WHITEBOARD_CLEAR' }));
+    }
     showToast('Whiteboard cleared');
   };
 
@@ -572,22 +1135,50 @@ export default function LiveKshetraNative({
   };
 
   // ---------------------------------------------------------------------------
-  // 8. HOST MODERATION (MUTE PEER, KICK PEER, MUTE ALL)
+  // 9. HOST MODERATION (MUTE PEER, KICK PEER, MUTE ALL)
   // ---------------------------------------------------------------------------
   const handleMutePeer = (peerId) => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'FORCE_MUTE_PARTICIPANT',
+          target_client_id: peerId,
+          client_id: myClientId,
+          reason: 'Muted by host'
+        })
+      );
+    }
     setPeers((prev) =>
-      prev.map((p) => (p.id === peerId ? { ...p, audioOn: false } : p))
+      prev.map((p) => (p.client_id === peerId || p.id === peerId ? { ...p, audioOn: false } : p))
     );
     showToast('Participant muted');
   };
 
   const handleMuteAll = () => {
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'MUTE_ALL',
+          client_id: myClientId
+        })
+      );
+    }
     setPeers((prev) => prev.map((p) => ({ ...p, audioOn: false })));
     showToast('All participants muted by host');
   };
 
   const handleKickPeer = (peerId) => {
-    setPeers((prev) => prev.filter((p) => p.id !== peerId));
+    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'KICK_PARTICIPANT',
+          target_client_id: peerId,
+          client_id: myClientId,
+          reason: 'Removed by host'
+        })
+      );
+    }
+    setPeers((prev) => prev.filter((p) => p.client_id !== peerId && p.id !== peerId));
     showToast('Participant removed from meeting');
   };
 
@@ -604,20 +1195,6 @@ export default function LiveKshetraNative({
     setCopiedLink(true);
     setTimeout(() => setCopiedLink(false), 2000);
   };
-
-  // Simulated peer speaking indicator loop for realism
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setPeers((prev) => {
-        const randIdx = Math.floor(Math.random() * prev.length);
-        return prev.map((p, i) => ({
-          ...p,
-          isSpeaking: p.audioOn && i === randIdx ? Math.random() > 0.4 : false
-        }));
-      });
-    }, 2800);
-    return () => clearInterval(interval);
-  }, []);
 
   return (
     <div
@@ -833,11 +1410,13 @@ export default function LiveKshetraNative({
               />
             </div>
           ) : (
-            /* DYNAMIC MULTI-PARTICIPANT VIDEO GRID */
+            /* DYNAMIC MULTI-PARTICIPANT WEBRTC VIDEO GRID */
             <div className="flex-1 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-2 xl:grid-cols-2 gap-3.5 items-stretch min-h-0 overflow-y-auto">
               {/* TILE 1: YOU (LOCAL STREAM OR AVATAR) */}
               <div
-                className={`relative rounded-2xl bg-[#0e1424] border transition-all duration-300 flex flex-col items-center justify-center overflow-hidden min-h-[180px] shadow-xl group ${
+                className={`relative rounded-2xl bg-[#0e1424] border transition-all duration-300 flex flex-col items-center justify-center overflow-hidden min-h-[200px] shadow-xl group ${
+                  peers.length === 0 ? 'col-span-1 sm:col-span-2 max-w-2xl mx-auto w-full aspect-video' : ''
+                } ${
                   audioOn && audioLevel > 15
                     ? 'ring-2 ring-[#FF9933] border-[#FF9933] shadow-lg shadow-[#FF9933]/20'
                     : 'border-[#1e2638]'
@@ -875,7 +1454,7 @@ export default function LiveKshetraNative({
                 {/* Local Info Tag */}
                 <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-[#0A0D1C]/80 backdrop-blur-md px-3 py-1 rounded-xl border border-white/10 text-xs font-bold">
                   <span>{userName} (You)</span>
-                  {isHost && (
+                  {isHostState && (
                     <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#FF9933]/20 text-[#FF9933] border border-[#FF9933]/40">
                       Host
                     </span>
@@ -893,76 +1472,50 @@ export default function LiveKshetraNative({
                 </div>
               </div>
 
-              {/* TILE 2, 3, 4: PEER VIDEO TILES */}
+              {/* TILE 2, 3, 4: REAL REMOTE WEBRTC PEER VIDEO TILES */}
               {peers.map((peer) => (
-                <div
-                  key={peer.id}
-                  className={`relative rounded-2xl bg-[#0e1424] border transition-all duration-300 flex flex-col items-center justify-center overflow-hidden min-h-[180px] shadow-xl group ${
-                    peer.isSpeaking
-                      ? 'ring-2 ring-emerald-400 border-emerald-400 shadow-lg shadow-emerald-400/20'
-                      : 'border-[#1e2638]'
-                  }`}
-                >
-                  {/* Avatar Fallback */}
-                  <div className="flex flex-col items-center justify-center space-y-3">
-                    <div
-                      className={`h-20 w-20 rounded-full flex items-center justify-center text-xl font-bold font-heading shadow-xl transition-transform ${
-                        peer.isSpeaking ? 'scale-110 ring-4 ring-emerald-400/30' : ''
-                      }`}
-                      style={{
-                        background: `linear-gradient(135deg, ${peer.color}, #171C36)`,
-                        color: '#ECEDF7'
-                      }}
-                    >
-                      {peer.avatar}
-                    </div>
-                  </div>
-
-                  {/* Peer Name Tag */}
-                  <div className="absolute bottom-3 left-3 flex items-center gap-2 bg-[#0A0D1C]/80 backdrop-blur-md px-3 py-1 rounded-xl border border-white/10 text-xs font-bold">
-                    <span>{peer.name}</span>
-                    {peer.role === 'EDUCATOR' && (
-                      <span className="text-[10px] px-1.5 py-0.2 rounded bg-[#FFC15E]/20 text-[#FFC15E] border border-[#FFC15E]/40">
-                        Educator
-                      </span>
-                    )}
-                    {peer.handRaised && <span className="animate-bounce">✋</span>}
-                  </div>
-
-                  {/* Peer Mic Status */}
-                  <div
-                    className={`absolute top-3 right-3 p-1.5 rounded-full ${
-                      peer.audioOn ? 'bg-emerald-500/20 text-emerald-400' : 'bg-rose-500/20 text-rose-400'
-                    }`}
-                  >
-                    {peer.audioOn ? <Mic className="h-3.5 w-3.5" /> : <MicOff className="h-3.5 w-3.5" />}
-                  </div>
-
-                  {/* Host Quick Actions (Mute / Kick on hover) */}
-                  {isHost && (
-                    <div className="absolute top-3 left-3 opacity-0 group-hover:opacity-100 transition-opacity flex items-center gap-1.5 bg-[#0A0D1C]/90 px-2 py-1 rounded-xl border border-white/10">
-                      {peer.audioOn && (
-                        <button
-                          type="button"
-                          onClick={() => handleMutePeer(peer.id)}
-                          className="p-1 rounded text-rose-400 hover:bg-rose-500/20 transition"
-                          title="Mute Participant"
-                        >
-                          <VolumeX className="h-3 w-3" />
-                        </button>
-                      )}
-                      <button
-                        type="button"
-                        onClick={() => handleKickPeer(peer.id)}
-                        className="p-1 rounded text-rose-400 hover:bg-rose-500/20 transition"
-                        title="Remove Participant"
-                      >
-                        <UserX className="h-3 w-3" />
-                      </button>
-                    </div>
-                  )}
-                </div>
+                <RemotePeerTile
+                  key={peer.client_id || peer.id}
+                  peer={peer}
+                  stream={remoteStreams[peer.client_id || peer.id]}
+                  isHost={isHostState}
+                  onMutePeer={handleMutePeer}
+                  onKickPeer={handleKickPeer}
+                />
               ))}
+
+              {/* INVITE BANNER WHEN WAITING FOR PEERS */}
+              {peers.length === 0 && (
+                <div className="col-span-1 sm:col-span-2 flex flex-col items-center justify-center p-6 text-center max-w-md mx-auto space-y-3">
+                  <div className="h-12 w-12 rounded-2xl bg-[#171C36] border border-[#262C4C] flex items-center justify-center text-[#FF9933] shadow-lg">
+                    <Users className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <h3 className="text-sm font-bold text-white">No other participants yet</h3>
+                    <p className="text-xs text-slate-400 mt-1">
+                      Share the meeting code or link with peers to join. When they connect, their audio and video will appear here in real time!
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={copyMeetingCode}
+                      className="px-3.5 py-1.5 rounded-xl bg-[#171C36] hover:bg-[#262C4C] border border-[#262C4C] text-xs font-bold text-white flex items-center gap-1.5 transition cursor-pointer"
+                    >
+                      {copiedCode ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5 text-[#FF9933]" />}
+                      <span>{cleanCode}</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={copyDirectLink}
+                      className="px-3.5 py-1.5 rounded-xl bg-gradient-to-r from-[#FF9933] to-[#FF6F9C] text-[#0A0D1C] text-xs font-bold flex items-center gap-1.5 shadow-md shadow-[#FF9933]/20 transition cursor-pointer"
+                    >
+                      {copiedLink ? <Check className="h-3.5 w-3.5" /> : <Share2 className="h-3.5 w-3.5" />}
+                      <span>{copiedLink ? 'Link Copied!' : 'Copy Invite Link'}</span>
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -1079,15 +1632,19 @@ export default function LiveKshetraNative({
             {activeDrawer === 'people' && (
               <div className="flex-1 flex flex-col p-4 space-y-4 overflow-y-auto">
                 {/* Host Moderation Top Bar */}
-                {isHost && (
+                {isHostState && (
                   <div className="flex items-center justify-between p-2.5 rounded-xl bg-[#171C36] border border-[#262C4C]">
-                    <span className="text-xs font-bold text-slate-300">Host Controls</span>
+                    <div className="flex items-center gap-1.5">
+                      <ShieldCheck className="h-4 w-4 text-[#FF9933]" />
+                      <span className="text-xs font-bold text-slate-300">Host Moderation</span>
+                    </div>
                     <button
                       type="button"
                       onClick={handleMuteAll}
-                      className="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-400 text-xs font-semibold transition"
+                      className="px-2.5 py-1 rounded-lg bg-rose-500/15 hover:bg-rose-500/25 border border-rose-500/40 text-rose-400 text-xs font-semibold transition cursor-pointer flex items-center gap-1.5"
                     >
-                      Mute All
+                      <VolumeX className="h-3.5 w-3.5" />
+                      <span>Mute All</span>
                     </button>
                   </div>
                 )}
@@ -1101,8 +1658,8 @@ export default function LiveKshetraNative({
                     <div>
                       <p className="text-xs font-bold text-white flex items-center gap-1.5">
                         <span>{userName} (You)</span>
-                        {isHost && (
-                          <span className="text-[9px] px-1 rounded bg-[#FF9933]/20 text-[#FF9933]">
+                        {isHostState && (
+                          <span className="text-[9px] px-1 rounded bg-[#FF9933]/20 text-[#FF9933] border border-[#FF9933]/40">
                             Host
                           </span>
                         )}
@@ -1123,45 +1680,76 @@ export default function LiveKshetraNative({
                 {/* Peer List */}
                 <div className="space-y-1">
                   <p className="text-[10px] font-bold text-slate-500 uppercase tracking-wider px-2">
-                    In Meeting ({peers.length})
+                    In Meeting ({peers.length + 1})
                   </p>
                   {peers.map((peer) => (
                     <div
-                      key={peer.id}
+                      key={peer.client_id || peer.id}
                       className="flex items-center justify-between p-2 rounded-xl hover:bg-white/5 transition"
                     >
                       <div className="flex items-center gap-2.5">
                         <div
                           className="h-8 w-8 rounded-full flex items-center justify-center text-xs font-bold text-white"
-                          style={{ backgroundColor: peer.color }}
+                          style={{ backgroundColor: peer.color || '#8B7CFF' }}
                         >
-                          {peer.avatar}
+                          {peer.avatar || peer.name?.charAt(0) || 'P'}
                         </div>
                         <div>
-                          <p className="text-xs font-bold text-white">{peer.name}</p>
-                          <p className="text-[10px] text-slate-400">{peer.role}</p>
+                          <p className="text-xs font-bold text-white flex items-center gap-1.5">
+                            <span>{peer.name}</span>
+                            {peer.is_host && (
+                              <span className="text-[9px] px-1 rounded bg-[#FF9933]/20 text-[#FF9933] border border-[#FF9933]/40">
+                                Host
+                              </span>
+                            )}
+                          </p>
+                          <p className="text-[10px] text-slate-400">{peer.role || 'STUDENT'}</p>
                         </div>
                       </div>
 
                       <div className="flex items-center gap-2">
-                        {peer.audioOn ? (
+                        {peer.audioOn !== false ? (
                           <Mic className="h-3.5 w-3.5 text-emerald-400" />
                         ) : (
                           <MicOff className="h-3.5 w-3.5 text-rose-400" />
                         )}
-                        {isHost && (
-                          <button
-                            type="button"
-                            onClick={() => handleMutePeer(peer.id)}
-                            className="p-1 rounded text-slate-400 hover:text-rose-400 transition"
-                            title="Mute"
-                          >
-                            <VolumeX className="h-3 w-3" />
-                          </button>
+                        {isHostState && (
+                          <div className="flex items-center gap-1">
+                            {peer.audioOn !== false && (
+                              <button
+                                type="button"
+                                onClick={() => handleMutePeer(peer.client_id || peer.id)}
+                                className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                                title="Mute Participant"
+                              >
+                                <VolumeX className="h-3.5 w-3.5" />
+                              </button>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => handleKickPeer(peer.client_id || peer.id)}
+                              className="p-1 rounded text-slate-400 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer"
+                              title="Remove Participant"
+                            >
+                              <UserX className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
                         )}
                       </div>
                     </div>
                   ))}
+                  {peers.length === 0 && (
+                    <div className="p-3 text-center rounded-xl bg-[#171C36]/50 border border-[#262C4C] mt-2">
+                      <p className="text-xs text-slate-400">No other attendees yet.</p>
+                      <button
+                        type="button"
+                        onClick={copyDirectLink}
+                        className="text-[11px] text-[#FF9933] hover:underline font-bold mt-1 cursor-pointer"
+                      >
+                        Copy invite link
+                      </button>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
@@ -1349,6 +1937,18 @@ export default function LiveKshetraNative({
             <Radio className="h-5 w-5" />
           </button>
 
+          {/* Host Mute All Button */}
+          {isHostState && (
+            <button
+              type="button"
+              onClick={handleMuteAll}
+              className="dock-btn !bg-rose-500/15 hover:!bg-rose-500/25 !border-rose-500/40 text-rose-400 font-bold"
+              title="Host: Mute all participants"
+            >
+              <VolumeX className="h-5 w-5" />
+            </button>
+          )}
+
           {/* Leave Call (Red Button) */}
           <button
             type="button"
@@ -1419,19 +2019,27 @@ export default function LiveKshetraNative({
                   setShowLeaveModal(false);
                   if (onClose) onClose();
                 }}
-                className="w-full py-2.5 rounded-full bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition"
+                className="w-full py-2.5 rounded-full bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs transition cursor-pointer"
               >
                 Leave Call
               </button>
-              {isHost && (
+              {isHostState && (
                 <button
                   type="button"
                   onClick={() => {
+                    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+                      wsRef.current.send(
+                        JSON.stringify({
+                          type: 'END_POD_FOR_ALL',
+                          reason: 'Meeting host ended session for everyone'
+                        })
+                      );
+                    }
                     setShowLeaveModal(false);
                     showToast('Meeting ended for everyone');
                     if (onClose) onClose();
                   }}
-                  className="w-full py-2.5 rounded-full bg-[#171C36] hover:bg-[#262C4C] text-slate-200 border border-[#262C4C] font-bold text-xs transition"
+                  className="w-full py-2.5 rounded-full bg-[#171C36] hover:bg-[#262C4C] text-slate-200 border border-[#262C4C] font-bold text-xs transition cursor-pointer"
                 >
                   End Meeting for All
                 </button>

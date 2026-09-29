@@ -451,26 +451,32 @@ async def get_pod_messages(pod_id: int, db: AsyncSession = Depends(get_db)):
 # WEBSOCKET REAL-TIME SIGNALING & MODERATION HUB
 # ==============================================================================
 
-@router.websocket("/ws/{pod_id}")
+@router.websocket("/ws/{room_id}")
 async def pod_websocket_endpoint(
     websocket: WebSocket,
-    pod_id: int,
+    room_id: str,
     client_id: str = "guest",
     user_name: str = "Peer",
     user_id: Optional[str] = None,
-    role: str = "STUDENT"
+    role: str = "STUDENT",
+    is_creator: Optional[str] = None
 ):
     """WebSocket endpoint for WebRTC mesh signaling, live chat with @Tutor co-pilot, and host moderation."""
+    room_key = str(room_id).strip()
+    is_creator_bool = str(is_creator).lower() in ("true", "1", "yes")
+
     parsed_user_id = None
     if user_id is not None and str(user_id).strip().isdigit():
         parsed_user_id = int(str(user_id).strip())
 
+    parsed_pod_id = int(room_key) if room_key.isdigit() else None
+
     # Check blacklist before admitting
-    async with AsyncSessionLocal() as check_session:
-        if parsed_user_id:
+    if parsed_pod_id and parsed_user_id:
+        async with AsyncSessionLocal() as check_session:
             bl_res = await check_session.execute(
                 select(PodBlacklist).where(
-                    PodBlacklist.pod_id == pod_id,
+                    PodBlacklist.pod_id == parsed_pod_id,
                     PodBlacklist.user_id == parsed_user_id
                 )
             )
@@ -479,22 +485,24 @@ async def pod_websocket_endpoint(
                 return
 
     await pod_manager.connect(
-        pod_id=pod_id,
+        pod_id=room_key,
         websocket=websocket,
         client_id=client_id,
         user_name=user_name,
         user_id=parsed_user_id,
-        role=role
+        role=role,
+        is_creator=is_creator_bool
     )
 
     course_id = 1
     host_id = None
-    async with AsyncSessionLocal() as session:
-        pod_res = await session.execute(select(LearningPod).where(LearningPod.id == pod_id))
-        pod_obj = pod_res.scalars().first()
-        if pod_obj:
-            course_id = pod_obj.course_id
-            host_id = pod_obj.host_id
+    if parsed_pod_id:
+        async with AsyncSessionLocal() as session:
+            pod_res = await session.execute(select(LearningPod).where(LearningPod.id == parsed_pod_id))
+            pod_obj = pod_res.scalars().first()
+            if pod_obj:
+                course_id = pod_obj.course_id
+                host_id = pod_obj.host_id
 
     try:
         while True:
@@ -506,20 +514,24 @@ async def pod_websocket_endpoint(
                 content = data.get("content", "")
                 sender = data.get("sender_name", user_name)
 
-                # Persist message
-                async with AsyncSessionLocal() as session:
-                    db_msg = PodMessage(
-                        pod_id=pod_id,
-                        sender_name=sender,
-                        content=content,
-                        is_ai_tutor=False
-                    )
-                    session.add(db_msg)
-                    await session.commit()
+                # Persist message if persistent pod
+                if parsed_pod_id:
+                    try:
+                        async with AsyncSessionLocal() as session:
+                            db_msg = PodMessage(
+                                pod_id=parsed_pod_id,
+                                sender_name=sender,
+                                content=content,
+                                is_ai_tutor=False
+                            )
+                            session.add(db_msg)
+                            await session.commit()
+                    except Exception as e:
+                        logger.warning(f"Could not persist chat message: {e}")
 
                 # Dispatch chat & handle possible @Tutor query
                 await pod_manager.handle_pod_message(
-                    pod_id=pod_id,
+                    pod_id=room_key,
                     course_id=course_id,
                     sender_name=sender,
                     content=content
@@ -531,20 +543,20 @@ async def pod_websocket_endpoint(
                 target_user_id = data.get("target_user_id")
                 reason = data.get("reason", "Disruptive conduct")
 
-                if target_user_id:
+                if parsed_pod_id and target_user_id:
                     async with AsyncSessionLocal() as session:
                         bl_entry = PodBlacklist(
-                            pod_id=pod_id,
+                            pod_id=parsed_pod_id,
                             user_id=target_user_id,
                             reason=reason,
-                            kicked_by=user_id or 1
+                            kicked_by=parsed_user_id or 1
                         )
                         session.add(bl_entry)
                         await session.commit()
 
                 if target_client_id:
-                    await pod_manager.kick_client(pod_id, target_client_id, reason)
-                    await pod_manager.broadcast_to_pod(pod_id, {
+                    await pod_manager.kick_client(room_key, target_client_id, reason)
+                    await pod_manager.broadcast_to_pod(room_key, {
                         "type": "PARTICIPANT_KICKED",
                         "client_id": target_client_id,
                         "reason": reason
@@ -554,12 +566,12 @@ async def pod_websocket_endpoint(
                 target_client_id = data.get("target_client_id") or data.get("targetUserId")
                 reason = data.get("reason", "Muted by host")
                 if target_client_id:
-                    await pod_manager.send_to_client(pod_id, target_client_id, {
+                    await pod_manager.send_to_client(room_key, target_client_id, {
                         "type": "FORCE_MUTE_PARTICIPANT",
                         "host_id": parsed_user_id or client_id,
                         "reason": reason
                     })
-                    await pod_manager.broadcast_to_pod(pod_id, {
+                    await pod_manager.broadcast_to_pod(room_key, {
                         "type": "HOST_MUTED_PEER",
                         "client_id": target_client_id
                     })
@@ -567,7 +579,7 @@ async def pod_websocket_endpoint(
             elif msg_type == "REQUEST_UNMUTE_PERMISSION":
                 sender_id = data.get("senderId") or data.get("sender_client_id") or client_id
                 sender_name = data.get("senderName") or data.get("sender_name") or user_name
-                await pod_manager.broadcast_to_pod(pod_id, {
+                await pod_manager.broadcast_to_pod(room_key, {
                     "type": "UNMUTE_PERMISSION_REQUESTED",
                     "sender_client_id": sender_id,
                     "sender_id": sender_id,
@@ -578,8 +590,7 @@ async def pod_websocket_endpoint(
             elif msg_type in ["GRANT_UNMUTE_PERMISSION", "UNMUTE_PARTICIPANT"]:
                 target_client_id = data.get("target_client_id") or data.get("targetUserId")
                 if target_client_id:
-                    # Privacy-preserving: send invitation event to participant rather than forcing audio track on
-                    await pod_manager.send_to_client(pod_id, target_client_id, {
+                    await pod_manager.send_to_client(room_key, target_client_id, {
                         "type": "EVENT_UNMUTE_PERMISSION_GRANTED",
                         "host_id": parsed_user_id or client_id,
                         "host_name": user_name
@@ -589,13 +600,13 @@ async def pod_websocket_endpoint(
                 target_client_id = data.get("target_client_id") or data.get("targetUserId")
                 reason = data.get("reason", "Host denied unmute request")
                 if target_client_id:
-                    await pod_manager.send_to_client(pod_id, target_client_id, {
+                    await pod_manager.send_to_client(room_key, target_client_id, {
                         "type": "EVENT_UNMUTE_PERMISSION_DENIED",
                         "reason": reason
                     })
 
             elif msg_type == "MUTE_ALL":
-                for cid, sock in list(pod_manager.peer_sockets.get(pod_id, {}).items()):
+                for cid, sock in list(pod_manager.peer_sockets.get(room_key, {}).items()):
                     if cid != client_id:
                         try:
                             await sock.send_text(json.dumps({
@@ -605,44 +616,66 @@ async def pod_websocket_endpoint(
                             }))
                         except Exception:
                             pass
-                await pod_manager.broadcast_to_pod(pod_id, {
+                await pod_manager.broadcast_to_pod(room_key, {
                     "type": "ALL_PEERS_MUTED",
                     "muted_by": client_id
                 })
 
             elif msg_type == "MEDIA_STATE_CHANGE":
-                await pod_manager.broadcast_to_pod(pod_id, data)
+                if client_id in pod_manager.pod_peers.get(room_key, {}):
+                    if "audio_on" in data:
+                        pod_manager.pod_peers[room_key][client_id]["audio_on"] = data["audio_on"]
+                    if "video_on" in data:
+                        pod_manager.pod_peers[room_key][client_id]["video_on"] = data["video_on"]
+                    if "hand_raised" in data:
+                        pod_manager.pod_peers[room_key][client_id]["hand_raised"] = data["hand_raised"]
+                await pod_manager.broadcast_to_pod(room_key, data)
 
             elif msg_type == "DISABLE_VIDEO":
                 target_client_id = data.get("target_client_id")
                 if target_client_id:
-                    await pod_manager.send_to_client(pod_id, target_client_id, {"type": "REMOTE_DISABLE_VIDEO"})
-                    await pod_manager.broadcast_to_pod(pod_id, {
+                    await pod_manager.send_to_client(room_key, target_client_id, {"type": "REMOTE_DISABLE_VIDEO"})
+                    await pod_manager.broadcast_to_pod(room_key, {
                         "type": "HOST_DISABLED_VIDEO_PEER",
                         "client_id": target_client_id
                     })
 
-            elif msg_type in ["SIGNAL_OFFER", "SIGNAL_ANSWER", "SIGNAL_ICE", "WHITEBOARD_DRAW", "WHITEBOARD_CLEAR"]:
-                # Relay WebRTC signaling frames or whiteboard strokes to peers
-                await pod_manager.broadcast_to_pod(pod_id, data)
+            elif msg_type in ["SIGNAL_OFFER", "SIGNAL_ANSWER", "SIGNAL_ICE"]:
+                # Relay WebRTC signaling frames directly to recipient peer if specified, or broadcast
+                to_client = data.get("to_client")
+                if to_client:
+                    await pod_manager.send_to_client(room_key, to_client, data)
+                else:
+                    await pod_manager.broadcast_to_pod(room_key, data)
+
+            elif msg_type in ["WHITEBOARD_DRAW", "WHITEBOARD_CLEAR"]:
+                for cid, sock in list(pod_manager.peer_sockets.get(room_key, {}).items()):
+                    if cid != client_id:
+                        try:
+                            await sock.send_text(raw_data)
+                        except Exception:
+                            pass
 
             elif msg_type == "END_POD_FOR_ALL":
-                if parsed_user_id and (parsed_user_id == host_id or role == "EDUCATOR"):
+                is_auth_host = (
+                    parsed_user_id and (parsed_user_id == host_id or role == "EDUCATOR")
+                ) or pod_manager.pod_hosts.get(room_key) == client_id
+                if is_auth_host:
                     await pod_manager.teardown_pod(
-                        pod_id=pod_id,
+                        pod_id=room_key,
                         reason=data.get("reason", "Meeting host ended the session for everyone."),
                         status="TERMINATED_BY_HOST"
                     )
 
             elif msg_type == "HOST_HEARTBEAT":
-                async with AsyncSessionLocal() as session:
-                    p = await session.get(LearningPod, pod_id)
-                    if p and p.host_id == user_id:
-                        p.host_last_seen_at = datetime.now(timezone.utc)
-                        await session.commit()
+                if parsed_pod_id and parsed_user_id:
+                    async with AsyncSessionLocal() as session:
+                        p = await session.get(LearningPod, parsed_pod_id)
+                        if p and p.host_id == parsed_user_id:
+                            p.host_last_seen_at = datetime.now(timezone.utc)
+                            await session.commit()
 
             elif msg_type == "PING":
-                # Heartbeat keepalive response for Cloudflare/Render/Koyeb idle timeouts
                 await websocket.send_text(json.dumps({
                     "type": "PONG",
                     "client_id": client_id,
@@ -650,9 +683,7 @@ async def pod_websocket_endpoint(
                 }))
 
     except WebSocketDisconnect:
-        pod_manager.disconnect(pod_id, websocket, client_id, user_id)
-        await pod_manager.broadcast_to_pod(pod_id, {
-            "type": "PEER_LEFT",
-            "client_id": client_id,
-            "user_name": user_name
-        })
+        pod_manager.disconnect(room_key, websocket, client_id, parsed_user_id)
+    except Exception as e:
+        logger.error(f"Pod websocket exception in {room_key}: {e}")
+        pod_manager.disconnect(room_key, websocket, client_id, parsed_user_id)
