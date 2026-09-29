@@ -42,6 +42,7 @@ const DEFAULT_RECOMMENDATIONS = [
 
 export default function EnrolledCoursesGrid({
   courses = [],
+  allCourses = [],
   onSelectCourse,
   onOpenExploreCatalog,
   onOpenCreateCourse,
@@ -51,6 +52,9 @@ export default function EnrolledCoursesGrid({
   user
 }) {
   const isEducator = user?.role === 'EDUCATOR';
+  const createdCourses = (allCourses && allCourses.length > 0 ? allCourses : courses).filter(
+    (c) => c.educator_id === user?.id
+  );
 
   return (
     <div className="min-h-full ambient-canvas p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-10">
@@ -76,9 +80,9 @@ export default function EnrolledCoursesGrid({
               </button>
             )}
           </div>
-          {courses.filter(c => c.educator_id === user?.id).length > 0 ? (
+          {createdCourses.length > 0 ? (
             <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-5">
-              {courses.filter(c => c.educator_id === user?.id).map((course, idx) => (
+              {createdCourses.map((course, idx) => (
                 <JourneyTrackCard
                   key={course.id || idx}
                   course={course}

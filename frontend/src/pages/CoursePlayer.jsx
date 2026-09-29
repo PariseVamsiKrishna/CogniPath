@@ -133,6 +133,7 @@ export default function CoursePlayer({
     <div className="h-full overflow-y-auto bg-[#0b0f19]">
       <EnrolledCoursesGrid
         courses={courses}
+        allCourses={allCourses}
         onSelectCourse={handleSelectCourse}
         onOpenExploreCatalog={() => setShowCatalogModal(true)}
         onOpenCreateCourse={isEducator ? () => setShowCreateModal(true) : undefined}
