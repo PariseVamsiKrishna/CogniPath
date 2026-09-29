@@ -106,6 +106,8 @@ export default function CommunityFeed({
     }
   };
 
+  const [communityTab, setCommunityTab] = useState('my'); // 'my' or 'discover'
+
   // Channels & Messages State
   const [channels, setChannels] = useState([
     { id: 1, name: 'announcements', description: 'Official announcements from Community Owner' },
@@ -312,14 +314,18 @@ export default function CommunityFeed({
 
   // Filtered course communities
   const filteredCourses = allAvailableCourses.filter((c) => {
-    const text = `${c.title} ${c.code || ''}`.toLowerCase();
-    return text.includes(searchFilter.toLowerCase());
+    const q = searchFilter.toLowerCase();
+    // Match by: title, code, educator name, or just numbers (e.g. '101' matches 'CS101')
+    return (
+      `${c.title} ${c.code || ''} ${c.educator_name || ''}`.toLowerCase().includes(q) ||
+      (q.match(/^\d+$/) && (c.code || '').includes(q)) // number-only filter
+    );
   });
 
   return (
     <div className="flex h-[calc(100vh-4rem)] bg-[#0A0D1C] overflow-hidden text-[#ECEDF7]">
       {/* ===================================================================== */}
-      {/* LEFT SIDEBAR: Classic WhatsApp Community List                         */}
+      {/* LEFT SIDEBAR: Community List                                          */}
       {/* ===================================================================== */}
       <div className="w-80 sm:w-96 border-r border-[#262C4C] bg-[#12162B] flex flex-col shrink-0">
         {/* Communities Header */}
@@ -331,15 +337,11 @@ export default function CommunityFeed({
               </div>
               <div>
                 <h2 className="font-heading text-base font-bold text-[#ECEDF7] leading-tight">
-                  Communities
+                  Course Communities
                 </h2>
                 <span className="text-[10px] text-[#8A90B4]">Course-Based Cohorts</span>
               </div>
             </div>
-
-            <span className="text-[10px] font-bold px-2 py-0.5 rounded-full bg-[#171C36] text-[#25D366] border border-[#25D366]/20">
-              WhatsApp Style
-            </span>
           </div>
 
           {/* Search Box */}
@@ -349,73 +351,131 @@ export default function CommunityFeed({
               type="text"
               value={searchFilter}
               onChange={(e) => setSearchFilter(e.target.value)}
-              placeholder="Search course communities..."
+              placeholder="Search by name, code, or educator..."
               className="w-full bg-[#171C36] border border-[#262C4C] focus:border-[#25D366]/50 rounded-xl pl-9 pr-3 py-2 text-xs text-[#ECEDF7] placeholder-[#8A90B4]/60 focus:outline-none transition"
             />
           </div>
         </div>
+        
+        {/* Tab Header */}
+        <div className="flex border-b border-[#262C4C]">
+          <button onClick={() => setCommunityTab('my')}
+            className={`flex-1 py-2.5 text-xs font-bold transition ${communityTab === 'my' ? 'text-[#25D366] border-b-2 border-[#25D366]' : 'text-[#8A90B4] hover:text-[#ECEDF7]'}`}>
+            My Communities {joinedCommunities.length > 0 && `(${joinedCommunities.length})`}
+          </button>
+          <button onClick={() => setCommunityTab('discover')}
+            className={`flex-1 py-2.5 text-xs font-bold transition ${communityTab === 'discover' ? 'text-[#8B7CFF] border-b-2 border-[#8B7CFF]' : 'text-[#8A90B4] hover:text-[#ECEDF7]'}`}>
+            Discover
+          </button>
+        </div>
 
         {/* Communities List */}
         <div className="flex-1 overflow-y-auto divide-y divide-[#262C4C]/40">
-          {filteredCourses.map((c) => {
-            const isSelected = c.id === activeCourse.id;
-            const isJoined = joinedCommunities.includes(c.id) || (isEducator && c.educator_id === user?.id);
-            const isOwner = (c.educator_id === user?.id) || isEducator;
-
-            return (
-              <div
-                key={c.id}
-                onClick={() => {
-                  setSelectedCourseId(c.id);
-                  if (onSelectCourse) onSelectCourse(c.id);
-                }}
-                className={`p-3.5 flex items-start gap-3 cursor-pointer transition relative group ${
-                  isSelected
-                    ? 'bg-[#171C36] text-[#ECEDF7]'
-                    : 'hover:bg-[#171C36]/50 text-[#8A90B4]'
-                }`}
-              >
-                {/* Active Green Indicator */}
-                {isSelected && (
-                  <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#25D366] rounded-r" />
-                )}
-
-                {/* Community Avatar Badge */}
-                <div
-                  className={`h-11 w-11 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border shadow-sm ${
-                    isSelected
-                      ? 'bg-[#25D366]/20 border-[#25D366]/50 text-[#25D366]'
-                      : 'bg-[#171C36] border-[#262C4C] text-[#8A90B4]'
-                  }`}
-                >
-                  {c.code ? c.code.slice(0, 3) : 'CS'}
-                </div>
-
-                {/* Community Meta Info */}
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-1 mb-0.5">
-                    <h4 className="text-xs font-bold text-[#ECEDF7] truncate">
-                      {c.title}
-                    </h4>
-                    {isOwner ? (
-                      <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 shrink-0">
-                        Owner
-                      </span>
-                    ) : isJoined ? (
-                      <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-[#25D366]/15 text-[#25D366] border border-[#25D366]/30 shrink-0">
-                        Joined
-                      </span>
-                    ) : null}
-                  </div>
-
-                  <p className="text-[11px] text-[#8A90B4] truncate leading-tight">
-                    {c.code ? `${c.code} • ` : ''}
-                    {isJoined ? '📢 Announcements & Discussion active' : 'Click to preview & join'}
-                  </p>
-                </div>
+          {communityTab === 'my' && (
+            filteredCourses.filter(c => joinedCommunities.includes(c.id) || c.educator_id === user?.id).length === 0 ? (
+              <div className="p-6 text-center text-xs text-[#8A90B4]">
+                No communities joined yet. Switch to Discover tab to find communities.
               </div>
-            );
-          })}
+            ) : (
+              filteredCourses
+                .filter(c => joinedCommunities.includes(c.id) || c.educator_id === user?.id)
+                .map((c) => {
+                  const isSelected = c.id === activeCourse.id;
+                  const isOwner = (c.educator_id === user?.id) || isEducator;
+
+                  return (
+                    <div
+                      key={c.id}
+                      onClick={() => {
+                        setSelectedCourseId(c.id);
+                        if (onSelectCourse) onSelectCourse(c.id);
+                      }}
+                      className={`p-3.5 flex items-start gap-3 cursor-pointer transition relative group ${
+                        isSelected
+                          ? 'bg-[#171C36] text-[#ECEDF7]'
+                          : 'hover:bg-[#171C36]/50 text-[#8A90B4]'
+                      }`}
+                    >
+                      {/* Active Green Indicator */}
+                      {isSelected && (
+                        <div className="absolute left-0 top-0 bottom-0 w-1 bg-[#25D366] rounded-r" />
+                      )}
+
+                      {/* Community Avatar Badge */}
+                      <div
+                        className={`h-11 w-11 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border shadow-sm ${
+                          isSelected
+                            ? 'bg-[#25D366]/20 border-[#25D366]/50 text-[#25D366]'
+                            : 'bg-[#171C36] border-[#262C4C] text-[#8A90B4]'
+                        }`}
+                      >
+                        {c.code ? c.code.slice(0, 3) : 'CS'}
+                      </div>
+
+                      {/* Community Meta Info */}
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-1 mb-0.5">
+                          <h4 className="text-xs font-bold text-[#ECEDF7] truncate">
+                            {c.title}
+                          </h4>
+                          {isOwner && (
+                            <span className="text-[9px] font-extrabold px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-400 border border-amber-500/30 shrink-0">
+                              Owner
+                            </span>
+                          )}
+                        </div>
+
+                        <p className="text-[11px] text-[#8A90B4] truncate leading-tight">
+                          {c.code ? `${c.code} • ` : ''}
+                          📢 Announcements & Discussion active
+                        </p>
+                      </div>
+                    </div>
+                  );
+                })
+            )
+          )}
+
+          {communityTab === 'discover' && (
+            filteredCourses.filter(c => !joinedCommunities.includes(c.id) && c.educator_id !== user?.id).length === 0 ? (
+              <div className="p-6 text-center text-xs text-[#8A90B4]">
+                You've joined all available communities!
+              </div>
+            ) : (
+              filteredCourses
+                .filter(c => !joinedCommunities.includes(c.id) && c.educator_id !== user?.id)
+                .map((c) => (
+                  <div key={c.id} className="p-4 flex flex-col gap-3 hover:bg-[#171C36]/30 border-b border-[#262C4C]/40">
+                    <div className="flex justify-between items-start">
+                      <div className="flex items-center gap-3 min-w-0">
+                        <div className="h-11 w-11 rounded-xl flex items-center justify-center font-bold text-sm shrink-0 border shadow-sm bg-[#171C36] border-[#262C4C] text-[#8A90B4]">
+                          {c.code ? c.code.slice(0, 3) : 'CS'}
+                        </div>
+                        <div className="min-w-0">
+                          <h4 className="text-sm font-bold text-[#ECEDF7] truncate">{c.title}</h4>
+                          <span className="text-[10px] font-semibold text-[#8B7CFF]">{c.code}</span>
+                          {c.educator_name && (
+                            <p className="text-[10px] text-[#8A90B4] truncate mt-0.5">By {c.educator_name}</p>
+                          )}
+                        </div>
+                      </div>
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          handleJoinCommunity(c.id);
+                          setCommunityTab('my');
+                          setSelectedCourseId(c.id);
+                          if (onSelectCourse) onSelectCourse(c.id);
+                        }}
+                        className="px-3 py-1.5 rounded-xl bg-[#25D366] hover:bg-[#20ba59] text-[#0A0D1C] text-xs font-bold transition flex items-center gap-1 shadow-md shadow-[#25D366]/20 shrink-0"
+                      >
+                        Join
+                      </button>
+                    </div>
+                  </div>
+                ))
+            )
+          )}
         </div>
       </div>
 

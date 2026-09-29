@@ -123,12 +123,16 @@ export default function SpacedQuizView({
   onSelectCourse,
   defaultMode = 'flashcards'
 }) {
-  const availableCourses = enrolledCourses.length > 0 ? enrolledCourses : courses;
-  const activeCourse = availableCourses.find((c) => c.id === courseId) || availableCourses[0] || {
-    id: 1,
-    title: 'Data Structures and Algorithms',
-    code: 'CS101'
-  };
+  const availableCourses = enrolledCourses;
+  const activeCourse = availableCourses.find((c) => c.id === courseId) || availableCourses[0];
+
+  if (!activeCourse) {
+    return (
+      <div className="flex h-[calc(100vh-4rem)] items-center justify-center p-8 text-center text-[#8A90B4]">
+        Enroll in a course to see flashcards for that subject.
+      </div>
+    );
+  }
 
   const getCourseCategoryKey = () => {
     const text = `${activeCourse.title || ''} ${activeCourse.code || ''}`.toLowerCase();
@@ -139,7 +143,68 @@ export default function SpacedQuizView({
   };
 
   const categoryKey = getCourseCategoryKey();
-  const currentDeck = COURSE_FLASHCARDS[categoryKey] || COURSE_FLASHCARDS.default;
+
+  const [loadingCards, setLoadingCards] = useState(false);
+  const [dynamicDeck, setDynamicDeck] = useState(null);
+
+  const fetchCards = async () => {
+    if (!activeCourse?.id) return;
+    setLoadingCards(true);
+    try {
+      const quizData = await quizzesAPI.generate(activeCourse.id, activeCourse.title + ' key concepts');
+      if (quizData && quizData.questions && quizData.questions.length > 0) {
+        const cards = quizData.questions.map((q, i) => ({
+          id: 'ai_' + i,
+          front: q.question_text,
+          back: q.explanation || q.options?.[q.correct_option_index] || 'See explanation',
+          formula: q.options ? q.options[q.correct_option_index] : null,
+          citation: q.source_chunk_ref || activeCourse.title
+        }));
+        for (let i = cards.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [cards[i], cards[j]] = [cards[j], cards[i]];
+        }
+        setDynamicDeck(cards);
+      }
+    } catch(err) {
+      setDynamicDeck(null);
+    } finally {
+      setLoadingCards(false);
+    }
+  };
+
+  useEffect(() => {
+    let isMounted = true;
+    async function load() {
+      if (!activeCourse?.id) return;
+      setLoadingCards(true);
+      try {
+        const quizData = await quizzesAPI.generate(activeCourse.id, activeCourse.title + ' key concepts');
+        if (quizData && quizData.questions && quizData.questions.length > 0 && isMounted) {
+          const cards = quizData.questions.map((q, i) => ({
+            id: 'ai_' + i,
+            front: q.question_text,
+            back: q.explanation || q.options?.[q.correct_option_index] || 'See explanation',
+            formula: q.options ? q.options[q.correct_option_index] : null,
+            citation: q.source_chunk_ref || activeCourse.title
+          }));
+          for (let i = cards.length - 1; i > 0; i--) {
+            const j = Math.floor(Math.random() * (i + 1));
+            [cards[i], cards[j]] = [cards[j], cards[i]];
+          }
+          setDynamicDeck(cards);
+        }
+      } catch(err) {
+        if (isMounted) setDynamicDeck(null);
+      } finally {
+        if (isMounted) setLoadingCards(false);
+      }
+    }
+    load();
+    return () => { isMounted = false; };
+  }, [activeCourse?.id]);
+
+  const currentDeck = dynamicDeck || COURSE_FLASHCARDS[categoryKey] || COURSE_FLASHCARDS.default;
   const currentKeyPoints = COURSE_SYLLABUS_POINTS[categoryKey] || COURSE_SYLLABUS_POINTS.default;
 
   // View mode: 'flashcards', 'quiz', 'points'
@@ -362,126 +427,140 @@ export default function SpacedQuizView({
       {/* ===================================================================== */}
       {viewMode === 'flashcards' && (
         <div className="space-y-6">
-          {/* Card Carousel Header */}
-          <div className="flex items-center justify-between">
-            <span className="text-xs font-bold text-[#8A90B4]">
-              Card {cardIndex + 1} of {currentDeck.length}
-            </span>
-            <span className="text-xs text-[#8A90B4]">
-              Click card or press flip to reveal invariant
-            </span>
-          </div>
-
-          {/* Flashcard 3D Card */}
-          <div
-            onClick={() => setIsFlipped(!isFlipped)}
-            className="w-full min-h-[260px] sm:min-h-[300px] rounded-3xl bg-[#12162B] hover:bg-[#171C36] border border-[#262C4C] p-8 sm:p-10 flex flex-col justify-between cursor-pointer transition-all duration-300 shadow-2xl relative group select-none"
-            style={{
-              boxShadow: '0 20px 40px -15px rgba(139, 124, 255, 0.15)'
-            }}
-          >
-            {/* Top Indicator */}
-            <div className="flex items-center justify-between text-xs">
-              <span className="font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-full bg-[#8B7CFF]/15 text-[#8B7CFF] border border-[#8B7CFF]/30">
-                {isFlipped ? 'Answer & Invariant' : 'Question / Concept'}
-              </span>
-              <span className="text-[#8A90B4] text-[11px] group-hover:text-[#ECEDF7] transition">
-                {isFlipped ? 'Tap to see Question 🔄' : 'Tap to Flip 🔄'}
-              </span>
+          {loadingCards ? (
+            <div className="flex flex-col items-center justify-center min-h-[300px] space-y-4">
+              <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-[#8B7CFF]"></div>
+              <p className="text-sm text-[#8A90B4]">Generating AI flashcards...</p>
             </div>
-
-            {/* Middle Content */}
-            <div className="py-6 text-center space-y-4">
-              <h3 className="font-heading text-lg sm:text-2xl font-bold text-[#ECEDF7] leading-relaxed max-w-2xl mx-auto">
-                {isFlipped ? activeCard.back : activeCard.front}
-              </h3>
-
-              {isFlipped && activeCard.formula && (
-                <div className="p-3 rounded-xl bg-[#0A0D1C] border border-[#262C4C] font-mono text-xs sm:text-sm text-[#5FE3B0] max-w-lg mx-auto">
-                  {activeCard.formula}
+          ) : (
+            <>
+              {/* Card Carousel Header */}
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-4">
+                  <span className="text-xs font-bold text-[#8A90B4]">
+                    Card {cardIndex + 1} of {currentDeck.length}
+                  </span>
+                  <button onClick={fetchCards} className="text-xs font-bold text-[#8B7CFF] hover:text-[#ECEDF7] transition flex items-center gap-1">
+                    <RotateCcw className="h-3 w-3" /> Regenerate Cards
+                  </button>
                 </div>
-              )}
-            </div>
+                <span className="text-xs text-[#8A90B4]">
+                  Click card or press flip to reveal invariant
+                </span>
+              </div>
 
-            {/* Bottom Citation */}
-            <div className="flex items-center justify-between text-[11px] text-[#8A90B4] pt-4 border-t border-[#262C4C]/60">
-              <span className="truncate">Source: {activeCard.citation}</span>
-              <span className="font-semibold text-[#8B7CFF]">CogniPath Grounded</span>
-            </div>
-          </div>
-
-          {/* SM-2 Interval Grading Buttons */}
-          <div className="space-y-3">
-            <span className="text-[11px] uppercase font-bold text-[#8A90B4] block text-center">
-              Rate your recall (SuperMemo SM-2 Interval Calculation):
-            </span>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-2xl mx-auto">
-              <button
-                type="button"
-                onClick={() => handleSM2Rating('again')}
-                className="p-3 rounded-xl bg-red-950/30 hover:bg-red-900/50 border border-red-500/30 text-red-300 text-xs font-bold transition flex flex-col items-center"
+              {/* Flashcard 3D Card */}
+              <div
+                onClick={() => setIsFlipped(!isFlipped)}
+                className="w-full min-h-[260px] sm:min-h-[300px] rounded-3xl bg-[#12162B] hover:bg-[#171C36] border border-[#262C4C] p-8 sm:p-10 flex flex-col justify-between cursor-pointer transition-all duration-300 shadow-2xl relative group select-none"
+                style={{
+                  boxShadow: '0 20px 40px -15px rgba(139, 124, 255, 0.15)'
+                }}
               >
-                <span>Again</span>
-                <span className="text-[10px] text-red-400/80 font-normal mt-0.5">&lt; 1 min</span>
-              </button>
+                {/* Top Indicator */}
+                <div className="flex items-center justify-between text-xs">
+                  <span className="font-extrabold uppercase tracking-wider px-2.5 py-1 rounded-full bg-[#8B7CFF]/15 text-[#8B7CFF] border border-[#8B7CFF]/30">
+                    {isFlipped ? 'Answer & Invariant' : 'Question / Concept'}
+                  </span>
+                  <span className="text-[#8A90B4] text-[11px] group-hover:text-[#ECEDF7] transition">
+                    {isFlipped ? 'Tap to see Question 🔄' : 'Tap to Flip 🔄'}
+                  </span>
+                </div>
 
-              <button
-                type="button"
-                onClick={() => handleSM2Rating('hard')}
-                className="p-3 rounded-xl bg-amber-950/30 hover:bg-amber-900/50 border border-amber-500/30 text-amber-300 text-xs font-bold transition flex flex-col items-center"
-              >
-                <span>Hard</span>
-                <span className="text-[10px] text-amber-400/80 font-normal mt-0.5">1 day</span>
-              </button>
+                {/* Middle Content */}
+                <div className="py-6 text-center space-y-4">
+                  <h3 className="font-heading text-lg sm:text-2xl font-bold text-[#ECEDF7] leading-relaxed max-w-2xl mx-auto">
+                    {isFlipped ? activeCard.back : activeCard.front}
+                  </h3>
 
-              <button
-                type="button"
-                onClick={() => handleSM2Rating('good')}
-                className="p-3 rounded-xl bg-emerald-950/30 hover:bg-emerald-900/50 border border-emerald-500/30 text-emerald-300 text-xs font-bold transition flex flex-col items-center"
-              >
-                <span>Good</span>
-                <span className="text-[10px] text-emerald-400/80 font-normal mt-0.5">3 days</span>
-              </button>
+                  {isFlipped && activeCard.formula && (
+                    <div className="p-3 rounded-xl bg-[#0A0D1C] border border-[#262C4C] font-mono text-xs sm:text-sm text-[#5FE3B0] max-w-lg mx-auto">
+                      {activeCard.formula}
+                    </div>
+                  )}
+                </div>
 
-              <button
-                type="button"
-                onClick={() => handleSM2Rating('easy')}
-                className="p-3 rounded-xl bg-blue-950/30 hover:bg-blue-900/50 border border-blue-500/30 text-blue-300 text-xs font-bold transition flex flex-col items-center"
-              >
-                <span>Easy</span>
-                <span className="text-[10px] text-blue-400/80 font-normal mt-0.5">7 days</span>
-              </button>
-            </div>
-          </div>
+                {/* Bottom Citation */}
+                <div className="flex items-center justify-between text-[11px] text-[#8A90B4] pt-4 border-t border-[#262C4C]/60">
+                  <span className="truncate">Source: {activeCard.citation}</span>
+                  <span className="font-semibold text-[#8B7CFF]">CogniPath Grounded</span>
+                </div>
+              </div>
 
-          {/* Navigation Controls */}
-          <div className="flex items-center justify-between pt-2">
-            <button
-              type="button"
-              onClick={handlePrevCard}
-              className="px-4 py-2 rounded-xl bg-[#12162B] hover:bg-[#171C36] border border-[#262C4C] text-xs font-bold text-[#ECEDF7] transition flex items-center gap-1.5"
-            >
-              <ChevronLeft className="h-4 w-4" />
-              <span>Previous</span>
-            </button>
+              {/* SM-2 Interval Grading Buttons */}
+              <div className="space-y-3">
+                <span className="text-[11px] uppercase font-bold text-[#8A90B4] block text-center">
+                  Rate your recall (SuperMemo SM-2 Interval Calculation):
+                </span>
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 max-w-2xl mx-auto">
+                  <button
+                    type="button"
+                    onClick={() => handleSM2Rating('again')}
+                    className="p-3 rounded-xl bg-red-950/30 hover:bg-red-900/50 border border-red-500/30 text-red-300 text-xs font-bold transition flex flex-col items-center"
+                  >
+                    <span>Again</span>
+                    <span className="text-[10px] text-red-400/80 font-normal mt-0.5">&lt; 1 min</span>
+                  </button>
 
-            <button
-              type="button"
-              onClick={() => setIsFlipped(!isFlipped)}
-              className="px-4 py-2 rounded-xl bg-[#171C36] hover:bg-[#202747] border border-[#262C4C] text-xs font-bold text-[#8B7CFF] transition"
-            >
-              Flip Card
-            </button>
+                  <button
+                    type="button"
+                    onClick={() => handleSM2Rating('hard')}
+                    className="p-3 rounded-xl bg-amber-950/30 hover:bg-amber-900/50 border border-amber-500/30 text-amber-300 text-xs font-bold transition flex flex-col items-center"
+                  >
+                    <span>Hard</span>
+                    <span className="text-[10px] text-amber-400/80 font-normal mt-0.5">1 day</span>
+                  </button>
 
-            <button
-              type="button"
-              onClick={handleNextCard}
-              className="px-4 py-2 rounded-xl bg-[#12162B] hover:bg-[#171C36] border border-[#262C4C] text-xs font-bold text-[#ECEDF7] transition flex items-center gap-1.5"
-            >
-              <span>Next</span>
-              <ChevronRight className="h-4 w-4" />
-            </button>
-          </div>
+                  <button
+                    type="button"
+                    onClick={() => handleSM2Rating('good')}
+                    className="p-3 rounded-xl bg-emerald-950/30 hover:bg-emerald-900/50 border border-emerald-500/30 text-emerald-300 text-xs font-bold transition flex flex-col items-center"
+                  >
+                    <span>Good</span>
+                    <span className="text-[10px] text-emerald-400/80 font-normal mt-0.5">3 days</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    onClick={() => handleSM2Rating('easy')}
+                    className="p-3 rounded-xl bg-blue-950/30 hover:bg-blue-900/50 border border-blue-500/30 text-blue-300 text-xs font-bold transition flex flex-col items-center"
+                  >
+                    <span>Easy</span>
+                    <span className="text-[10px] text-blue-400/80 font-normal mt-0.5">7 days</span>
+                  </button>
+                </div>
+              </div>
+
+              {/* Navigation Controls */}
+              <div className="flex items-center justify-between pt-2">
+                <button
+                  type="button"
+                  onClick={handlePrevCard}
+                  className="px-4 py-2 rounded-xl bg-[#12162B] hover:bg-[#171C36] border border-[#262C4C] text-xs font-bold text-[#ECEDF7] transition flex items-center gap-1.5"
+                >
+                  <ChevronLeft className="h-4 w-4" />
+                  <span>Previous</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setIsFlipped(!isFlipped)}
+                  className="px-4 py-2 rounded-xl bg-[#171C36] hover:bg-[#202747] border border-[#262C4C] text-xs font-bold text-[#8B7CFF] transition"
+                >
+                  Flip Card
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleNextCard}
+                  className="px-4 py-2 rounded-xl bg-[#12162B] hover:bg-[#171C36] border border-[#262C4C] text-xs font-bold text-[#ECEDF7] transition flex items-center gap-1.5"
+                >
+                  <span>Next</span>
+                  <ChevronRight className="h-4 w-4" />
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 
