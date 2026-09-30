@@ -259,14 +259,16 @@ export default function LiveKshetraNative({
   user = null,
   isHost = false,
   onClose,
-  initialMessages = []
+  initialMessages = [],
+  sharedWsRef = null,        // ← If provided, reuse this WebSocket instead of opening a new one
+  sharedClientId = null      // ← If provided, use this client_id instead of generating a new one
 }) {
   const cleanCode = (meetingCode || 'sih-pod-live').trim().replace(/\s+/g, '-').toLowerCase();
   const userName = user?.full_name || 'Learner';
   const userRole = user?.role || 'STUDENT';
 
-  // Client ID for WebRTC signaling mesh
-  const myClientId = useRef('peer_' + Math.random().toString(36).substring(2, 9)).current;
+  // Client ID for WebRTC signaling mesh — use shared one if parent passes it (prevents double-connection)
+  const myClientId = useRef(sharedClientId || ('peer_' + Math.random().toString(36).substring(2, 9))).current;
   const [isHostState, setIsHostState] = useState(Boolean(isHost));
 
   // Session Layout
@@ -626,6 +628,13 @@ export default function LiveKshetraNative({
     let isMounted = true;
 
     async function connectSignaling() {
+      // If parent (LearningPods.jsx) passes its WebSocket, reuse it — prevents double-connection to same room
+      if (sharedWsRef && sharedWsRef.current && sharedWsRef.current.readyState === WebSocket.OPEN) {
+        console.log('[WebRTC] Using shared WebSocket from parent (no duplicate connection)');
+        wsRef.current = sharedWsRef.current;
+        return; // parent already handles PEER_JOINED etc — don't attach duplicate listeners
+      }
+
       let wsUrl = '';
       const apiBase = import.meta.env.VITE_API_BASE_URL;
       if (apiBase && (apiBase.startsWith('http://') || apiBase.startsWith('https://'))) {
@@ -641,6 +650,7 @@ export default function LiveKshetraNative({
           userName
         )}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
       }
+
 
       try {
         console.log('[WebSocket] Connecting to signaling server:', wsUrl);

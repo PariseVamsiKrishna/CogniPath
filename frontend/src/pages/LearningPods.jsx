@@ -2034,6 +2034,8 @@ export default function LearningPods({ courseId, user }) {
                     meetingCode={String(activePod.id)}
                     podTitle={activePod.title}
                     isHost={isHost}
+                    sharedWsRef={wsRef}
+                    sharedClientId={myClientId}
                   />
                 </div>
               )}
@@ -2276,6 +2278,8 @@ export default function LearningPods({ courseId, user }) {
                       meetingCode={String(activePod.id)}
                       podTitle={activePod.title}
                       isHost={isHost}
+                      sharedWsRef={wsRef}
+                      sharedClientId={myClientId}
                     />
                   </div>
                   <div className="relative flex-1 bg-[#0b0f19] rounded-xl border border-slate-800 overflow-hidden">

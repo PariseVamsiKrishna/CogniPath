@@ -11,7 +11,9 @@ export default function LiveKshetraFrame({
   user,
   isHost = false,
   onClose,
-  initialMessages = []
+  initialMessages = [],
+  sharedWsRef = null,
+  sharedClientId = null
 }) {
   return (
     <LiveKshetraNative
@@ -21,6 +23,8 @@ export default function LiveKshetraFrame({
       isHost={isHost}
       onClose={onClose}
       initialMessages={initialMessages}
+      sharedWsRef={sharedWsRef}
+      sharedClientId={sharedClientId}
     />
   );
 }
