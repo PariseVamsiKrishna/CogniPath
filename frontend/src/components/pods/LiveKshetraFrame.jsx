@@ -1,10 +1,6 @@
 import React from 'react';
 import LiveKshetraNative from './LiveKshetraNative';
 
-/**
- * LiveKshetraFrame - Native Live Kshetra Conference Component.
- * Fully embedded inside CogniPath Learning Pods with zero external dependencies.
- */
 export default function LiveKshetraFrame({
   meetingCode,
   podTitle = 'Learning Pod Video Conference',
@@ -13,7 +9,8 @@ export default function LiveKshetraFrame({
   onClose,
   initialMessages = [],
   sharedWsRef = null,
-  sharedClientId = null
+  sharedClientId = null,
+  wsHandlersRef = null
 }) {
   return (
     <LiveKshetraNative
@@ -25,6 +22,7 @@ export default function LiveKshetraFrame({
       initialMessages={initialMessages}
       sharedWsRef={sharedWsRef}
       sharedClientId={sharedClientId}
+      wsHandlersRef={wsHandlersRef}
     />
   );
 }

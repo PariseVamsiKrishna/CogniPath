@@ -289,6 +289,10 @@ export default function LearningPods({ courseId, user }) {
   const pingTimerRef = useRef(null);
   const chatEndRef = useRef(null);
   const myClientId = useRef(`peer_${Math.random().toString(36).substring(2, 9)}`).current;
+  // Registry for extra ws message handlers (e.g. LiveKshetraNative's WebRTC handler)
+  const wsExtraHandlersRef = useRef([]);
+  // Closure-safe ref so ws.onmessage can read current viewMode without stale closure
+  const viewModeRef = useRef('kshetra');
 
   // Host & Moderation Permissions
   const isHost = Boolean(
@@ -302,6 +306,9 @@ export default function LearningPods({ courseId, user }) {
   // Unified participant list (real connected peers only — no mock defaults)
   const displayPeers = connectedPeers;
 
+
+  // Keep viewModeRef in sync so ws.onmessage closure can read current viewMode
+  useEffect(() => { viewModeRef.current = viewMode; }, [viewMode]);
 
   useEffect(() => {
     fetchPods();
@@ -661,6 +668,14 @@ export default function LearningPods({ courseId, user }) {
         try {
           const data = JSON.parse(event.data);
 
+          // Dispatch to LiveKshetraNative's WebRTC handler (when in kshetra/split mode)
+          wsExtraHandlersRef.current.forEach((handler) => {
+            try { handler(data); } catch (e) { console.warn('[WS dispatch] handler error:', e); }
+          });
+
+          // Skip WebRTC signaling in kshetra/split mode — LiveKshetraNative handles it
+          const isKshetraMode = viewModeRef.current === 'kshetra' || viewModeRef.current === 'split';
+
           if (data.type === 'CHAT_MESSAGE') {
             setMessages((prev) => [
               ...prev,
@@ -677,8 +692,8 @@ export default function LearningPods({ courseId, user }) {
             if (data.participants) {
               setConnectedPeers(data.participants.filter((p) => p.client_id !== myClientId));
             }
-            if (data.client_id !== myClientId) {
-              // Initiate WebRTC call to newly joined peer
+            // Only do WebRTC in video mode — kshetra/split mode delegates to LiveKshetraNative
+            if (!isKshetraMode && data.client_id !== myClientId) {
               const pc = getOrCreatePeerConnection(data.client_id, true);
               const offer = await pc.createOffer();
               await pc.setLocalDescription(offer);
@@ -800,21 +815,16 @@ export default function LearningPods({ courseId, user }) {
                 timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
               }
             ]);
-          } else if (data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
+          } else if (!isKshetraMode && data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
             const pc = getOrCreatePeerConnection(data.from_client, false);
             try {
-              // Perfect negotiation glare protection
               const isPolite = myClientId > data.from_client;
               const offerCollision = pc.signalingState !== 'stable';
               if (offerCollision) {
-                if (!isPolite) {
-                  console.warn(`[WebRTC] Glare with ${data.from_client}: impolite, ignoring`);
-                  return;
-                }
+                if (!isPolite) { console.warn(`[WebRTC] Glare with ${data.from_client}: impolite, ignoring`); return; }
                 await pc.setLocalDescription({ type: 'rollback' });
               }
               await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-              // Flush buffered ICE candidates
               const buffered = iceCandidateBufferRef.current[data.from_client] || [];
               for (const candidate of buffered) {
                 try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
@@ -822,47 +832,27 @@ export default function LearningPods({ courseId, user }) {
               delete iceCandidateBufferRef.current[data.from_client];
               const answer = await pc.createAnswer();
               await pc.setLocalDescription(answer);
-              ws.send(
-                JSON.stringify({
-                  type: 'SIGNAL_ANSWER',
-                  from_client: myClientId,
-                  to_client: data.from_client,
-                  sdp: pc.localDescription
-                })
-              );
-            } catch (err) {
-              console.error('[WebRTC] Answer response error:', err);
-            }
-          } else if (data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
+              ws.send(JSON.stringify({ type: 'SIGNAL_ANSWER', from_client: myClientId, to_client: data.from_client, sdp: pc.localDescription }));
+            } catch (err) { console.error('[WebRTC] Answer response error:', err); }
+          } else if (!isKshetraMode && data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
             const pc = peerConnectionsRef.current[data.from_client];
             if (pc) {
               try {
                 await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                // Flush buffered ICE candidates
                 const buffered = iceCandidateBufferRef.current[data.from_client] || [];
                 for (const candidate of buffered) {
                   try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
                 }
                 delete iceCandidateBufferRef.current[data.from_client];
-              } catch (err) {
-                console.error('[WebRTC] Set remote description error:', err);
-              }
+              } catch (err) { console.error('[WebRTC] Set remote description error:', err); }
             }
-          } else if (data.type === 'SIGNAL_ICE' && data.to_client === myClientId) {
+          } else if (!isKshetraMode && data.type === 'SIGNAL_ICE' && data.to_client === myClientId) {
             const pc = peerConnectionsRef.current[data.from_client];
             if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-              try {
-                await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-              } catch (e) {
-                console.error('ICE candidate handling error:', e);
-              }
+              try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
             } else {
-              // Buffer until remoteDescription is set
-              if (!iceCandidateBufferRef.current[data.from_client]) {
-                iceCandidateBufferRef.current[data.from_client] = [];
-              }
+              if (!iceCandidateBufferRef.current[data.from_client]) iceCandidateBufferRef.current[data.from_client] = [];
               iceCandidateBufferRef.current[data.from_client].push(data.candidate);
-              console.log(`[WebRTC] Buffered ICE candidate from ${data.from_client}`);
             }
           } else if (data.type === 'PEER_LEFT') {
             const pc = peerConnectionsRef.current[data.client_id];
@@ -2036,6 +2026,7 @@ export default function LearningPods({ courseId, user }) {
                     isHost={isHost}
                     sharedWsRef={wsRef}
                     sharedClientId={myClientId}
+                    wsHandlersRef={wsExtraHandlersRef}
                   />
                 </div>
               )}
@@ -2280,6 +2271,7 @@ export default function LearningPods({ courseId, user }) {
                       isHost={isHost}
                       sharedWsRef={wsRef}
                       sharedClientId={myClientId}
+                      wsHandlersRef={wsExtraHandlersRef}
                     />
                   </div>
                   <div className="relative flex-1 bg-[#0b0f19] rounded-xl border border-slate-800 overflow-hidden">

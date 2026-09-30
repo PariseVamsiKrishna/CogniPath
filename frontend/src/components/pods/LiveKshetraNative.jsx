@@ -261,7 +261,8 @@ export default function LiveKshetraNative({
   onClose,
   initialMessages = [],
   sharedWsRef = null,        // ← If provided, reuse this WebSocket instead of opening a new one
-  sharedClientId = null      // ← If provided, use this client_id instead of generating a new one
+  sharedClientId = null,     // ← If provided, use this client_id instead of generating a new one
+  wsHandlersRef = null       // ← Registry to register this component's ws message handler into
 }) {
   const cleanCode = (meetingCode || 'sih-pod-live').trim().replace(/\s+/g, '-').toLowerCase();
   const userName = user?.full_name || 'Learner';
@@ -627,12 +628,154 @@ export default function LiveKshetraNative({
     let ws = null;
     let isMounted = true;
 
+    // ─── Extract the message handler so it can be registered into the parent's dispatcher ───
+    async function handleWsMessage(data) {
+      if (!isMounted) return;
+      try {
+        if (data.type === 'PEER_JOINED') {
+          if (data.client_id === myClientId) {
+            if (data.is_host) setIsHostState(true);
+            const existingPeers = [];
+            if (data.participants && Array.isArray(data.participants)) {
+              for (const p of data.participants) {
+                if (p.client_id === myClientId) continue;
+                existingPeers.push({
+                  id: p.client_id, client_id: p.client_id,
+                  name: p.name || 'Participant', role: p.role || 'STUDENT',
+                  is_host: Boolean(p.is_host), audioOn: p.audio_on !== false,
+                  videoOn: p.video_on !== false, handRaised: Boolean(p.hand_raised),
+                  isSpeaking: false, color: '#8B7CFF',
+                  avatar: (p.name || 'P').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
+                });
+              }
+            }
+            setPeers(existingPeers);
+          } else {
+            playChime(720, 0.15);
+            showToast(`${data.user_name || 'Participant'} joined the pod`);
+            setPeers((prev) => {
+              if (prev.some((p) => p.client_id === data.client_id || p.id === data.client_id)) return prev;
+              return [...prev, {
+                id: data.client_id, client_id: data.client_id,
+                name: data.user_name || 'Participant', role: data.role || 'STUDENT',
+                is_host: Boolean(data.is_host), audioOn: data.audio_on !== false,
+                videoOn: data.video_on !== false, handRaised: Boolean(data.hand_raised),
+                isSpeaking: false, color: '#8B7CFF',
+                avatar: (data.user_name || 'P').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
+              }];
+            });
+            console.log(`[WebRTC] New peer arrived: ${data.client_id}. Sending offer.`);
+            await new Promise((r) => setTimeout(r, 200));
+            const wsToUse = wsRef.current;
+            await createAndSendOffer(data.client_id, wsToUse);
+          }
+        } else if (data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
+          console.log(`[WebRTC] Received offer from ${data.from_client}`);
+          const pc = getOrCreatePeerConnection(data.from_client, false);
+          try {
+            const isPolite = myClientId > data.from_client;
+            const offerCollision = pc.signalingState !== 'stable';
+            if (offerCollision) {
+              if (!isPolite) { console.warn(`[WebRTC] Glare impolite, ignoring`); return; }
+              await pc.setLocalDescription({ type: 'rollback' });
+            }
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            const buffered = iceCandidateBufferRef.current[data.from_client] || [];
+            for (const candidate of buffered) { try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {} }
+            delete iceCandidateBufferRef.current[data.from_client];
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            const wsToUse = wsRef.current;
+            if (wsToUse && wsToUse.readyState === WebSocket.OPEN) {
+              wsToUse.send(JSON.stringify({ type: 'SIGNAL_ANSWER', from_client: myClientId, to_client: data.from_client, sdp: pc.localDescription }));
+            }
+          } catch (err) { console.error('[WebRTC] Answer error:', err); }
+        } else if (data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
+          const pc = peerConnectionsRef.current[data.from_client];
+          if (pc) {
+            try {
+              await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+              const buffered = iceCandidateBufferRef.current[data.from_client] || [];
+              for (const candidate of buffered) { try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {} }
+              delete iceCandidateBufferRef.current[data.from_client];
+            } catch (err) { console.error('[WebRTC] Set remote desc error:', err); }
+          }
+        } else if (data.type === 'SIGNAL_ICE' && data.to_client === myClientId && data.candidate) {
+          const pc = peerConnectionsRef.current[data.from_client];
+          if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (err) {}
+          } else {
+            if (!iceCandidateBufferRef.current[data.from_client]) iceCandidateBufferRef.current[data.from_client] = [];
+            iceCandidateBufferRef.current[data.from_client].push(data.candidate);
+          }
+        } else if (data.type === 'PEER_LEFT') {
+          const targetId = data.client_id;
+          if (peerConnectionsRef.current[targetId]) { try { peerConnectionsRef.current[targetId].close(); } catch (e) {} delete peerConnectionsRef.current[targetId]; }
+          delete iceCandidateBufferRef.current[targetId];
+          delete peerStreamsRef.current[targetId];
+          setRemoteStreams((prev) => { const next = { ...prev }; delete next[targetId]; return next; });
+          setPeers((prev) => prev.filter((p) => p.client_id !== targetId && p.id !== targetId));
+          showToast(`${data.user_name || 'Participant'} left`);
+        } else if (data.type === 'FORCE_MUTE_PARTICIPANT') {
+          if (localStreamRef.current) localStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = false; });
+          setAudioOn(false);
+          showToast(data.reason || 'You were muted by the meeting host');
+          const wsToUse = wsRef.current;
+          if (wsToUse && wsToUse.readyState === WebSocket.OPEN) wsToUse.send(JSON.stringify({ type: 'MEDIA_STATE_CHANGE', client_id: myClientId, audio_on: false, video_on: videoOn }));
+        } else if (data.type === 'ALL_PEERS_MUTED') {
+          if (data.muted_by !== myClientId) {
+            if (localStreamRef.current) localStreamRef.current.getAudioTracks().forEach((t) => { t.enabled = false; });
+            setAudioOn(false);
+            showToast('All participants have been muted by the host');
+          }
+          setPeers((prev) => prev.map((p) => (p.client_id === data.muted_by ? p : { ...p, audioOn: false })));
+        } else if (data.type === 'HOST_MUTED_PEER') {
+          setPeers((prev) => prev.map((p) => (p.client_id === data.client_id || p.id === data.client_id ? { ...p, audioOn: false } : p)));
+        } else if (data.type === 'MEDIA_STATE_CHANGE') {
+          setPeers((prev) => prev.map((p) => {
+            if (p.client_id === data.client_id || p.id === data.client_id) {
+              return { ...p, audioOn: data.audio_on !== undefined ? data.audio_on : p.audioOn, videoOn: data.video_on !== undefined ? data.video_on : p.videoOn, handRaised: data.hand_raised !== undefined ? data.hand_raised : p.handRaised };
+            }
+            return p;
+          }));
+        } else if (data.type === 'CHAT_MESSAGE') {
+          if (data.sender_name !== userName || data.is_ai_tutor) {
+            setMessages((prev) => [...prev, { id: Date.now().toString() + Math.random(), sender: data.sender_name, senderRole: data.is_ai_tutor ? 'AI_COACH' : 'STUDENT', text: data.content, citations: data.citations, isAI: Boolean(data.is_ai_tutor), timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) }]);
+            if (activeDrawer !== 'chat') setUnreadChatCount((c) => c + 1);
+          }
+        } else if (data.type === 'WHITEBOARD_DRAW') {
+          drawRemoteStroke(data.x0, data.y0, data.x1, data.y1, data.color, data.size);
+        } else if (data.type === 'WHITEBOARD_CLEAR') {
+          const canvas = canvasRef.current;
+          if (canvas) { const ctx = canvas.getContext('2d'); ctx.clearRect(0, 0, canvas.width, canvas.height); }
+        } else if (data.type === 'REACTION') {
+          if (data.from_client !== myClientId && data.emoji) {
+            const id = Date.now() + Math.random();
+            const xPos = 20 + Math.random() * 60;
+            setFloatingReactions((prev) => [...prev, { id, emoji: data.emoji, x: xPos }]);
+            setTimeout(() => { setFloatingReactions((prev) => prev.filter((r) => r.id !== id)); }, 2400);
+          }
+        } else if (data.type === 'KICKED_BY_HOST') {
+          alert(`You were removed from the room: ${data.reason || 'Removed by host'}`);
+          if (onClose) onClose();
+        } else if (data.type === 'EVENT_ROOM_CLOSED') {
+          alert(`Meeting ended: ${data.reason || 'Host closed the room'}`);
+          if (onClose) onClose();
+        }
+      } catch (e) { console.error('[WS handler] Error:', e); }
+    }
+
     async function connectSignaling() {
       // If parent (LearningPods.jsx) passes its WebSocket, reuse it — prevents double-connection to same room
-      if (sharedWsRef && sharedWsRef.current && sharedWsRef.current.readyState === WebSocket.OPEN) {
-        console.log('[WebRTC] Using shared WebSocket from parent (no duplicate connection)');
+      if (sharedWsRef && sharedWsRef.current) {
+        console.log('[WebRTC] Shared WebSocket from parent — registering message handler');
         wsRef.current = sharedWsRef.current;
-        return; // parent already handles PEER_JOINED etc — don't attach duplicate listeners
+        // Register our WebRTC message handler into parent's dispatcher registry
+        if (wsHandlersRef) {
+          wsHandlersRef.current = wsHandlersRef.current.filter((h) => h !== handleWsMessage); // dedup
+          wsHandlersRef.current.push(handleWsMessage);
+        }
+        return;
       }
 
       let wsUrl = '';
@@ -640,17 +783,12 @@ export default function LiveKshetraNative({
       if (apiBase && (apiBase.startsWith('http://') || apiBase.startsWith('https://'))) {
         const parsed = new URL(apiBase);
         const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsUrl = `${wsProto}//${parsed.host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(
-          userName
-        )}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
+        wsUrl = `${wsProto}//${parsed.host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(userName)}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
       } else {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.host;
-        wsUrl = `${protocol}//${host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(
-          userName
-        )}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
+        wsUrl = `${protocol}//${host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(userName)}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
       }
-
 
       try {
         console.log('[WebSocket] Connecting to signaling server:', wsUrl);
@@ -661,273 +799,19 @@ export default function LiveKshetraNative({
           console.log('[WebSocket] Connected to room:', cleanCode);
           if (pingTimerRef.current) clearInterval(pingTimerRef.current);
           pingTimerRef.current = setInterval(() => {
-            if (ws && ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
-            }
+            if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
           }, 25000);
         };
 
         ws.onmessage = async (event) => {
           try {
             const data = JSON.parse(event.data);
-
-            if (data.type === 'PEER_JOINED') {
-              if (data.client_id === myClientId) {
-                // ---- SELF JOINED: I just connected to the room ----
-                if (data.is_host) setIsHostState(true);
-
-                // Build peer roster from server directory
-                const existingPeers = [];
-                if (data.participants && Array.isArray(data.participants)) {
-                  for (const p of data.participants) {
-                    if (p.client_id === myClientId) continue; // skip self
-                    existingPeers.push({
-                      id: p.client_id,
-                      client_id: p.client_id,
-                      name: p.name || 'Participant',
-                      role: p.role || 'STUDENT',
-                      is_host: Boolean(p.is_host),
-                      audioOn: p.audio_on !== false,
-                      videoOn: p.video_on !== false,
-                      handRaised: Boolean(p.hand_raised),
-                      isSpeaking: false,
-                      color: '#8B7CFF',
-                      avatar: (p.name || 'P').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
-                    });
-                  }
-                }
-                setPeers(existingPeers);
-                // Note: Existing peers in the room will send offers to us upon seeing our PEER_JOINED.
-              } else {
-                // ---- REMOTE PEER JOINED: someone else joined while I am already here ----
-                playChime(720, 0.15);
-                showToast(`${data.user_name || 'Participant'} joined the pod`);
-                setPeers((prev) => {
-                  if (prev.some((p) => p.client_id === data.client_id || p.id === data.client_id)) {
-                    return prev;
-                  }
-                  return [
-                    ...prev,
-                    {
-                      id: data.client_id,
-                      client_id: data.client_id,
-                      name: data.user_name || 'Participant',
-                      role: data.role || 'STUDENT',
-                      is_host: Boolean(data.is_host),
-                      audioOn: data.audio_on !== false,
-                      videoOn: data.video_on !== false,
-                      handRaised: Boolean(data.hand_raised),
-                      isSpeaking: false,
-                      color: '#8B7CFF',
-                      avatar: (data.user_name || 'P').split(' ').map((n) => n[0]).join('').slice(0, 2).toUpperCase()
-                    }
-                  ];
-                });
-
-                // I am an existing peer — send offer to the newly arrived peer
-                console.log(`[WebRTC] New peer arrived: ${data.client_id}. Sending offer.`);
-                await new Promise((r) => setTimeout(r, 200));
-                await createAndSendOffer(data.client_id, ws);
-              }
-            } else if (data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
-              console.log(`[WebRTC] Received offer from ${data.from_client}`);
-              const pc = getOrCreatePeerConnection(data.from_client, false);
-              try {
-                // Perfect Negotiation glare protection
-                const isPolite = myClientId > data.from_client;
-                const offerCollision = pc.signalingState !== 'stable';
-                if (offerCollision) {
-                  if (!isPolite) {
-                    console.warn(`[WebRTC] Glare with ${data.from_client}: we are impolite, ignoring incoming offer`);
-                    return;
-                  }
-                  console.log(`[WebRTC] Glare with ${data.from_client}: we are polite, rolling back local offer`);
-                  await pc.setLocalDescription({ type: 'rollback' });
-                }
-
-                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-
-                // Flush buffered ICE candidates
-                const buffered = iceCandidateBufferRef.current[data.from_client] || [];
-                for (const candidate of buffered) {
-                  try {
-                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
-                  } catch (e) {}
-                }
-                delete iceCandidateBufferRef.current[data.from_client];
-
-                const answer = await pc.createAnswer();
-                await pc.setLocalDescription(answer);
-
-                if (ws && ws.readyState === WebSocket.OPEN) {
-                  ws.send(
-                    JSON.stringify({
-                      type: 'SIGNAL_ANSWER',
-                      from_client: myClientId,
-                      to_client: data.from_client,
-                      sdp: pc.localDescription
-                    })
-                  );
-                  console.log(`[WebRTC] Answer sent to ${data.from_client}`);
-                }
-              } catch (err) {
-                console.error('[WebRTC] Answer response error:', err);
-              }
-            } else if (data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
-              console.log(`[WebRTC] Received answer from ${data.from_client}`);
-              const pc = peerConnectionsRef.current[data.from_client];
-              if (pc) {
-                try {
-                  await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                  // Flush buffered ICE candidates
-                  const buffered = iceCandidateBufferRef.current[data.from_client] || [];
-                  for (const candidate of buffered) {
-                    try {
-                      await pc.addIceCandidate(new RTCIceCandidate(candidate));
-                    } catch (e) {}
-                  }
-                  delete iceCandidateBufferRef.current[data.from_client];
-                } catch (err) {
-                  console.error('[WebRTC] Set remote description error:', err);
-                }
-              }
-            } else if (data.type === 'SIGNAL_ICE' && data.to_client === myClientId && data.candidate) {
-              const pc = peerConnectionsRef.current[data.from_client];
-              if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-                try {
-                  await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
-                } catch (err) {
-                  console.error('[WebRTC] ICE candidate error:', err);
-                }
-              } else {
-                // Buffer ICE candidates until remoteDescription is set
-                if (!iceCandidateBufferRef.current[data.from_client]) {
-                  iceCandidateBufferRef.current[data.from_client] = [];
-                }
-                iceCandidateBufferRef.current[data.from_client].push(data.candidate);
-                console.log(`[WebRTC] Buffered ICE candidate from ${data.from_client}`);
-              }
-            } else if (data.type === 'PEER_LEFT') {
-              const targetId = data.client_id;
-              if (peerConnectionsRef.current[targetId]) {
-                try {
-                  peerConnectionsRef.current[targetId].close();
-                } catch (e) {}
-                delete peerConnectionsRef.current[targetId];
-              }
-              delete iceCandidateBufferRef.current[targetId];
-              delete peerStreamsRef.current[targetId];
-              setRemoteStreams((prev) => {
-                const next = { ...prev };
-                delete next[targetId];
-                return next;
-              });
-              setPeers((prev) => prev.filter((p) => p.client_id !== targetId && p.id !== targetId));
-              showToast(`${data.user_name || 'Participant'} left`);
-            } else if (data.type === 'FORCE_MUTE_PARTICIPANT') {
-              if (localStreamRef.current) {
-                localStreamRef.current.getAudioTracks().forEach((track) => {
-                  track.enabled = false;
-                });
-              }
-              setAudioOn(false);
-              showToast(data.reason || 'You were muted by the meeting host');
-              if (ws && ws.readyState === WebSocket.OPEN) {
-                ws.send(
-                  JSON.stringify({
-                    type: 'MEDIA_STATE_CHANGE',
-                    client_id: myClientId,
-                    audio_on: false,
-                    video_on: videoOn
-                  })
-                );
-              }
-            } else if (data.type === 'ALL_PEERS_MUTED') {
-              if (data.muted_by !== myClientId) {
-                if (localStreamRef.current) {
-                  localStreamRef.current.getAudioTracks().forEach((track) => {
-                    track.enabled = false;
-                  });
-                }
-                setAudioOn(false);
-                showToast('All participants have been muted by the host');
-              }
-              setPeers((prev) =>
-                prev.map((p) => (p.client_id === data.muted_by ? p : { ...p, audioOn: false }))
-              );
-            } else if (data.type === 'HOST_MUTED_PEER') {
-              setPeers((prev) =>
-                prev.map((p) =>
-                  p.client_id === data.client_id || p.id === data.client_id ? { ...p, audioOn: false } : p
-                )
-              );
-            } else if (data.type === 'MEDIA_STATE_CHANGE') {
-              setPeers((prev) =>
-                prev.map((p) => {
-                  if (p.client_id === data.client_id || p.id === data.client_id) {
-                    return {
-                      ...p,
-                      audioOn: data.audio_on !== undefined ? data.audio_on : p.audioOn,
-                      videoOn: data.video_on !== undefined ? data.video_on : p.videoOn,
-                      handRaised: data.hand_raised !== undefined ? data.hand_raised : p.handRaised
-                    };
-                  }
-                  return p;
-                })
-              );
-            } else if (data.type === 'CHAT_MESSAGE') {
-              if (data.sender_name !== userName || data.is_ai_tutor) {
-                setMessages((prev) => [
-                  ...prev,
-                  {
-                    id: Date.now().toString() + Math.random(),
-                    sender: data.sender_name,
-                    senderRole: data.is_ai_tutor ? 'AI_COACH' : 'STUDENT',
-                    text: data.content,
-                    citations: data.citations,
-                    isAI: Boolean(data.is_ai_tutor),
-                    timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-                  }
-                ]);
-                if (activeDrawer !== 'chat') {
-                  setUnreadChatCount((c) => c + 1);
-                }
-              }
-            } else if (data.type === 'WHITEBOARD_DRAW') {
-              drawRemoteStroke(data.x0, data.y0, data.x1, data.y1, data.color, data.size);
-            } else if (data.type === 'WHITEBOARD_CLEAR') {
-              const canvas = canvasRef.current;
-              if (canvas) {
-                const ctx = canvas.getContext('2d');
-                ctx.clearRect(0, 0, canvas.width, canvas.height);
-              }
-            } else if (data.type === 'REACTION') {
-              if (data.from_client !== myClientId && data.emoji) {
-                const id = Date.now() + Math.random();
-                const xPos = 20 + Math.random() * 60;
-                setFloatingReactions((prev) => [...prev, { id, emoji: data.emoji, x: xPos }]);
-                setTimeout(() => {
-                  setFloatingReactions((prev) => prev.filter((r) => r.id !== id));
-                }, 2400);
-              }
-            } else if (data.type === 'KICKED_BY_HOST') {
-              alert(`You were removed from the room: ${data.reason || 'Removed by host'}`);
-              if (onClose) onClose();
-            } else if (data.type === 'EVENT_ROOM_CLOSED') {
-              alert(`Meeting ended: ${data.reason || 'Host closed the room'}`);
-              if (onClose) onClose();
-            }
-          } catch (e) {
-            console.error('[WebSocket] Message parsing error:', e);
-          }
+            await handleWsMessage(data);
+          } catch (e) { console.error('[WebSocket] Message parsing error:', e); }
         };
 
-        ws.onclose = () => {
-          console.log('[WebSocket] Connection closed');
-        };
-      } catch (err) {
-        console.error('[WebSocket] Setup failed:', err);
-      }
+        ws.onclose = () => { console.log('[WebSocket] Connection closed'); };
+      } catch (err) { console.error('[WebSocket] Setup failed:', err); }
     }
 
     connectSignaling();
