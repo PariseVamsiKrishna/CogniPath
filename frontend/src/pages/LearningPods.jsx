@@ -57,38 +57,45 @@ function RemotePeerVideo({
   onMute
 }) {
   const videoRef = useRef(null);
+  const audioRef = useRef(null);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
 
+  // Assign stream to video (muted — for visual only) and audio (unmuted — for sound)
   useEffect(() => {
-    if (videoRef.current && stream) {
+    if (!stream) return;
+
+    if (videoRef.current) {
       videoRef.current.srcObject = stream;
-      const playPromise = videoRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise
+      videoRef.current.muted = true; // always muted — audio handled by <audio> element
+      const vp = videoRef.current.play();
+      if (vp) vp.catch(() => {});
+    }
+
+    if (audioRef.current) {
+      audioRef.current.srcObject = stream;
+      audioRef.current.muted = Boolean(isMuted);
+      const ap = audioRef.current.play();
+      if (ap) {
+        ap
           .then(() => setAutoplayBlocked(false))
           .catch((err) => {
-            console.warn('[WebRTC] Autoplay restricted by browser policy:', err);
+            console.warn('[WebRTC] Audio autoplay blocked:', err);
             setAutoplayBlocked(true);
           });
       }
     }
   }, [stream]);
 
-  // Ensure remote audio track reflects muted state in hardware/playback
+  // Sync mute state on audio element
   useEffect(() => {
-    if (stream) {
-      stream.getAudioTracks().forEach((track) => {
-        track.enabled = !isMuted;
-      });
+    if (audioRef.current) {
+      audioRef.current.muted = Boolean(isMuted);
     }
-    if (videoRef.current) {
-      videoRef.current.muted = Boolean(isMuted);
-    }
-  }, [isMuted, stream]);
+  }, [isMuted]);
 
   const handleManualPlay = () => {
-    if (videoRef.current) {
-      videoRef.current.play().then(() => setAutoplayBlocked(false)).catch(console.error);
+    if (audioRef.current) {
+      audioRef.current.play().then(() => setAutoplayBlocked(false)).catch(console.error);
     }
   };
 
@@ -100,14 +107,17 @@ function RemotePeerVideo({
           : 'border-slate-800'
       }`}
     >
+      {/* Hidden separate audio element — handles sound independently of video autoplay policy */}
+      <audio ref={audioRef} autoPlay playsInline style={{ display: 'none' }} />
+
       {autoplayBlocked && (
         <button
           onClick={handleManualPlay}
           className="absolute inset-0 z-20 bg-black/75 flex flex-col items-center justify-center p-3 text-center cursor-pointer hover:bg-black/60 transition"
         >
           <Volume2 className="h-7 w-7 text-indigo-400 mb-1.5 animate-bounce" />
-          <span className="text-xs font-bold text-white">Click to Play Stream</span>
-          <span className="text-[10px] text-slate-300 mt-0.5">Browser blocked unmuted autoplay</span>
+          <span className="text-xs font-bold text-white">Click to Enable Audio</span>
+          <span className="text-[10px] text-slate-300 mt-0.5">Browser blocked autoplay — tap to allow</span>
         </button>
       )}
 
@@ -147,7 +157,7 @@ function RemotePeerVideo({
           ref={videoRef}
           autoPlay
           playsInline
-          muted={Boolean(isMuted)}
+          muted
           className="w-full h-full object-cover"
         />
       ) : (
@@ -188,6 +198,7 @@ function RemotePeerVideo({
     </div>
   );
 }
+
 
 export default function LearningPods({ courseId, user }) {
   const [pods, setPods] = useState([
@@ -288,19 +299,9 @@ export default function LearningPods({ courseId, user }) {
   );
   const canModerate = isHost;
 
-  // Unified participant list (real peers or interactive simulated peers)
-  const displayPeers =
-    connectedPeers.length > 0
-      ? connectedPeers
-      : isHost
-      ? [
-          { client_id: 'demo_priya', name: 'Priya Patel', role: 'STUDENT' },
-          { client_id: 'demo_rohan', name: 'Rohan Verma', role: 'STUDENT' }
-        ]
-      : [
-          { client_id: 'demo_host', name: 'Prof. Rajesh Ramanujan', role: 'EDUCATOR' },
-          { client_id: 'demo_priya', name: 'Priya Patel', role: 'STUDENT' }
-        ];
+  // Unified participant list (real connected peers only — no mock defaults)
+  const displayPeers = connectedPeers;
+
 
   useEffect(() => {
     fetchPods();
@@ -486,6 +487,10 @@ export default function LearningPods({ courseId, user }) {
     setCameraOn(false);
   };
 
+  // ICE candidate buffer: holds candidates arriving before setRemoteDescription
+  const iceCandidateBufferRef = useRef({});
+  const peerStreamsRef = useRef({});
+
   // WebRTC Peer Connection Factory
   const getOrCreatePeerConnection = (targetClientId, isInitiator = false) => {
     if (peerConnectionsRef.current[targetClientId]) {
@@ -496,7 +501,18 @@ export default function LearningPods({ courseId, user }) {
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun.cloudflare.com:3478' }
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      { urls: 'stun:stun.cloudflare.com:3478' },
+      {
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
     ];
     if (import.meta.env.VITE_TURN_URL) {
       iceServers.push({
@@ -506,30 +522,67 @@ export default function LearningPods({ courseId, user }) {
       });
     }
 
-    const pc = new RTCPeerConnection({ iceServers });
+    const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 10 });
 
     pc.oniceconnectionstatechange = () => {
       console.log(`[WebRTC] Peer ${targetClientId} ICE state: ${pc.iceConnectionState}`);
     };
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Peer ${targetClientId} Connection state: ${pc.connectionState}`);
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        console.warn(`[WebRTC] Connection to ${targetClientId} ${pc.connectionState}. Restarting ICE...`);
+        if (pc.restartIce) pc.restartIce();
+      }
+      if (pc.connectionState === 'closed') {
+        delete peerConnectionsRef.current[targetClientId];
+        delete peerStreamsRef.current[targetClientId];
+      }
     };
 
     if (localStreamRef.current) {
       localStreamRef.current.getTracks().forEach((track) => {
-        pc.addTrack(track, localStreamRef.current);
+        try {
+          const senders = pc.getSenders();
+          const exists = senders.some((s) => s.track && s.track.id === track.id);
+          if (!exists) {
+            pc.addTrack(track, localStreamRef.current);
+          }
+        } catch (e) {
+          console.warn('[WebRTC] addTrack warning:', e);
+        }
       });
     }
 
+    // Ensure both audio+video transceivers for receiving remote media
+    const existingTransceivers = pc.getTransceivers();
+    const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio');
+    const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video');
+    if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
+    if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
+
+    // Receive remote tracks — build MediaStream track-by-track
     pc.ontrack = (event) => {
-      const [remoteStream] = event.streams;
-      if (remoteStream) {
+      console.log(`[WebRTC] Track received from ${targetClientId}:`, event.track.kind);
+      if (!peerStreamsRef.current[targetClientId]) {
+        peerStreamsRef.current[targetClientId] = new MediaStream();
+      }
+      const peerStream = peerStreamsRef.current[targetClientId];
+      const existing = peerStream.getTracks().find((t) => t.kind === event.track.kind);
+      if (existing && existing.id !== event.track.id) peerStream.removeTrack(existing);
+      if (!peerStream.getTracks().some((t) => t.id === event.track.id)) peerStream.addTrack(event.track);
+      // Re-trigger when track unmutes
+      event.track.onunmute = () => {
         setRemoteStreams((prev) => ({
           ...prev,
-          [targetClientId]: remoteStream
+          [targetClientId]: new MediaStream(peerStream.getTracks())
         }));
-      }
+      };
+      setRemoteStreams((prev) => ({
+        ...prev,
+        [targetClientId]: new MediaStream(peerStream.getTracks())
+      }));
     };
+
 
     pc.onicecandidate = (event) => {
       if (event.candidate && wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
@@ -538,7 +591,7 @@ export default function LearningPods({ courseId, user }) {
             type: 'SIGNAL_ICE',
             from_client: myClientId,
             to_client: targetClientId,
-            candidate: event.candidate
+            candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate
           })
         );
       }
@@ -546,26 +599,6 @@ export default function LearningPods({ courseId, user }) {
 
     peerConnectionsRef.current[targetClientId] = pc;
 
-    if (isInitiator) {
-      pc.onnegotiationneeded = async () => {
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-            wsRef.current.send(
-              JSON.stringify({
-                type: 'SIGNAL_OFFER',
-                from_client: myClientId,
-                to_client: targetClientId,
-                sdp: pc.localDescription
-              })
-            );
-          }
-        } catch (e) {
-          console.error('Error creating WebRTC offer:', e);
-        }
-      };
-    }
 
     return pc;
   };
@@ -769,30 +802,67 @@ export default function LearningPods({ courseId, user }) {
             ]);
           } else if (data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
             const pc = getOrCreatePeerConnection(data.from_client, false);
-            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            ws.send(
-              JSON.stringify({
-                type: 'SIGNAL_ANSWER',
-                from_client: myClientId,
-                to_client: data.from_client,
-                sdp: pc.localDescription
-              })
-            );
+            try {
+              // Perfect negotiation glare protection
+              const isPolite = myClientId > data.from_client;
+              const offerCollision = pc.signalingState !== 'stable';
+              if (offerCollision) {
+                if (!isPolite) {
+                  console.warn(`[WebRTC] Glare with ${data.from_client}: impolite, ignoring`);
+                  return;
+                }
+                await pc.setLocalDescription({ type: 'rollback' });
+              }
+              await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+              // Flush buffered ICE candidates
+              const buffered = iceCandidateBufferRef.current[data.from_client] || [];
+              for (const candidate of buffered) {
+                try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+              }
+              delete iceCandidateBufferRef.current[data.from_client];
+              const answer = await pc.createAnswer();
+              await pc.setLocalDescription(answer);
+              ws.send(
+                JSON.stringify({
+                  type: 'SIGNAL_ANSWER',
+                  from_client: myClientId,
+                  to_client: data.from_client,
+                  sdp: pc.localDescription
+                })
+              );
+            } catch (err) {
+              console.error('[WebRTC] Answer response error:', err);
+            }
           } else if (data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
             const pc = peerConnectionsRef.current[data.from_client];
             if (pc) {
-              await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+              try {
+                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+                // Flush buffered ICE candidates
+                const buffered = iceCandidateBufferRef.current[data.from_client] || [];
+                for (const candidate of buffered) {
+                  try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+                }
+                delete iceCandidateBufferRef.current[data.from_client];
+              } catch (err) {
+                console.error('[WebRTC] Set remote description error:', err);
+              }
             }
           } else if (data.type === 'SIGNAL_ICE' && data.to_client === myClientId) {
             const pc = peerConnectionsRef.current[data.from_client];
-            if (pc && data.candidate) {
+            if (pc && pc.remoteDescription && pc.remoteDescription.type) {
               try {
                 await pc.addIceCandidate(new RTCIceCandidate(data.candidate));
               } catch (e) {
                 console.error('ICE candidate handling error:', e);
               }
+            } else {
+              // Buffer until remoteDescription is set
+              if (!iceCandidateBufferRef.current[data.from_client]) {
+                iceCandidateBufferRef.current[data.from_client] = [];
+              }
+              iceCandidateBufferRef.current[data.from_client].push(data.candidate);
+              console.log(`[WebRTC] Buffered ICE candidate from ${data.from_client}`);
             }
           } else if (data.type === 'PEER_LEFT') {
             const pc = peerConnectionsRef.current[data.client_id];
@@ -800,6 +870,8 @@ export default function LearningPods({ courseId, user }) {
               pc.close();
               delete peerConnectionsRef.current[data.client_id];
             }
+            delete iceCandidateBufferRef.current[data.client_id];
+            delete peerStreamsRef.current[data.client_id];
             setRemoteStreams((prev) => {
               const updated = { ...prev };
               delete updated[data.client_id];
@@ -903,6 +975,8 @@ export default function LearningPods({ courseId, user }) {
       wsRef.current.close();
       wsRef.current = null;
     }
+    iceCandidateBufferRef.current = {};
+    peerStreamsRef.current = {};
     setActivePod(null);
     setHandRaised(false);
     setHandRaisedUsers([]);
@@ -911,11 +985,13 @@ export default function LearningPods({ courseId, user }) {
     setTimeWarningToast('');
     setShowHostLeaveModal(false);
     setMutedPeers({});
+    setConnectedPeers([]);
     setIsForceMutedByHost(false);
     setUnmuteRequestPending(false);
     setShowConsentModal(false);
     setPendingUnmuteRequests([]);
   };
+
 
   const handleEndPodForEveryone = async () => {
     if (!activePod) return;
@@ -964,8 +1040,8 @@ export default function LearningPods({ courseId, user }) {
         JSON.stringify({
           type: 'MEDIA_STATE_CHANGE',
           client_id: myClientId,
-          mic_on: nextMic,
-          camera_on: cameraOn
+          audio_on: nextMic,
+          video_on: cameraOn
         })
       );
     }
@@ -993,12 +1069,13 @@ export default function LearningPods({ courseId, user }) {
         JSON.stringify({
           type: 'MEDIA_STATE_CHANGE',
           client_id: myClientId,
-          mic_on: micOn,
-          camera_on: nextCamera
+          audio_on: micOn,
+          video_on: nextCamera
         })
       );
     }
   };
+
 
   // Toggle Screen Sharing (Google Meet / Zoom style)
   const toggleScreenShare = async () => {
@@ -1954,7 +2031,7 @@ export default function LearningPods({ courseId, user }) {
               {viewMode === 'kshetra' && (
                 <div className="my-1 flex-1 w-full h-full min-h-[460px] rounded-xl overflow-hidden flex flex-col">
                   <LiveKshetraFrame
-                    meetingCode={activePod.kshetra_meeting_code || `sih-pod-${activePod.id}`}
+                    meetingCode={String(activePod.id)}
                     podTitle={activePod.title}
                     isHost={isHost}
                   />
@@ -2196,7 +2273,7 @@ export default function LearningPods({ courseId, user }) {
                 <div className="my-2 flex-1 flex flex-col gap-3 overflow-hidden">
                   <div className="h-56 w-full rounded-xl overflow-hidden border border-slate-800 shrink-0">
                     <LiveKshetraFrame
-                      meetingCode={activePod.kshetra_meeting_code || `sih-pod-${activePod.id}`}
+                      meetingCode={String(activePod.id)}
                       podTitle={activePod.title}
                       isHost={isHost}
                     />

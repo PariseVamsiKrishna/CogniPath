@@ -351,9 +351,7 @@ export default function JourneyTrackCard({
 
         <div className="flex items-center gap-2 shrink-0">
           {onDeleteCourse && (
-            user?.role === 'STUDENT' || 
-            (user?.role === 'EDUCATOR' && course.educator_id === user?.id) || 
-            user?.role === 'ADMIN'
+            (user?.role === 'ADMIN' || (user?.role === 'EDUCATOR' && course.educator_id === user?.id))
           ) && (
             <button
               type="button"

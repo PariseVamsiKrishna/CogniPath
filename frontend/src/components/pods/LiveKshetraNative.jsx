@@ -483,21 +483,14 @@ export default function LiveKshetraNative({
       { urls: 'stun:stun3.l.google.com:19302' },
       { urls: 'stun:stun4.l.google.com:19302' },
       { urls: 'stun:stun.cloudflare.com:3478' },
-      { urls: 'stun:openrelay.metered.ca:80' },
       {
-        urls: 'turn:openrelay.metered.ca:80',
-        username: 'openrelay',
-        credential: 'openrelay'
-      },
-      {
-        urls: 'turn:openrelay.metered.ca:443',
-        username: 'openrelay',
-        credential: 'openrelay'
-      },
-      {
-        urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-        username: 'openrelay',
-        credential: 'openrelay'
+        urls: [
+          'turn:openrelay.metered.ca:80',
+          'turn:openrelay.metered.ca:443',
+          'turn:openrelay.metered.ca:443?transport=tcp'
+        ],
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
       }
     ];
     if (import.meta.env.VITE_TURN_URL) {
@@ -508,7 +501,7 @@ export default function LiveKshetraNative({
       });
     }
 
-    const pc = new RTCPeerConnection({ iceServers });
+    const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 10 });
 
     // Attach local media stream tracks
     if (localStreamRef.current) {
@@ -525,20 +518,46 @@ export default function LiveKshetraNative({
       });
     }
 
-    // Attach remote stream when received
+    // Ensure both audio+video transceivers exist for receiving remote media
+    // (critical: without this, remote side won't get negotiated tracks if camera is unavailable)
+    const existingTransceivers = pc.getTransceivers();
+    const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio');
+    const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video');
+    if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
+    if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
+
+    // Receive remote tracks — build MediaStream manually for clean reference change
     pc.ontrack = (event) => {
-      console.log(`[WebRTC] Received remote track from ${targetClientId}:`, event.track.kind);
-      let remoteStream = event.streams && event.streams[0];
-      if (!remoteStream) {
-        if (!peerStreamsRef.current[targetClientId]) {
-          peerStreamsRef.current[targetClientId] = new MediaStream();
-        }
-        peerStreamsRef.current[targetClientId].addTrack(event.track);
-        remoteStream = peerStreamsRef.current[targetClientId];
+      console.log(`[WebRTC] Track received from ${targetClientId}:`, event.track.kind);
+
+      // Get or create the per-peer MediaStream accumulator
+      if (!peerStreamsRef.current[targetClientId]) {
+        peerStreamsRef.current[targetClientId] = new MediaStream();
       }
+      const peerStream = peerStreamsRef.current[targetClientId];
+
+      // Replace existing track of same kind to avoid duplicates
+      const existing = peerStream.getTracks().find((t) => t.kind === event.track.kind);
+      if (existing && existing.id !== event.track.id) {
+        peerStream.removeTrack(existing);
+      }
+      if (!peerStream.getTracks().some((t) => t.id === event.track.id)) {
+        peerStream.addTrack(event.track);
+      }
+
+      // Re-trigger when track unmutes (browsers sometimes deliver muted tracks first)
+      event.track.onunmute = () => {
+        console.log(`[WebRTC] Track unmuted from ${targetClientId}:`, event.track.kind);
+        setRemoteStreams((prev) => ({
+          ...prev,
+          [targetClientId]: new MediaStream(peerStream.getTracks())
+        }));
+      };
+
+      // Deliver fresh MediaStream wrapper so React detects reference change
       setRemoteStreams((prev) => ({
         ...prev,
-        [targetClientId]: new MediaStream(remoteStream.getTracks())
+        [targetClientId]: new MediaStream(peerStream.getTracks())
       }));
     };
 
@@ -550,7 +569,7 @@ export default function LiveKshetraNative({
             type: 'SIGNAL_ICE',
             from_client: myClientId,
             to_client: targetClientId,
-            candidate: event.candidate
+            candidate: event.candidate.toJSON ? event.candidate.toJSON() : event.candidate
           })
         );
       }
@@ -558,15 +577,20 @@ export default function LiveKshetraNative({
 
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Peer ${targetClientId} connection state:`, pc.connectionState);
-      if (pc.connectionState === 'failed') {
-        console.warn(`[WebRTC] Connection to ${targetClientId} failed. Restarting ICE...`);
-        pc.restartIce();
+      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+        console.warn(`[WebRTC] Connection to ${targetClientId} ${pc.connectionState}. Restarting ICE...`);
+        if (pc.restartIce) pc.restartIce();
+      }
+      if (pc.connectionState === 'closed') {
+        delete peerConnectionsRef.current[targetClientId];
+        delete peerStreamsRef.current[targetClientId];
       }
     };
 
     peerConnectionsRef.current[targetClientId] = pc;
     return pc;
   };
+
 
   // ICE candidate buffer: holds candidates received before remoteDescription is set
   const iceCandidateBufferRef = useRef({});

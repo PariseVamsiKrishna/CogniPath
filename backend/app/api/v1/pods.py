@@ -623,13 +623,20 @@ async def pod_websocket_endpoint(
 
             elif msg_type == "MEDIA_STATE_CHANGE":
                 if client_id in pod_manager.pod_peers.get(room_key, {}):
-                    if "audio_on" in data:
-                        pod_manager.pod_peers[room_key][client_id]["audio_on"] = data["audio_on"]
-                    if "video_on" in data:
-                        pod_manager.pod_peers[room_key][client_id]["video_on"] = data["video_on"]
-                    if "hand_raised" in data:
-                        pod_manager.pod_peers[room_key][client_id]["hand_raised"] = data["hand_raised"]
+                    # Support both audio_on/video_on and legacy mic_on/camera_on keys
+                    audio_val = data.get("audio_on", data.get("mic_on"))
+                    video_val = data.get("video_on", data.get("camera_on"))
+                    hand_val = data.get("hand_raised")
+                    if audio_val is not None:
+                        pod_manager.pod_peers[room_key][client_id]["audio_on"] = audio_val
+                        data["audio_on"] = audio_val  # normalize for broadcast
+                    if video_val is not None:
+                        pod_manager.pod_peers[room_key][client_id]["video_on"] = video_val
+                        data["video_on"] = video_val  # normalize for broadcast
+                    if hand_val is not None:
+                        pod_manager.pod_peers[room_key][client_id]["hand_raised"] = hand_val
                 await pod_manager.broadcast_to_pod(room_key, data)
+
 
             elif msg_type == "DISABLE_VIDEO":
                 target_client_id = data.get("target_client_id")
