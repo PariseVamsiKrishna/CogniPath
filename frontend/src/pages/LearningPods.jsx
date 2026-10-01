@@ -291,6 +291,8 @@ export default function LearningPods({ courseId, user }) {
   const myClientId = useRef(`peer_${Math.random().toString(36).substring(2, 9)}`).current;
   // Registry for extra ws message handlers (e.g. LiveKshetraNative's WebRTC handler)
   const wsExtraHandlersRef = useRef([]);
+  // Buffer for WebRTC messages that arrive before LiveKshetraNative's handler registers
+  const pendingKshetraMessagesRef = useRef([]);
   // Closure-safe ref so ws.onmessage can read current viewMode without stale closure
   const viewModeRef = useRef('kshetra');
 
@@ -668,13 +670,22 @@ export default function LearningPods({ courseId, user }) {
         try {
           const data = JSON.parse(event.data);
 
-          // Dispatch to LiveKshetraNative's WebRTC handler (when in kshetra/split mode)
-          wsExtraHandlersRef.current.forEach((handler) => {
-            try { handler(data); } catch (e) { console.warn('[WS dispatch] handler error:', e); }
-          });
-
           // Skip WebRTC signaling in kshetra/split mode — LiveKshetraNative handles it
           const isKshetraMode = viewModeRef.current === 'kshetra' || viewModeRef.current === 'split';
+
+          // Dispatch to LiveKshetraNative's WebRTC handler (when in kshetra/split mode)
+          if (isKshetraMode) {
+            const WEBRTC_TYPES = ['PEER_JOINED', 'SIGNAL_OFFER', 'SIGNAL_ANSWER', 'SIGNAL_ICE', 'PEER_LEFT', 'MEDIA_STATE_CHANGE', 'FORCE_MUTE_PARTICIPANT', 'ALL_PEERS_MUTED'];
+            if (wsExtraHandlersRef.current.length > 0) {
+              wsExtraHandlersRef.current.forEach((handler) => {
+                try { handler(data); } catch (e) { console.warn('[WS dispatch] handler error:', e); }
+              });
+            } else if (WEBRTC_TYPES.includes(data.type)) {
+              // Buffer — handler not registered yet (LiveKshetraNative still initializing media)
+              console.log('[WS buffer] No handler yet, buffering:', data.type);
+              pendingKshetraMessagesRef.current.push(data);
+            }
+          }
 
           if (data.type === 'CHAT_MESSAGE') {
             setMessages((prev) => [
@@ -967,6 +978,9 @@ export default function LearningPods({ courseId, user }) {
     }
     iceCandidateBufferRef.current = {};
     peerStreamsRef.current = {};
+    // Clear handler registry and pending buffer so they don't persist across pod sessions
+    wsExtraHandlersRef.current = [];
+    pendingKshetraMessagesRef.current = [];
     setActivePod(null);
     setHandRaised(false);
     setHandRaisedUsers([]);
@@ -2027,6 +2041,7 @@ export default function LearningPods({ courseId, user }) {
                     sharedWsRef={wsRef}
                     sharedClientId={myClientId}
                     wsHandlersRef={wsExtraHandlersRef}
+                    pendingMessagesRef={pendingKshetraMessagesRef}
                   />
                 </div>
               )}
@@ -2272,6 +2287,7 @@ export default function LearningPods({ courseId, user }) {
                       sharedWsRef={wsRef}
                       sharedClientId={myClientId}
                       wsHandlersRef={wsExtraHandlersRef}
+                      pendingMessagesRef={pendingKshetraMessagesRef}
                     />
                   </div>
                   <div className="relative flex-1 bg-[#0b0f19] rounded-xl border border-slate-800 overflow-hidden">

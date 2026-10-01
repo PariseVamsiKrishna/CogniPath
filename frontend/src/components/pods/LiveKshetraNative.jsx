@@ -262,7 +262,8 @@ export default function LiveKshetraNative({
   initialMessages = [],
   sharedWsRef = null,        // ← If provided, reuse this WebSocket instead of opening a new one
   sharedClientId = null,     // ← If provided, use this client_id instead of generating a new one
-  wsHandlersRef = null       // ← Registry to register this component's ws message handler into
+  wsHandlersRef = null,      // ← Registry to register this component's ws message handler into
+  pendingMessagesRef = null  // ← Buffer of messages that arrived before handler was registered
 }) {
   const cleanCode = (meetingCode || 'sih-pod-live').trim().replace(/\s+/g, '-').toLowerCase();
   const userName = user?.full_name || 'Learner';
@@ -775,6 +776,17 @@ export default function LiveKshetraNative({
           wsHandlersRef.current = wsHandlersRef.current.filter((h) => h !== handleWsMessage); // dedup
           wsHandlersRef.current.push(handleWsMessage);
         }
+        // ─── CRITICAL: Flush messages that arrived before we registered ───
+        // The timing bug: offers/PEER_JOINED arrive at LearningPods' WS before LiveKshetraNative
+        // has registered its handler (getUserMedia takes 1-3s). These messages were buffered
+        // in pendingKshetraMessagesRef. Process them now sequentially.
+        if (pendingMessagesRef && pendingMessagesRef.current.length > 0) {
+          console.log(`[WebRTC] Flushing ${pendingMessagesRef.current.length} buffered messages`);
+          const pending = pendingMessagesRef.current.splice(0); // clear and take all
+          for (const msg of pending) {
+            try { await handleWsMessage(msg); } catch (e) { console.warn('[flush] error:', e); }
+          }
+        }
         return;
       }
 
@@ -819,20 +831,45 @@ export default function LiveKshetraNative({
     return () => {
       isMounted = false;
       if (pingTimerRef.current) clearInterval(pingTimerRef.current);
-      if (ws) {
-        try {
-          ws.close();
-        } catch (e) {}
+      // Only close WS if we opened our own — never close the shared parent WS
+      if (ws && (!sharedWsRef || ws !== sharedWsRef.current)) {
+        try { ws.close(); } catch (e) {}
+      }
+      // Remove our handler from the parent's dispatcher registry
+      if (wsHandlersRef) {
+        wsHandlersRef.current = wsHandlersRef.current.filter((h) => h !== handleWsMessage);
       }
       Object.values(peerConnectionsRef.current).forEach((pc) => {
-        try {
-          pc.close();
-        } catch (e) {}
+        try { pc.close(); } catch (e) {}
       });
       peerConnectionsRef.current = {};
       iceCandidateBufferRef.current = {};
     };
   }, [cleanCode, mediaReady]);
+
+  // When media becomes ready, add local tracks to any existing peer connections
+  // (handles timing case: connection established before getUserMedia finished)
+  useEffect(() => {
+    if (!mediaReady || !localStreamRef.current) return;
+    const existingPcs = Object.entries(peerConnectionsRef.current);
+    if (existingPcs.length === 0) return;
+    console.log(`[WebRTC] Media now ready — adding tracks to ${existingPcs.length} existing peer connection(s)`);
+    existingPcs.forEach(([peerId, pc]) => {
+      if (pc.connectionState === 'closed' || pc.connectionState === 'failed') return;
+      const senders = pc.getSenders();
+      const existingKinds = senders.map((s) => s.track?.kind).filter(Boolean);
+      localStreamRef.current.getTracks().forEach((track) => {
+        if (!existingKinds.includes(track.kind)) {
+          try {
+            pc.addTrack(track, localStreamRef.current);
+            console.log(`[WebRTC] Added ${track.kind} track to existing PC for ${peerId}`);
+          } catch (e) {
+            console.warn('[WebRTC] Could not add track to existing PC:', e);
+          }
+        }
+      });
+    });
+  }, [mediaReady]);
 
   // ---------------------------------------------------------------------------
   // 3. TIMERS (SESSION, RECORDING, & STATS)
