@@ -270,7 +270,8 @@ export default function LiveKshetraNative({
   const userRole = user?.role || 'STUDENT';
 
   // Client ID for WebRTC signaling mesh — use shared one if parent passes it (prevents double-connection)
-  const myClientId = useRef(sharedClientId || ('peer_' + Math.random().toString(36).substring(2, 9))).current;
+  const fallbackClientIdRef = useRef('peer_' + Math.random().toString(36).substring(2, 9));
+  const myClientId = sharedClientId || fallbackClientIdRef.current;
   const [isHostState, setIsHostState] = useState(Boolean(isHost));
 
   // Session Layout
@@ -522,13 +523,15 @@ export default function LiveKshetraNative({
       });
     }
 
-    // Ensure both audio+video transceivers exist for receiving remote media
-    // (critical: without this, remote side won't get negotiated tracks if camera is unavailable)
-    const existingTransceivers = pc.getTransceivers();
-    const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio');
-    const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video');
-    if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
-    if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
+    // Only create transceivers if we are the INITIATOR (caller) and don't already have local tracks for that kind.
+    // Callee (answerer) gets transceivers created automatically by setRemoteDescription from the offer.
+    if (isInitiator) {
+      const existingTransceivers = pc.getTransceivers();
+      const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio' || t.sender.track?.kind === 'audio');
+      const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video' || t.sender.track?.kind === 'video');
+      if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
+      if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
+    }
 
     // Receive remote tracks — build MediaStream manually for clean reference change
     pc.ontrack = (event) => {
@@ -672,6 +675,17 @@ export default function LiveKshetraNative({
           }
         } else if (data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
           console.log(`[WebRTC] Received offer from ${data.from_client}`);
+          // Ensure the peer is in the peers state so the video tile is rendered in the UI
+          setPeers((prev) => {
+            if (prev.some((p) => p.client_id === data.from_client || p.id === data.from_client)) return prev;
+            return [...prev, {
+              id: data.from_client, client_id: data.from_client,
+              name: 'Participant', role: 'STUDENT',
+              is_host: false, audioOn: true, videoOn: true,
+              handRaised: false, isSpeaking: false, color: '#8B7CFF',
+              avatar: 'P'
+            }];
+          });
           const pc = getOrCreatePeerConnection(data.from_client, false);
           try {
             const isPolite = myClientId > data.from_client;
@@ -692,6 +706,18 @@ export default function LiveKshetraNative({
             }
           } catch (err) { console.error('[WebRTC] Answer error:', err); }
         } else if (data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
+          console.log(`[WebRTC] Received answer from ${data.from_client}`);
+          // Ensure the peer is in the peers state so the video tile is rendered in the UI
+          setPeers((prev) => {
+            if (prev.some((p) => p.client_id === data.from_client || p.id === data.from_client)) return prev;
+            return [...prev, {
+              id: data.from_client, client_id: data.from_client,
+              name: 'Participant', role: 'STUDENT',
+              is_host: false, audioOn: true, videoOn: true,
+              handRaised: false, isSpeaking: false, color: '#8B7CFF',
+              avatar: 'P'
+            }];
+          });
           const pc = peerConnectionsRef.current[data.from_client];
           if (pc) {
             try {
@@ -847,24 +873,35 @@ export default function LiveKshetraNative({
     };
   }, [cleanCode, mediaReady]);
 
-  // When media becomes ready, add local tracks to any existing peer connections
-  // (handles timing case: connection established before getUserMedia finished)
+  // When media becomes ready, send local tracks over all existing peer connections.
+  // CRITICAL: Use sender.replaceTrack() instead of pc.addTrack() so tracks are sent immediately
+  // over already-negotiated RTP streams without needing offer/answer renegotiation!
   useEffect(() => {
     if (!mediaReady || !localStreamRef.current) return;
+    const tracks = localStreamRef.current.getTracks();
     const existingPcs = Object.entries(peerConnectionsRef.current);
     if (existingPcs.length === 0) return;
-    console.log(`[WebRTC] Media now ready — adding tracks to ${existingPcs.length} existing peer connection(s)`);
+    console.log(`[WebRTC] Media now ready — transmitting tracks to ${existingPcs.length} existing peer connection(s)`);
     existingPcs.forEach(([peerId, pc]) => {
       if (pc.connectionState === 'closed' || pc.connectionState === 'failed') return;
       const senders = pc.getSenders();
-      const existingKinds = senders.map((s) => s.track?.kind).filter(Boolean);
-      localStreamRef.current.getTracks().forEach((track) => {
-        if (!existingKinds.includes(track.kind)) {
+      tracks.forEach(async (track) => {
+        // Find existing sender matching this track kind (or an unassigned sender)
+        const sender = senders.find((s) => s.track && s.track.kind === track.kind) ||
+                       senders.find((s) => !s.track);
+        if (sender) {
+          try {
+            await sender.replaceTrack(track);
+            console.log(`[WebRTC] replaceTrack (${track.kind}) succeeded for peer ${peerId}`);
+          } catch (e) {
+            console.warn('[WebRTC] replaceTrack error:', e);
+          }
+        } else {
           try {
             pc.addTrack(track, localStreamRef.current);
-            console.log(`[WebRTC] Added ${track.kind} track to existing PC for ${peerId}`);
+            console.log(`[WebRTC] addTrack (${track.kind}) for peer ${peerId}`);
           } catch (e) {
-            console.warn('[WebRTC] Could not add track to existing PC:', e);
+            console.warn('[WebRTC] addTrack error:', e);
           }
         }
       });

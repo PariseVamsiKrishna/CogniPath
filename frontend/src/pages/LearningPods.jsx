@@ -562,12 +562,14 @@ export default function LearningPods({ courseId, user }) {
       });
     }
 
-    // Ensure both audio+video transceivers for receiving remote media
-    const existingTransceivers = pc.getTransceivers();
-    const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio');
-    const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video');
-    if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
-    if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
+    // Only create transceivers if we are the INITIATOR (caller) and don't already have local tracks
+    if (isInitiator) {
+      const existingTransceivers = pc.getTransceivers();
+      const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio' || t.sender.track?.kind === 'audio');
+      const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video' || t.sender.track?.kind === 'video');
+      if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
+      if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
+    }
 
     // Receive remote tracks — build MediaStream track-by-track
     pc.ontrack = (event) => {
