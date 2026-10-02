@@ -1,3 +1,4 @@
+import { getIceServers } from '../components/pods/iceServers';
 import React, { useState, useEffect, useRef } from 'react';
 import {
   Video,
@@ -222,6 +223,10 @@ export default function LearningPods({ courseId, user }) {
     }
   ]);
   const [activePod, setActivePod] = useState(null);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [wsReconnectAttempts, setWsReconnectAttempts] = useState(0);
+  const [connectionError, setConnectionError] = useState(null);
+  const [wsReady, setWsReady] = useState(false);
   const [messages, setMessages] = useState([]);
   const [chatInput, setChatInput] = useState('');
   const [cameraOn, setCameraOn] = useState(false);
@@ -2045,7 +2050,7 @@ export default function LearningPods({ courseId, user }) {
                     wsHandlersRef={wsExtraHandlersRef}
                     pendingMessagesRef={pendingKshetraMessagesRef}
                     sharedLocalStreamRef={localStreamRef}
-                  />
+                   wsReady={wsReady} />
                 </div>
               )}
 
@@ -2292,7 +2297,7 @@ export default function LearningPods({ courseId, user }) {
                       wsHandlersRef={wsExtraHandlersRef}
                       pendingMessagesRef={pendingKshetraMessagesRef}
                       sharedLocalStreamRef={localStreamRef}
-                    />
+                     wsReady={wsReady} />
                   </div>
                   <div className="relative flex-1 bg-[#0b0f19] rounded-xl border border-slate-800 overflow-hidden">
                     <canvas

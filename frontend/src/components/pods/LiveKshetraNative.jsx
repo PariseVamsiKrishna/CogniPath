@@ -1,3 +1,4 @@
+import { getIceServers } from './iceServers';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Video,
@@ -229,7 +230,8 @@ export default function LiveKshetraNative({
   sharedClientId = null,     // ← If provided, use this client_id instead of generating a new one
   wsHandlersRef = null,      // ← Registry to register this component's ws message handler into
   pendingMessagesRef = null, // ← Buffer of messages that arrived before handler was registered
-  sharedLocalStreamRef = null // ← Local media stream reference from parent
+  sharedLocalStreamRef = null, // ← Local media stream reference from parent
+  wsReady = false // ← Prop to indicate parent WS is open
 }) {
   const cleanCode = (meetingCode || 'sih-pod-live').trim().replace(/\s+/g, '-').toLowerCase();
   const userName = user?.full_name || 'Learner';
@@ -566,9 +568,17 @@ export default function LiveKshetraNative({
 
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Peer ${targetClientId} connection state:`, pc.connectionState);
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      if (pc.connectionState === 'failed') {
         console.warn(`[WebRTC] Connection to ${targetClientId} ${pc.connectionState}. Restarting ICE...`);
         if (pc.restartIce) pc.restartIce();
+      } else if (pc.connectionState === 'disconnected') {
+        // Debounce disconnect restartIce to avoid storms
+        setTimeout(() => {
+          if (pc && pc.connectionState === 'disconnected') {
+            console.warn(`[WebRTC] Connection to ${targetClientId} disconnected for 5s. Restarting ICE...`);
+            if (pc.restartIce) pc.restartIce();
+          }
+        }, 5000);
       }
       if (pc.connectionState === 'closed') {
         delete peerConnectionsRef.current[targetClientId];
@@ -795,7 +805,14 @@ export default function LiveKshetraNative({
 
     async function connectSignaling() {
       // If parent (LearningPods.jsx) passes its WebSocket, reuse it — prevents double-connection to same room
-      if (sharedWsRef && sharedWsRef.current) {
+      if (sharedWsRef) {
+        if (!sharedWsRef.current || !wsReady) {
+            // Parent will pass wsRef when ready. Wait for next effect trigger.
+            console.log('[WebRTC] Waiting for shared WebSocket to become ready...');
+            return;
+        }
+        console.log('[WebRTC] Shared WebSocket from parent — registering message handler');
+        wsRef.current = sharedWsRef.current;
         console.log('[WebRTC] Shared WebSocket from parent — registering message handler');
         wsRef.current = sharedWsRef.current;
         // Register our WebRTC message handler into parent's dispatcher registry
@@ -872,7 +889,7 @@ export default function LiveKshetraNative({
       peerConnectionsRef.current = {};
       iceCandidateBufferRef.current = {};
     };
-  }, [cleanCode, mediaReady]);
+  }, [cleanCode, mediaReady, wsReady]);
 
   // When media becomes ready, send local tracks over all existing peer connections.
   // CRITICAL: Use sender.replaceTrack() instead of pc.addTrack() so tracks are sent immediately
