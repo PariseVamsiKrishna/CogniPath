@@ -291,7 +291,8 @@ class PodCreate(BaseModel):
     agenda: Optional[str] = None
     passcode: Optional[str] = None
     kshetra_meeting_code: Optional[str] = None
-    max_peers: int = 8
+    # NOTE: Mesh WebRTC is capped at max 6 peers. >6 requires an SFU (e.g. LiveKit).
+    max_peers: int = 6
     scheduled_duration_minutes: Optional[int] = 45
 
 class PodResponse(BaseModel):

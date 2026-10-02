@@ -1,3 +1,4 @@
+from app.services.ai_helper import gemini_generate
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -112,10 +113,7 @@ STRICT REQUIREMENTS:
 
 Return ONLY a valid JSON array of objects. Do not include markdown code block formatting (no ```json or ```).
 """
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
                 if raw.startswith("```json"):
                     raw = raw[7:]

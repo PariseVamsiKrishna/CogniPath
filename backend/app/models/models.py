@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, Float, DateTime, ForeignKey, UniqueConstraint
+    Index, Column, Integer, String, Text, Boolean, Float, DateTime, ForeignKey, UniqueConstraint
 )
 from sqlalchemy.orm import relationship
 from app.core.database import Base
@@ -173,6 +173,7 @@ class StudentActivityLog(Base):
 class LearningPod(Base):
     """Native collaborative video/audio and chat pod."""
     __tablename__ = "learning_pods"
+    __table_args__ = (Index("ix_pods_course_active", "course_id", "is_active"),)
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False)
@@ -198,6 +199,7 @@ class LearningPod(Base):
 
 class PodMessage(Base):
     __tablename__ = "pod_messages"
+    __table_args__ = (Index("ix_pod_messages_pod", "pod_id"),)
 
     id = Column(Integer, primary_key=True, index=True)
     pod_id = Column(Integer, ForeignKey("learning_pods.id"), nullable=False)

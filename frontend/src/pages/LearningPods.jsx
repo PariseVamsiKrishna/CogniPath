@@ -652,13 +652,13 @@ export default function LearningPods({ courseId, user }) {
       const parsed = new URL(apiBase);
       const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
       wsUrl = `${wsProto}//${parsed.host}/api/v1/pods/ws/${pod.id}?client_id=${myClientId}&user_name=${encodeURIComponent(
-        user?.full_name || 'Alex Kumar'
+        user?.full_name || 'Guest User'
       )}&user_id=${user?.id || ''}&role=${user?.role || 'STUDENT'}`;
     } else {
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const host = window.location.host;
       wsUrl = `${protocol}//${host}/api/v1/pods/ws/${pod.id}?client_id=${myClientId}&user_name=${encodeURIComponent(
-        user?.full_name || 'Alex Kumar'
+        user?.full_name || 'Guest User'
       )}&user_id=${user?.id || ''}&role=${user?.role || 'STUDENT'}`;
     }
 
@@ -1157,7 +1157,7 @@ export default function LearningPods({ courseId, user }) {
       wsRef.current.send(
         JSON.stringify({
           type: 'HAND_RAISE',
-          user_name: user?.full_name || 'Alex Kumar',
+          user_name: user?.full_name || 'Guest User',
           raised: nextState
         })
       );
@@ -1255,7 +1255,7 @@ export default function LearningPods({ courseId, user }) {
       wsRef.current.send(
         JSON.stringify({
           type: 'CHAT_MESSAGE',
-          sender_name: user?.full_name || 'Alex Kumar',
+          sender_name: user?.full_name || 'Guest User',
           content: msg
         })
       );
@@ -1282,7 +1282,7 @@ export default function LearningPods({ courseId, user }) {
       wsRef.current.send(
         JSON.stringify({
           type: 'CHAT_MESSAGE',
-          sender_name: user?.full_name || 'Alex Kumar',
+          sender_name: user?.full_name || 'Guest User',
           content: userText
         })
       );
@@ -1291,7 +1291,7 @@ export default function LearningPods({ courseId, user }) {
         ...prev,
         {
           id: Date.now().toString(),
-          sender_name: user?.full_name || 'Alex Kumar',
+          sender_name: user?.full_name || 'Guest User',
           content: userText,
           is_ai_tutor: false,
           timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
@@ -2450,7 +2450,7 @@ export default function LearningPods({ courseId, user }) {
                         className={`p-3 rounded-2xl text-xs space-y-1 ${
                           m.is_ai_tutor
                             ? 'bg-gradient-to-br from-indigo-950/80 to-slate-950 border border-indigo-500/40 text-slate-200'
-                            : m.sender_name === (user?.full_name || 'Alex Kumar')
+                            : m.sender_name === (user?.full_name || 'Guest User')
                             ? 'bg-indigo-600/20 border border-indigo-500/30 text-white ml-3'
                             : 'bg-slate-950/90 border border-slate-800 text-slate-300'
                         }`}

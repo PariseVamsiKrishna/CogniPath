@@ -1,3 +1,4 @@
+from app.services.ai_helper import gemini_generate
 import logging
 from typing import List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -104,10 +105,7 @@ Return ONLY a valid JSON object matching this schema:
 }}
 Output strictly pure JSON, without markdown code blocks (no ```json or ```).
 """
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
                 if raw.startswith("```json"):
                     raw = raw[7:]
@@ -186,7 +184,7 @@ Output strictly pure JSON, without markdown code blocks (no ```json or ```).
         )
 
     @staticmethod
-    def generate_blooms_taxonomy_quiz(topic: str) -> List[BloomsQuestionItem]:
+    async def generate_blooms_taxonomy_quiz(topic: str) -> List[BloomsQuestionItem]:
         """Generates a 4-tier Bloom's cognitive taxonomy question suite."""
         # 1. Prefer live Google Gemini generation if configured
         try:
@@ -205,10 +203,7 @@ Return ONLY a valid JSON array with 4 objects. Each object must have:
 - "syllabus_source": source reference string e.g. "CS101 Curriculum: {topic}"
 
 Format strictly as raw JSON, without backticks or markdown."""
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
                 if raw.startswith("```json"):
                     raw = raw[7:]

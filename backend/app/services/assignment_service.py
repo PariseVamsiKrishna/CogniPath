@@ -1,3 +1,4 @@
+from app.services.ai_helper import gemini_generate
 import json
 import logging
 from typing import Dict, Any, List, Optional
@@ -81,10 +82,7 @@ Return ONLY a valid JSON object matching this schema:
 }}
 No markdown formatting, no code block backticks. Pure JSON only.
 """
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
                 if raw.startswith("```json"):
                     raw = raw[7:]

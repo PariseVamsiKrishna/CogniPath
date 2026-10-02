@@ -1,6 +1,11 @@
 import os
+import logging
 from typing import List
 from pydantic_settings import BaseSettings
+
+logger = logging.getLogger("cognipath.config")
+
+DEFAULT_SECRET_KEY = "cognipath_super_secure_jwt_secret_key_sih2026_smart_education"
 
 class Settings(BaseSettings):
     PROJECT_NAME: str = "COGNIPATH"
@@ -8,14 +13,13 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
     
     # Environment
-    ENVIRONMENT: str = "development"
+    ENVIRONMENT: str = os.getenv("ENVIRONMENT", "development")
     
     # Database configuration
-    # Fallback to local SQLite if PostgreSQL is not specified
     DATABASE_URL: str = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///./cognipath.db")
     
     # Security / JWT
-    SECRET_KEY: str = os.getenv("SECRET_KEY", "cognipath_super_secure_jwt_secret_key_sih2026_smart_education")
+    SECRET_KEY: str = os.getenv("SECRET_KEY", DEFAULT_SECRET_KEY)
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
     
@@ -26,8 +30,8 @@ class Settings(BaseSettings):
     
     # Google Gemini API
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL_NAME: str = os.getenv("GEMINI_MODEL_NAME", "gemini-3.5-flash-lite")
-    GEMINI_EMBEDDING_MODEL: str = os.getenv("GEMINI_EMBEDDING_MODEL", "gemini-embedding-001")
+    GEMINI_MODEL_NAME: str = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
+    GEMINI_EMBEDDING_MODEL: str = os.getenv("GEMINI_EMBEDDING_MODEL", "text-embedding-004")
     
     # ChromaDB Vector Store
     CHROMA_SERVER_HOST: str = os.getenv("CHROMA_SERVER_HOST", "localhost")
@@ -44,13 +48,13 @@ class Settings(BaseSettings):
     UPLOAD_DIR: str = os.getenv("UPLOAD_DIR", "./uploads")
     
     # CORS
-    CORS_ORIGINS: List[str] = [
-        "http://localhost:3000",
-        "http://localhost:5173",
-        "http://127.0.0.1:3000",
-        "http://127.0.0.1:5173",
-        "*"
-    ]
+    raw_cors: str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173")
+
+    @property
+    def CORS_ORIGINS(self) -> List[str]:
+        if not self.raw_cors:
+            return ["http://localhost:5173"]
+        return [origin.strip() for origin in self.raw_cors.split(",") if origin.strip()]
 
     class Config:
         case_sensitive = True
@@ -58,3 +62,10 @@ class Settings(BaseSettings):
         extra = "allow"
 
 settings = Settings()
+
+# Validation on startup
+if settings.ENVIRONMENT.lower() == "production":
+    if not settings.SECRET_KEY or settings.SECRET_KEY == DEFAULT_SECRET_KEY:
+        raise ValueError("CRITICAL SECURITY ERROR: SECRET_KEY must be configured and cannot use default value in production!")
+    if "sqlite" in settings.DATABASE_URL.lower():
+        logger.warning("WARNING: SQLite is configured in production. Consider using PostgreSQL/Supabase for scaling.")

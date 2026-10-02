@@ -1,19 +1,21 @@
 import React, { useState, useEffect } from 'react';
 import Navbar, { SUPPORTED_LANGUAGES } from './components/Navbar';
 import Sidebar from './components/Sidebar';
-import Login from './pages/Login';
-import DashboardHome from './pages/DashboardHome';
-import StudentPortal from './pages/StudentPortal';
-import SpacedQuizView from './pages/SpacedQuizView';
-import EducatorDashboard from './pages/EducatorDashboard';
-import LearningPods from './pages/LearningPods';
-import CommunityFeed from './pages/CommunityFeed';
-import LearningRoadmapView from './pages/LearningRoadmapView';
-import CoursePlayer from './pages/CoursePlayer';
-import ExamStudio from './pages/ExamStudio';
-import AssignmentView from './pages/AssignmentView';
-import LiveKshetraStudio from './pages/LiveKshetraStudio';
-import LandingPage from './pages/LandingPage';
+import { Suspense, lazy } from 'react';
+
+const Login = lazy(() => import('./pages/Login'));
+const DashboardHome = lazy(() => import('./pages/DashboardHome'));
+const StudentPortal = lazy(() => import('./pages/StudentPortal'));
+const SpacedQuizView = lazy(() => import('./pages/SpacedQuizView'));
+const EducatorDashboard = lazy(() => import('./pages/EducatorDashboard'));
+const LearningPods = lazy(() => import('./pages/LearningPods'));
+const CommunityFeed = lazy(() => import('./pages/CommunityFeed'));
+const LearningRoadmapView = lazy(() => import('./pages/LearningRoadmapView'));
+const CoursePlayer = lazy(() => import('./pages/CoursePlayer'));
+const ExamStudio = lazy(() => import('./pages/ExamStudio'));
+const AssignmentView = lazy(() => import('./pages/AssignmentView'));
+const LiveKshetraStudio = lazy(() => import('./pages/LiveKshetraStudio'));
+const LandingPage = lazy(() => import('./pages/LandingPage'));
 import CreateCourseModal from './components/CreateCourseModal';
 import AcademicProfileModal from './components/AcademicProfileModal';
 import CourseCatalogModal from './components/CourseCatalogModal';
@@ -466,7 +468,15 @@ export default function App() {
             ? 'overflow-hidden flex flex-col'
             : 'overflow-y-auto'
         }`}>
-          <ErrorBoundary onReset={() => setActiveTab(user.role === 'EDUCATOR' ? 'analytics' : 'dashboard')}>
+          <ErrorBoundary onReset={() => setActiveTab(user?.role === 'EDUCATOR' ? 'analytics' : 'dashboard')}>
+            <Suspense fallback={
+              <div className="min-h-[400px] w-full flex items-center justify-center p-12 text-slate-400">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="w-8 h-8 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-xs font-semibold tracking-wide uppercase">Loading Page Component...</span>
+                </div>
+              </div>
+            }>
             {/* Dashboard Home View */}
             {activeTab === 'dashboard' && (
               <DashboardHome
@@ -628,6 +638,7 @@ export default function App() {
                 />
               )
             )}
+          </Suspense>
           </ErrorBoundary>
         </main>
       </div>
@@ -713,6 +724,6 @@ export default function App() {
         isOnboarding={false}
       />
     </div>
-    </ErrorBoundary>
+  </ErrorBoundary>
   );
 }

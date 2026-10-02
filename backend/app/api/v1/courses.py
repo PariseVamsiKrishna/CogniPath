@@ -1,3 +1,4 @@
+from app.core.cache import ttl_cache
 import os
 import re
 import shutil
@@ -589,6 +590,11 @@ async def get_course_ratings(
 @router.get("/{course_id}/hierarchy", response_model=CourseHierarchyResponse)
 async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db)):
     """Get complete hierarchical syllabus: Course -> Modules -> Topics & View-Only PDF Resources."""
+    cache_key = f"hierarchy_{course_id}"
+    cached = ttl_cache.get(cache_key)
+    if cached:
+        return cached
+
     res = await db.execute(select(Course).where(Course.id == course_id))
     course = res.scalars().first()
     if not course:
@@ -800,6 +806,8 @@ async def delete_course_permanently(
 
 @router.post("/{course_id}/modules", response_model=ModuleResponse, status_code=status.HTTP_201_CREATED)
 async def create_module(
+    # Invalidate cache
+    # 
     course_id: int,
     req: ModuleCreate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -840,6 +848,8 @@ async def create_module(
 
 @router.put("/modules/{module_id}", response_model=ModuleResponse)
 async def update_module(
+    # Invalidate cache
+    # 
     module_id: int,
     req: ModuleUpdate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -884,6 +894,8 @@ async def update_module(
 
 @router.delete("/modules/{module_id}")
 async def delete_module(
+    # Invalidate cache
+    # 
     module_id: int,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
@@ -905,6 +917,8 @@ async def delete_module(
 
 @router.post("/modules/{module_id}/topics", response_model=TopicResponse, status_code=status.HTTP_201_CREATED)
 async def create_topic(
+    # Invalidate cache
+    # 
     module_id: int,
     req: TopicCreate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -937,6 +951,8 @@ async def create_topic(
 
 @router.put("/topics/{topic_id}", response_model=TopicResponse)
 async def update_topic(
+    # Invalidate cache
+    # 
     topic_id: int,
     req: TopicUpdate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -965,6 +981,8 @@ async def update_topic(
 
 @router.delete("/topics/{topic_id}")
 async def delete_topic(
+    # Invalidate cache
+    # 
     topic_id: int,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
@@ -986,6 +1004,8 @@ async def delete_topic(
 
 @router.post("/modules/{module_id}/resources", response_model=ModuleResourceResponse, status_code=status.HTTP_201_CREATED)
 async def upload_module_resource(
+    # Invalidate cache
+    # 
     module_id: int,
     title: str = Form(...),
     file: UploadFile = File(...),

@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_roles
 from app.models.models import User, Course, Module, Exam, ExamQuestion, ExamSubmission, StudentBadge
 from app.schemas.schemas import (
     ExamCreate, ExamResponse, ExamQuestionSchema, ExamReorderRequest,
@@ -19,7 +19,7 @@ router = APIRouter(prefix="/exams", tags=["Dual-Engine Assessments (Exams & Quiz
 @router.post("", response_model=ExamResponse, status_code=status.HTTP_201_CREATED)
 async def create_exam(
     req: ExamCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
 ):
     """Educator creates a Module-level Quiz or comprehensive Final Course Exam."""
@@ -55,11 +55,16 @@ async def create_exam(
     return await get_exam_details(exam.id, db)
 
 @router.get("/{exam_id}", response_model=ExamResponse)
-async def get_exam(exam_id: int, db: AsyncSession = Depends(get_db)):
-    """Retrieve full exam details with ordered questions."""
-    return await get_exam_details(exam_id, db)
+async def get_exam(
+    exam_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Retrieve full exam details with ordered questions (answers masked for students)."""
+    is_educator = (current_user.role in ("EDUCATOR", "ADMIN"))
+    return await get_exam_details(exam_id, db, is_educator=is_educator)
 
-async def get_exam_details(exam_id: int, db: AsyncSession) -> ExamResponse:
+async def get_exam_details(exam_id: int, db: AsyncSession, is_educator: bool = False) -> ExamResponse:
     res = await db.execute(select(Exam).where(Exam.id == exam_id))
     exam = res.scalars().first()
     if not exam:
@@ -77,8 +82,8 @@ async def get_exam_details(exam_id: int, db: AsyncSession) -> ExamResponse:
             question_type=q.question_type,
             question_text=q.question_text,
             options=json.loads(q.options) if q.options else None,
-            correct_answer=q.correct_answer,
-            explanation=q.explanation,
+            correct_answer=q.correct_answer if is_educator else None,
+            explanation=q.explanation if is_educator else None,
             source_ref=q.source_ref,
             order_index=q.order_index
         ))
@@ -105,11 +110,13 @@ async def list_course_exams(course_id: int, db: AsyncSession = Depends(get_db)):
         results.append(await get_exam_details(e.id, db))
     return results
 
-@router.post("/{exam_id}/questions", response_model=ExamQuestionSchema)
+@router.post("/{exam_id}/questions"
+# Require Educator/Admin
+, response_model=ExamQuestionSchema)
 async def add_question(
     exam_id: int,
     q_in: ExamQuestionSchema,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles('EDUCATOR', 'ADMIN')),
     db: AsyncSession = Depends(get_db)
 ):
     """Add a question (manual or pushed from AI suggestion drawer)."""
@@ -150,7 +157,7 @@ async def add_question(
 async def drop_question(
     exam_id: int,
     question_id: int,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles('EDUCATOR', 'ADMIN')),
     db: AsyncSession = Depends(get_db)
 ):
     """Remove/drop a question from the active exam builder."""
@@ -169,7 +176,7 @@ async def drop_question(
 async def reorder_questions(
     exam_id: int,
     req: ExamReorderRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles('EDUCATOR', 'ADMIN')),
     db: AsyncSession = Depends(get_db)
 ):
     """Batch updates question order indices following drag-and-drop actions."""
@@ -188,7 +195,7 @@ async def reorder_questions(
 @router.post("/ai-suggest", response_model=AISuggestionResponse)
 async def get_ai_suggestions(
     req: AISuggestionRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(require_roles('EDUCATOR', 'ADMIN'))
 ):
     """Generates AI question suggestions for the two-column interactive exam builder drawer."""
     suggestions = await exam_service.generate_ai_suggestions(

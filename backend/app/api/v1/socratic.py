@@ -24,4 +24,4 @@ async def socratic_query(
 @router.get("/mindmap", response_model=ConceptMindmap)
 async def get_concept_mindmap(topic: str = "Binary Search Trees"):
     """Returns visual concept mindmap nodes, edges, and Mermaid.js diagram for a topic."""
-    return socratic_service.generate_mindmap_for_topic(topic)
+    return await socratic_service.generate_mindmap_for_topic(topic)

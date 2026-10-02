@@ -13,8 +13,15 @@ from app.services.rag_service import rag_service
 logger = logging.getLogger("cognipath.pod")
 
 class PodConnectionManager:
+    def create_background_task(self, coro):
+        task = asyncio.create_task(coro)
+        self.background_tasks.add(task)
+        task.add_done_callback(self.background_tasks.discard)
+        return task
+
     """Manages active WebRTC signaling, chat messages, host moderation events, and session lifecycle per Learning Pod."""
     def __init__(self):
+        self.background_tasks = set()
         # room_key -> set of active WebSockets
         self.active_connections: Dict[str, Set[WebSocket]] = {}
         # room_key -> peer metadata dict: client_id -> {"name": ..., "user_id": ..., "role": ..., "is_host": ...}
@@ -53,11 +60,23 @@ class PodConnectionManager:
     async def check_active_pods_lifecycle(self):
         """Checks expiration timestamps and broadcasts countdown warnings or triggers teardown."""
         now = datetime.now(timezone.utc)
+        five_min_ahead = now + timedelta(minutes=5)
         async with AsyncSessionLocal() as session:
+            # Query active pods expiring within 5 minutes or already expired
             result = await session.execute(
-                select(LearningPod).where(LearningPod.is_active == True)
+                select(LearningPod).where(
+                    LearningPod.is_active == True,
+                    LearningPod.expires_at <= five_min_ahead
+                )
             )
             active_pods = result.scalars().all()
+
+            # Host heartbeat check for active connections
+            for room_key, last_seen in list(self.pod_hosts.items()):
+                if isinstance(last_seen, datetime):
+                    ls = last_seen if last_seen.tzinfo else last_seen.replace(tzinfo=timezone.utc)
+                    if (now - ls).total_seconds() > 180 and room_key not in self.host_grace_timers and len(self.active_connections.get(room_key, set())) > 0:
+                        self._schedule_host_grace_period(room_key)
 
             for pod in active_pods:
                 if not pod.expires_at:
@@ -179,19 +198,23 @@ class PodConnectionManager:
     def disconnect(self, pod_id: Any, websocket: WebSocket, client_id: str, user_id: Optional[int] = None):
         room_key = str(pod_id)
         if room_key in self.active_connections:
+            if websocket not in self.active_connections[room_key] and client_id not in self.pod_peers.get(room_key, {}):
+                return  # Already disconnected
             self.active_connections[room_key].discard(websocket)
             peer_info = self.pod_peers.get(room_key, {}).pop(client_id, None)
             if client_id in self.peer_sockets.get(room_key, {}):
-                del self.peer_sockets[room_key][client_id]
+                if self.peer_sockets[room_key][client_id] == websocket:
+                    del self.peer_sockets[room_key][client_id]
 
-            # Broadcast PEER_LEFT to remaining peers
-            asyncio.create_task(self.broadcast_to_pod(room_key, {
-                "type": "PEER_LEFT",
-                "client_id": client_id,
-                "user_name": peer_info.get("name") if peer_info else "Participant",
-                "total_peers": len(self.active_connections.get(room_key, set())),
-                "participants": list(self.pod_peers.get(room_key, {}).values())
-            }))
+            if peer_info:
+                # Broadcast PEER_LEFT to remaining peers
+                self.create_background_task(self.broadcast_to_pod(room_key, {
+                    "type": "PEER_LEFT",
+                    "client_id": client_id,
+                    "user_name": peer_info.get("name") if peer_info else "Participant",
+                    "total_peers": len(self.active_connections.get(room_key, set())),
+                    "participants": list(self.pod_peers.get(room_key, {}).values())
+                }))
 
             # Check if disconnected peer is the host
             effective_user_id = user_id or (peer_info.get("user_id") if peer_info else None)
@@ -342,17 +365,40 @@ class PodConnectionManager:
                     dead_sockets.add(connection)
             for dead in dead_sockets:
                 self.active_connections[room_key].discard(dead)
+                dead_cids = [cid for cid, sock in list(self.peer_sockets.get(room_key, {}).items()) if sock == dead]
+                for cid in dead_cids:
+                    self.peer_sockets.get(room_key, {}).pop(cid, None)
+                    self.pod_peers.get(room_key, {}).pop(cid, None)
 
     async def handle_pod_message(
         self,
         pod_id: Any,
         course_id: int,
         sender_name: str,
-        content: str
+        content: str,
+        user_id: Optional[int] = None
     ):
         """Broadcasts user message and triggers AI Tutor co-pilot if summoned with @tutor."""
         room_key = str(pod_id)
-        # 1. Broadcast peer message
+        parsed_pod_id = int(room_key) if room_key.isdigit() else None
+
+        # Persist user message
+        if parsed_pod_id:
+            try:
+                async with AsyncSessionLocal() as session:
+                    msg = PodMessage(
+                        pod_id=parsed_pod_id,
+                        user_id=user_id,
+                        sender_name=sender_name,
+                        content=content,
+                        is_ai_tutor=False
+                    )
+                    session.add(msg)
+                    await session.commit()
+            except Exception as e:
+                logger.error(f"Failed to persist pod message: {e}")
+
+        # Broadcast peer message
         await self.broadcast_to_pod(room_key, {
             "type": "CHAT_MESSAGE",
             "sender_name": sender_name,
@@ -360,28 +406,51 @@ class PodConnectionManager:
             "is_ai_tutor": False
         })
 
-        # 2. Check for @Tutor mention
+        # Check for @tutor mention
         if "@tutor" in content.lower():
-            query_clean = content.lower().replace("@tutor", "").strip()
+            # Preserve original casing
+            query_clean = re.sub(r'(?i)@tutor', '', content).strip()
             if not query_clean:
                 query_clean = "Can you explain the main focus of this study pod?"
 
-            try:
-                # Generate grounded RAG response for the pod
-                tutor_answer, citations, _ = await rag_service.generate_response(
-                    course_id=course_id,
-                    query=query_clean,
-                    target_language="en"
-                )
+            async def _process_tutor():
+                try:
+                    tutor_answer, citations, _ = await asyncio.wait_for(
+                        rag_service.generate_response(
+                            course_id=course_id,
+                            query=query_clean,
+                            target_language="en"
+                        ),
+                        timeout=20.0
+                    )
+                except Exception as e:
+                    logger.error(f"Error generating AI Tutor response in pod: {e}")
+                    tutor_answer = "I'm currently unable to process your question. Please try asking again in a moment."
+                    citations = []
+
+                if parsed_pod_id:
+                    try:
+                        async with AsyncSessionLocal() as session:
+                            tutor_msg = PodMessage(
+                                pod_id=parsed_pod_id,
+                                user_id=None,
+                                sender_name="COGNIPATH AI Tutor",
+                                content=tutor_answer,
+                                is_ai_tutor=True
+                            )
+                            session.add(tutor_msg)
+                            await session.commit()
+                    except Exception as e:
+                        logger.error(f"Failed to persist tutor response: {e}")
 
                 await self.broadcast_to_pod(room_key, {
                     "type": "CHAT_MESSAGE",
                     "sender_name": "COGNIPATH AI Tutor",
                     "content": tutor_answer,
                     "is_ai_tutor": True,
-                    "citations": [c.model_dump() for c in citations]
+                    "citations": [c.model_dump() for c in citations] if citations else []
                 })
-            except Exception as e:
-                logger.error(f"Error generating AI Tutor response in pod: {e}")
+
+            self.create_background_task(_process_tutor())
 
 pod_manager = PodConnectionManager()

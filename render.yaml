@@ -8,7 +8,8 @@ services:
     runtime: python
     rootDir: backend
     buildCommand: pip install --upgrade pip && pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    # NOTE: Pod WebRTC signaling and active connection state are currently stored in-memory inside the single worker process. Maintain 1 worker (--workers 1) or implement Redis Pub/Sub before scaling workers.
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1
     healthCheckPath: /health
     autoDeploy: true
     envVars:

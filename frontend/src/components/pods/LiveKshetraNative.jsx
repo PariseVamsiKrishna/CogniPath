@@ -64,7 +64,7 @@ function SignalBars({ strength }) {
   );
 }
 
-function RemotePeerTile({
+const RemotePeerTile = React.memo(function RemotePeerTile({
   peer,
   stream,
   isHost,
@@ -217,7 +217,9 @@ function RemotePeerTile({
       )}
     </div>
   );
-}
+});
+
+
 
 export default function LiveKshetraNative({
   meetingCode = 'sih-kshetra-live',

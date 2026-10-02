@@ -1,5 +1,6 @@
 import os
 import uuid
+import asyncio
 import logging
 from typing import List, Dict, Any, Tuple, Optional
 from pypdf import PdfReader
@@ -32,7 +33,6 @@ class RecursiveCharacterTextSplitter:
                     chunks.append(chunk)
                 break
 
-            # Find best split separator
             split_pos = -1
             chunk_slice = text[start:end]
 
@@ -49,7 +49,6 @@ class RecursiveCharacterTextSplitter:
             if chunk:
                 chunks.append(chunk)
 
-            # Move start pointer accounting for overlap
             start = max(split_pos - self.chunk_overlap, start + 1)
 
         return chunks
@@ -107,8 +106,8 @@ class DocumentIngestionService:
         educator_id: int = 1,
         module_id: Optional[int] = None
     ) -> int:
-        """Parses, chunks, embeds, and indexes document into ChromaDB."""
-        pages = self.extract_text(file_path, file_type)
+        """Parses, chunks, embeds, and indexes document into ChromaDB without blocking async loop."""
+        pages = await asyncio.to_thread(self.extract_text, file_path, file_type)
         all_chunks: List[str] = []
         all_metadatas: List[Dict[str, Any]] = []
         all_ids: List[str] = []

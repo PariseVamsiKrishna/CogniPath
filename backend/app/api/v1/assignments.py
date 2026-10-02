@@ -1,3 +1,4 @@
+import uuid
 import os
 import json
 import shutil
@@ -9,7 +10,7 @@ from sqlalchemy.future import select
 
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import get_current_user
+from app.core.security import get_current_user, require_roles
 from app.models.models import User, Assignment, AssignmentSubmission, Module
 from app.schemas.schemas import (
     AssignmentCreate, AssignmentResponse, AssignmentSubmissionResponse,
@@ -22,7 +23,7 @@ router = APIRouter(prefix="/assignments", tags=["Assignment Engine & AI Auto-Eva
 @router.post("", response_model=AssignmentResponse, status_code=status.HTTP_201_CREATED)
 async def create_assignment(
     req: AssignmentCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
 ):
     """Educator creates an assignment with criterion-by-criterion rubrics."""
@@ -117,14 +118,31 @@ async def submit_assignment(
     extracted = submission_text or ""
 
     if file:
+        # Whitelist extensions
+        ext = os.path.splitext(file.filename)[1].lower()
+        if ext not in [".pdf", ".docx", ".doc", ".txt", ".md"]:
+            raise HTTPException(status_code=400, detail="Unsupported file format for assignment. Allowed: .pdf, .docx, .doc, .txt, .md")
+
+        # Cap size at 10 MB
+        file.file.seek(0, 2)
+        size_mb = file.file.tell() / (1024 * 1024)
+        file.file.seek(0)
+        if size_mb > 10.0:
+            raise HTTPException(status_code=413, detail="File size exceeds maximum limit of 10 MB")
+
+        # Sanitize filename with UUID prefix
+        safe_name = os.path.basename(file.filename).replace(" ", "_")
+        unique_name = f"assign_{assignment_id}_u{current_user.id}_{uuid.uuid4().hex[:8]}_{safe_name}"
         os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-        file_path = os.path.join(settings.UPLOAD_DIR, f"assign_{assignment_id}_u{current_user.id}_{file.filename}")
+        file_path = os.path.join(settings.UPLOAD_DIR, unique_name)
+        
         with open(file_path, "wb") as buffer:
             shutil.copyfileobj(file.file, buffer)
-        file_url = f"/uploads/{os.path.basename(file_path)}"
+        file_url = f"/uploads/{unique_name}"
 
-        if file.filename.lower().endswith(".pdf"):
-            pdf_text = assignment_service.extract_text_from_pdf(file_path)
+        if ext == ".pdf":
+            import asyncio
+            pdf_text = await asyncio.to_thread(assignment_service.extract_text_from_pdf, file_path)
             if pdf_text:
                 extracted = f"{extracted}\n\n{pdf_text}".strip()
 
@@ -173,7 +191,13 @@ async def submit_assignment(
     )
 
 @router.get("/submissions/student/{student_id}", response_model=List[AssignmentSubmissionResponse])
-async def list_student_submissions(student_id: int, db: AsyncSession = Depends(get_db)):
+async def list_student_submissions(
+    student_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if current_user.role not in ("EDUCATOR", "ADMIN") and current_user.id != student_id:
+        raise HTTPException(status_code=403, detail="Access denied: Cannot view submissions of another student")
     """List all assignment submissions for a student."""
     res = await db.execute(
         select(AssignmentSubmission).where(AssignmentSubmission.student_id == student_id)

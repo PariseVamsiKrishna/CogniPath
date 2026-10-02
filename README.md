@@ -190,3 +190,57 @@ CogniPath is architected for zero-friction cloud deployment:
 ## 🛡️ License
 Built for Smart India Hackathon (SIH 2026) under the MIT License.
 
+
+
+
+---
+
+## 💻 Developer Setup & Running Tests
+
+### 1. Environment Setup
+Create a `.env` file inside `backend/` (refer to `backend/.env.example`):
+```env
+ENVIRONMENT=development
+SECRET_KEY=your_secure_jwt_secret_key
+DATABASE_URL=sqlite+aiosqlite:///./cognipath.db
+CORS_ORIGINS=http://localhost:3000,http://localhost:5173
+GEMINI_API_KEY=your_google_gemini_api_key
+```
+
+On the frontend, create `.env` in `frontend/`:
+```env
+VITE_API_BASE_URL=http://localhost:8000
+VITE_TURN_URL=
+```
+
+### 2. Running Backend Pytest Suite
+```powershell
+cd backend
+python -m pytest -v
+```
+
+### 3. Running Frontend Production Build & Verification
+```powershell
+cd frontend
+npm run build
+```
+
+---
+
+## 🚢 Production Deployment Checklist
+
+1. **Render (Backend API):**
+   - Runtime: Python 3.11
+   - Start Command: `uvicorn app.main.app --host 0.0.0.0 --port $PORT --workers 1`
+   - Set environment variables: `ENVIRONMENT=production`, `SECRET_KEY`, `DATABASE_URL` (PostgreSQL/Supabase), `GEMINI_API_KEY`, `CORS_ORIGINS`.
+
+2. **Vercel (Frontend SPA):**
+   - Build Command: `cd frontend && npm run build`
+   - Output Directory: `frontend/dist`
+   - Environment Variable: Set `VITE_API_BASE_URL` to your Render API URL (e.g., `https://cognipath-backend.onrender.com`).
+
+3. **Supabase (PostgreSQL Database):**
+   - Connect via `DATABASE_URL=postgresql+asyncpg://postgres:PASSWORD@db.xxxx.supabase.co:5432/postgres`.
+
+4. **TURN Server (WebRTC Pods for NAT/Firewalls):**
+   - Configure `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` in production to allow peer-to-peer audio/video streaming across strict Wi-Fi/networks.

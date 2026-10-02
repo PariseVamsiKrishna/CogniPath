@@ -25,6 +25,34 @@ logger = logging.getLogger("cognipath.pods_api")
 
 router = APIRouter(prefix="/pods", tags=["Native Learning Pods & Real-Time Collab"])
 
+def _pod_to_response(pod: LearningPod, host_name: str) -> PodResponse:
+    now = datetime.now(timezone.utc)
+    rem_sec = None
+    if pod.expires_at:
+        exp = pod.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        rem_sec = max(0, int((exp - now).total_seconds()))
+
+    return PodResponse(
+        id=pod.id,
+        title=pod.title,
+        course_id=pod.course_id,
+        host_id=pod.host_id,
+        host_name=host_name,
+        topic=pod.topic,
+        agenda=pod.agenda,
+        has_passcode=bool(pod.passcode_hash),
+        is_active=pod.is_active,
+        max_peers=pod.max_peers,
+        scheduled_duration_minutes=pod.scheduled_duration_minutes,
+        remaining_seconds=rem_sec,
+        status=pod.status,
+        kshetra_meeting_code=pod.kshetra_meeting_code,
+        created_at=pod.created_at
+    )
+
+
 
 @router.get("", response_model=List[PodResponse])
 async def list_pods(course_id: int, db: AsyncSession = Depends(get_db)):
@@ -698,7 +726,7 @@ async def pod_websocket_endpoint(
 
             elif msg_type in ["SIGNAL_OFFER", "SIGNAL_ANSWER", "SIGNAL_ICE"]:
                 # Relay WebRTC signaling frames directly to recipient peer if specified, or broadcast
-                to_client = data.get("to_client")
+                to_client = data.get("to_client") or data.get("target_client_id") or data.get("targetUserId")
                 if to_client:
                     await pod_manager.send_to_client(room_key, to_client, data)
                 else:

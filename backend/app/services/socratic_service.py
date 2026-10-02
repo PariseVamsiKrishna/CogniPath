@@ -1,3 +1,4 @@
+from app.services.ai_helper import gemini_generate
 import time
 import json
 import logging
@@ -14,7 +15,7 @@ class SocraticTutorService:
     """Provides Socratic guided inquiry and dynamic visual concept mindmaps powered by Gemini AI."""
 
     @staticmethod
-    def generate_mindmap_for_topic(topic: str) -> ConceptMindmap:
+    async def generate_mindmap_for_topic(topic: str) -> ConceptMindmap:
         """Generates structured visual mindmap nodes, edges, and Mermaid.js diagram using Gemini AI with fallback."""
         # 1. Try real Google Gemini mindmap generation
         try:
@@ -53,10 +54,7 @@ Requirements for mermaid_code:
   style E fill:#0369a1,stroke:#38bdf8,stroke-width:1px,color:#fff
 - Output pure JSON only. Do not use markdown backticks.
 """
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
                 if raw.startswith("```json"):
                     raw = raw[7:]
@@ -239,10 +237,7 @@ Return ONLY a valid JSON object matching:
 }}
 Output strictly pure JSON without markdown backticks."""
 
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
                 if raw.startswith("```json"):
                     raw = raw[7:]

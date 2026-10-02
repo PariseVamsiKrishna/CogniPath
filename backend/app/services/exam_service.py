@@ -1,3 +1,4 @@
+from app.services.ai_helper import gemini_generate
 import json
 import hashlib
 import logging
@@ -64,10 +65,7 @@ Return ONLY a valid JSON array of objects. Each object must have:
 
 No markdown formatting, no backticks. Pure JSON array only.
 """
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
                 if raw.startswith("```json"):
                     raw = raw[7:]
@@ -363,10 +361,7 @@ Each JSON object must have EXACTLY these fields:
 - "explanation": a concise, pedagogical explanation explaining why the correct option is true and others are false
 - "source_reference": exact snippet or lecture reference from the module material (e.g. "{module_title}, Section 2.1")
 """
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
                 if raw.startswith("```json"):
                     raw = raw[7:]

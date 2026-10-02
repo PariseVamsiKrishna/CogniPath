@@ -25,4 +25,4 @@ async def generate_blooms_quiz(
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN"))
 ):
     """Generate balanced 4-tier Bloom's Taxonomy assessment (Remember, Understand, Apply, Analyze)."""
-    return curriculum_audit_service.generate_blooms_taxonomy_quiz(topic)
+    return await curriculum_audit_service.generate_blooms_taxonomy_quiz(topic)
