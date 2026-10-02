@@ -211,12 +211,21 @@ On the frontend, create `.env` in `frontend/`:
 ```env
 VITE_API_BASE_URL=http://localhost:8000
 VITE_TURN_URL=
+VITE_TURN_USERNAME=
+VITE_TURN_CREDENTIAL=
 ```
 
-### 2. Running Backend Pytest Suite
+### 2. Running Backend Tests & Code Quality
 ```powershell
 cd backend
+# Install dev requirements (pytest, pytest-asyncio, ruff, httpx)
+pip install -r requirements-dev.txt
+
+# Run pytest test suite
 python -m pytest -v
+
+# Run linter
+ruff check app/
 ```
 
 ### 3. Running Frontend Production Build & Verification
@@ -231,16 +240,20 @@ npm run build
 
 1. **Render (Backend API):**
    - Runtime: Python 3.11
-   - Start Command: `uvicorn app.main.app --host 0.0.0.0 --port $PORT --workers 1`
+   - Start Command: `uvicorn app.main:app --host 0.0.0.0 --port $PORT --workers 1`
    - Set environment variables: `ENVIRONMENT=production`, `SECRET_KEY`, `DATABASE_URL` (PostgreSQL/Supabase), `GEMINI_API_KEY`, `CORS_ORIGINS`.
 
 2. **Vercel (Frontend SPA):**
    - Build Command: `cd frontend && npm run build`
    - Output Directory: `frontend/dist`
-   - Environment Variable: Set `VITE_API_BASE_URL` to your Render API URL (e.g., `https://cognipath-backend.onrender.com`).
+   - Environment Variables:
+     - `VITE_API_BASE_URL`: Your Render API URL (e.g., `https://cognipath-backend.onrender.com`).
+     - `VITE_TURN_URL`: WebRTC TURN server URL (e.g., `turn:turn.example.com:3478`).
+     - `VITE_TURN_USERNAME`: WebRTC TURN auth username.
+     - `VITE_TURN_CREDENTIAL`: WebRTC TURN auth password/credential.
 
 3. **Supabase (PostgreSQL Database):**
    - Connect via `DATABASE_URL=postgresql+asyncpg://postgres:PASSWORD@db.xxxx.supabase.co:5432/postgres`.
 
 4. **TURN Server (WebRTC Pods for NAT/Firewalls):**
-   - Configure `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` in production to allow peer-to-peer audio/video streaming across strict Wi-Fi/networks.
+   - Configure `VITE_TURN_URL`, `VITE_TURN_USERNAME`, `VITE_TURN_CREDENTIAL` in production to allow peer-to-peer audio/video streaming across strict Wi-Fi/university firewalls and symmetric NATs.

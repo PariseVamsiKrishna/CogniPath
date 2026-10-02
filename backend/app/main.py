@@ -20,6 +20,26 @@ logging.basicConfig(
 logger = logging.getLogger("cognipath.main")
 
 from app.services.pod_service import pod_manager
+from app.models.models import LearningPod
+from app.core.database import AsyncSessionLocal
+from app.core.security import get_password_hash
+from sqlalchemy.future import select
+
+async def migrate_legacy_passcodes():
+    try:
+        async with AsyncSessionLocal() as session:
+            result = await session.execute(select(LearningPod).where(LearningPod.passcode_hash.isnot(None)))
+            pods = result.scalars().all()
+            updated = 0
+            for p in pods:
+                if p.passcode_hash and not p.passcode_hash.startswith("$2"):
+                    p.passcode_hash = get_password_hash(p.passcode_hash.strip())
+                    updated += 1
+            if updated > 0:
+                await session.commit()
+                logger.info(f"Successfully migrated {updated} legacy plaintext pod passcodes to bcrypt.")
+    except Exception as e:
+        logger.warning(f"Passcode migration warning: {e}")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -27,11 +47,14 @@ async def lifespan(app: FastAPI):
     logger.info("Starting COGNIPATH Backend Engine...")
     await init_db()
     
-    # Disable seed_demo_data when in production
-    if settings.ENVIRONMENT.lower() != "production":
+    # Run legacy passcode migration
+    await migrate_legacy_passcodes()
+    
+    # Disable seed_demo_data when in production or testing
+    if settings.ENVIRONMENT.lower() not in ("production", "testing", "test"):
         await seed_demo_data()
     else:
-        logger.info("ENVIRONMENT is production. Skipping seed_demo_data().")
+        logger.info(f"ENVIRONMENT is {settings.ENVIRONMENT}. Skipping seed_demo_data().")
 
     pod_manager.ensure_monitor_running()
     yield
@@ -59,8 +82,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.CORS_ORIGINS,
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
 # Request Timing & Process Time Header Middleware

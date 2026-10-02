@@ -57,6 +57,16 @@ def extract_youtube_video_id(url: str) -> str:
     return "qH6clASSS54"
 
 
+async def _check_course_ownership(course_id: int, current_user: User, db: AsyncSession):
+    course_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = course_res.scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if course.educator_id != current_user.id and current_user.role != "ADMIN":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to modify this course")
+    return course
+
+
 # ==============================================================================
 # COURSE ROOT ENDPOINTS & RATING SCENARIOS
 # ==============================================================================
@@ -85,9 +95,8 @@ async def get_course_rating_stats(course: Course, db: AsyncSession):
         avg_rating = round(sum(all_scores) / len(all_scores), 1)
         total_count = len(all_scores)
     else:
-        # Default benchmark for standard demo courses
-        avg_rating = 4.9 if course.id == 1 else (4.8 if course.id == 2 else 4.7)
-        total_count = 18 if course.id == 1 else (12 if course.id == 2 else 9)
+        avg_rating = 0.0
+        total_count = 0
 
     return educator_name, avg_rating, total_count
 
@@ -125,8 +134,8 @@ async def get_course_ratings_summary(course_id: int, user_id: Optional[int], db:
         avg = round(sum(r.rating for r in all_ratings) / len(all_ratings), 1)
         cnt = len(all_ratings)
     else:
-        avg = 4.9
-        cnt = 12
+        avg = 0.0
+        cnt = 0
 
     return CourseRatingsSummary(
         course_id=course_id,
@@ -481,8 +490,8 @@ async def get_topic_ratings(
         avg = round(sum(r.rating for r in all_ratings) / len(all_ratings), 1)
         cnt = len(all_ratings)
     else:
-        avg = 4.9
-        cnt = 8
+        avg = 0.0
+        cnt = 0
 
     return TopicRatingSummary(
         topic_id=topic_id,
@@ -497,7 +506,11 @@ async def get_topic_ratings(
 # ==============================================================================
 
 @router.get("/{course_id}", response_model=CourseResponse)
-async def get_course(course_id: int, db: AsyncSession = Depends(get_db)):
+async def get_course(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Get single course basic details enriched with creator name and star ratings."""
     result = await db.execute(select(Course).where(Course.id == course_id))
     course = result.scalars().first()
@@ -588,7 +601,11 @@ async def get_course_ratings(
 
 
 @router.get("/{course_id}/hierarchy", response_model=CourseHierarchyResponse)
-async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db)):
+async def get_course_hierarchy(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Get complete hierarchical syllabus: Course -> Modules -> Topics & View-Only PDF Resources."""
     cache_key = f"hierarchy_{course_id}"
     cached = ttl_cache.get(cache_key)
@@ -814,9 +831,7 @@ async def create_module(
     db: AsyncSession = Depends(get_db)
 ):
     """Educator adds a new curriculum module to a course."""
-    course_res = await db.execute(select(Course).where(Course.id == course_id))
-    if not course_res.scalars().first():
-        raise HTTPException(status_code=404, detail="Course not found")
+    await _check_course_ownership(course_id, current_user, db)
 
     count_res = await db.execute(select(Module).where(Module.course_id == course_id))
     existing_count = len(count_res.scalars().all())
@@ -860,6 +875,8 @@ async def update_module(
     module = res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     if req.title is not None:
         module.title = req.title
@@ -906,6 +923,8 @@ async def delete_module(
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
+    await _check_course_ownership(module.course_id, current_user, db)
+
     await db.delete(module)
     await db.commit()
     return {"status": "success", "message": "Module deleted successfully"}
@@ -926,8 +945,11 @@ async def create_topic(
 ):
     """Educator adds a topic concept inside a module with automated YouTube ID parsing."""
     mod_res = await db.execute(select(Module).where(Module.id == module_id))
-    if not mod_res.scalars().first():
+    module = mod_res.scalars().first()
+    if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     count_res = await db.execute(select(Topic).where(Topic.module_id == module_id))
     existing_count = len(count_res.scalars().all())
@@ -964,6 +986,11 @@ async def update_topic(
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
 
+    mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
+    module = mod_res.scalars().first()
+    if module:
+        await _check_course_ownership(module.course_id, current_user, db)
+
     if req.title is not None:
         topic.title = req.title
     if req.description is not None:
@@ -993,6 +1020,11 @@ async def delete_topic(
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
 
+    mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
+    module = mod_res.scalars().first()
+    if module:
+        await _check_course_ownership(module.course_id, current_user, db)
+
     await db.delete(topic)
     await db.commit()
     return {"status": "success", "message": "Topic deleted successfully"}
@@ -1017,6 +1049,8 @@ async def upload_module_resource(
     module = mod_res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     filename = file.filename
     ext = os.path.splitext(filename)[1].lower().replace(".", "")
@@ -1062,6 +1096,7 @@ async def upload_module_resource(
 @router.get("/resources/{resource_id}/view")
 async def view_module_resource(
     resource_id: int,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Secure endpoint streaming PDF bytes for in-browser canvas rendering with watermarks."""
@@ -1069,6 +1104,23 @@ async def view_module_resource(
     resource = res.scalars().first()
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
+        
+    # Check course enrollment or ownership
+    mod_res = await db.execute(select(Module).where(Module.id == resource.module_id))
+    module = mod_res.scalars().first()
+    if module:
+        course_res = await db.execute(select(Course).where(Course.id == module.course_id))
+        course = course_res.scalars().first()
+        if course:
+            if course.educator_id != current_user.id and current_user.role != "ADMIN":
+                enr_res = await db.execute(
+                    select(Enrollment).where(
+                        Enrollment.user_id == current_user.id,
+                        Enrollment.course_id == course.id
+                    )
+                )
+                if not enr_res.scalars().first():
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enrolled in this course")
 
     file_name = os.path.basename(resource.file_url)
     disk_path = os.path.join(settings.UPLOAD_DIR, file_name)
@@ -1128,7 +1180,7 @@ async def verify_badge(
         "difficulty_level": badge.difficulty_level,
         "issued_at": badge.issued_at.isoformat(),
         "student_name": student.full_name if student else "Enrolled Student",
-        "student_email": student.email if student else "",
+        "student_email": f"{student.email[:3]}***@{student.email.split('@')[1]}" if student and '@' in student.email else "",
         "course_title": course.title if course else "COGNIPATH Verified Track",
         "course_code": course.code if course else "CP101",
         "verification_hash": badge.verification_hash,
@@ -1145,7 +1197,7 @@ async def verify_badge(
 async def generate_module_exam_rag(
     module_id: int,
     req: RAGMCQGenerateRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1157,6 +1209,8 @@ async def generate_module_exam_rag(
     module = mod_res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     course_id = req.course_id or module.course_id
 

@@ -101,7 +101,7 @@ export const podsAPI = {
 };
 
 export const communitiesAPI = {
-  listChannels: (courseId) => apiClient.get(`/communities/channels?course_id=${courseId}`),
+  listChannels: (courseId) => apiClient.get(`/communities/courses/${courseId}/channels`),
   getMessages: (channelId) => apiClient.get(`/communities/channels/${channelId}/messages`),
   postMessage: (channelId, content) => apiClient.post(`/communities/channels/${channelId}/messages`, { content }),
 };
@@ -121,14 +121,14 @@ export const curriculumAuditAPI = {
 };
 
 export const examsAPI = {
-  list: (courseId) => apiClient.get(`/exams?course_id=${courseId}`),
+  list: (courseId) => apiClient.get(`/exams/course/${courseId}`),
   get: (id) => apiClient.get(`/exams/${id}`),
   create: (data) => apiClient.post('/exams', data),
   submit: (examId, answers) => apiClient.post(`/exams/${examId}/submit`, { answers }),
 };
 
 export const assignmentsAPI = {
-  list: (courseId) => apiClient.get(`/assignments?course_id=${courseId}`),
+  list: (moduleId) => apiClient.get(`/assignments/module/${moduleId}`),
   create: (data) => apiClient.post('/assignments', data),
   submit: (assignmentId, file) => {
     const formData = new FormData();

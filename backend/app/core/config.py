@@ -67,5 +67,9 @@ settings = Settings()
 if settings.ENVIRONMENT.lower() == "production":
     if not settings.SECRET_KEY or settings.SECRET_KEY == DEFAULT_SECRET_KEY:
         raise ValueError("CRITICAL SECURITY ERROR: SECRET_KEY must be configured and cannot use default value in production!")
+    if not settings.DATABASE_URL:
+        raise ValueError("CRITICAL CONFIG ERROR: DATABASE_URL must be configured in production!")
+    if not settings.raw_cors or len(settings.CORS_ORIGINS) == 0:
+        raise ValueError("CRITICAL CONFIG ERROR: CORS_ORIGINS must be configured in production!")
     if "sqlite" in settings.DATABASE_URL.lower():
         logger.warning("WARNING: SQLite is configured in production. Consider using PostgreSQL/Supabase for scaling.")

@@ -469,31 +469,7 @@ export default function LiveKshetraNative({
       return peerConnectionsRef.current[targetClientId];
     }
 
-    const iceServers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' },
-      { urls: 'stun:stun.cloudflare.com:3478' },
-      {
-        urls: [
-          'turn:openrelay.metered.ca:80',
-          'turn:openrelay.metered.ca:443',
-          'turn:openrelay.metered.ca:443?transport=tcp'
-        ],
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      }
-    ];
-    if (import.meta.env.VITE_TURN_URL) {
-      iceServers.push({
-        urls: import.meta.env.VITE_TURN_URL,
-        username: import.meta.env.VITE_TURN_USERNAME || '',
-        credential: import.meta.env.VITE_TURN_CREDENTIAL || ''
-      });
-    }
-
+    const iceServers = getIceServers();
     const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 10 });
 
     // Attach local media stream tracks
@@ -796,10 +772,10 @@ export default function LiveKshetraNative({
             setTimeout(() => { setFloatingReactions((prev) => prev.filter((r) => r.id !== id)); }, 2400);
           }
         } else if (data.type === 'KICKED_BY_HOST') {
-          alert(`You were removed from the room: ${data.reason || 'Removed by host'}`);
+          console.warn(`[LiveKshetra] Removed from room: ${data.reason || 'Removed by host'}`);
           if (onClose) onClose();
         } else if (data.type === 'EVENT_ROOM_CLOSED') {
-          alert(`Meeting ended: ${data.reason || 'Host closed the room'}`);
+          console.log(`[LiveKshetra] Meeting ended: ${data.reason || 'Host closed the room'}`);
           if (onClose) onClose();
         }
       } catch (e) { console.error('[WS handler] Error:', e); }
@@ -809,12 +785,10 @@ export default function LiveKshetraNative({
       // If parent (LearningPods.jsx) passes its WebSocket, reuse it — prevents double-connection to same room
       if (sharedWsRef) {
         if (!sharedWsRef.current || !wsReady) {
-            // Parent will pass wsRef when ready. Wait for next effect trigger.
+            // Parent will pass wsRef when ready. Wait for next effect trigger without closing existing peer connections.
             console.log('[WebRTC] Waiting for shared WebSocket to become ready...');
             return;
         }
-        console.log('[WebRTC] Shared WebSocket from parent — registering message handler');
-        wsRef.current = sharedWsRef.current;
         console.log('[WebRTC] Shared WebSocket from parent — registering message handler');
         wsRef.current = sharedWsRef.current;
         // Register our WebRTC message handler into parent's dispatcher registry
@@ -823,9 +797,6 @@ export default function LiveKshetraNative({
           wsHandlersRef.current.push(handleWsMessage);
         }
         // ─── CRITICAL: Flush messages that arrived before we registered ───
-        // The timing bug: offers/PEER_JOINED arrive at LearningPods' WS before LiveKshetraNative
-        // has registered its handler (getUserMedia takes 1-3s). These messages were buffered
-        // in pendingKshetraMessagesRef. Process them now sequentially.
         if (pendingMessagesRef && pendingMessagesRef.current.length > 0) {
           console.log(`[WebRTC] Flushing ${pendingMessagesRef.current.length} buffered messages`);
           const pending = pendingMessagesRef.current.splice(0); // clear and take all
@@ -833,19 +804,49 @@ export default function LiveKshetraNative({
             try { await handleWsMessage(msg); } catch (e) { console.warn('[flush] error:', e); }
           }
         }
+
+        // ─── Re-negotiate existing peer connections after reconnect ───
+        if (sharedWsRef.current && sharedWsRef.current.readyState === WebSocket.OPEN) {
+          const activePeers = Object.entries(peerConnectionsRef.current);
+          for (const [peerClientId, pc] of activePeers) {
+            if (pc && pc.connectionState !== 'closed' && pc.connectionState !== 'failed') {
+              try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                sharedWsRef.current.send(
+                  JSON.stringify({
+                    type: 'SIGNAL_OFFER',
+                    from_client: myClientId,
+                    to_client: peerClientId,
+                    sdp: pc.localDescription
+                  })
+                );
+              } catch (err) {
+                console.warn('[WebRTC] Re-signaling offer notice:', peerClientId, err);
+              }
+            }
+          }
+        }
         return;
       }
 
+      const token = localStorage.getItem('cognipath_token') || '';
       let wsUrl = '';
       const apiBase = import.meta.env.VITE_API_BASE_URL;
+      let urlBase = '';
       if (apiBase && (apiBase.startsWith('http://') || apiBase.startsWith('https://'))) {
         const parsed = new URL(apiBase);
         const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsUrl = `${wsProto}//${parsed.host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(userName)}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
+        urlBase = `${wsProto}//${parsed.host}`;
       } else {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.host;
-        wsUrl = `${protocol}//${host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(userName)}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
+        urlBase = `${protocol}//${host}`;
+      }
+
+      wsUrl = `${urlBase}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&token=${encodeURIComponent(token)}`;
+      if (passcode) {
+        wsUrl += `&passcode=${encodeURIComponent(passcode)}`;
       }
 
       try {
@@ -868,7 +869,12 @@ export default function LiveKshetraNative({
           } catch (e) { console.error('[WebSocket] Message parsing error:', e); }
         };
 
-        ws.onclose = () => { console.log('[WebSocket] Connection closed'); };
+        ws.onclose = (event) => {
+          console.log('[WebSocket] Connection closed:', event.code, event.reason);
+          if (event.code === 4401 || event.code === 4403 || event.code === 4404 || event.code === 4409 || event.code === 4410) {
+            if (onClose) onClose();
+          }
+        };
       } catch (err) { console.error('[WebSocket] Setup failed:', err); }
     }
 
@@ -885,13 +891,27 @@ export default function LiveKshetraNative({
       if (wsHandlersRef) {
         wsHandlersRef.current = wsHandlersRef.current.filter((h) => h !== handleWsMessage);
       }
+      // If we are unmounting or changing room codes completely (not just wsReady toggling in shared mode), close peer connections
+      if (!sharedWsRef) {
+        Object.values(peerConnectionsRef.current).forEach((pc) => {
+          try { pc.close(); } catch (e) {}
+        });
+        peerConnectionsRef.current = {};
+        iceCandidateBufferRef.current = {};
+      }
+    };
+  }, [cleanCode, mediaReady, wsReady]);
+
+  // Clean up all peer connections only when LiveKshetraNative unmounts completely
+  useEffect(() => {
+    return () => {
       Object.values(peerConnectionsRef.current).forEach((pc) => {
         try { pc.close(); } catch (e) {}
       });
       peerConnectionsRef.current = {};
       iceCandidateBufferRef.current = {};
     };
-  }, [cleanCode, mediaReady, wsReady]);
+  }, [cleanCode]);
 
   // When media becomes ready, send local tracks over all existing peer connections.
   // CRITICAL: Use sender.replaceTrack() instead of pc.addTrack() so tracks are sent immediately

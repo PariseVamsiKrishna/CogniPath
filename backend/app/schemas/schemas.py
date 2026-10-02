@@ -540,7 +540,7 @@ class ExamQuestionSchema(BaseModel):
     question_type: str = "MCQ"  # MCQ or SHORT_ANSWER
     question_text: str
     options: Optional[List[str]] = None
-    correct_answer: str
+    correct_answer: Optional[str] = None
     explanation: Optional[str] = None
     source_ref: Optional[str] = None
     order_index: int = 1

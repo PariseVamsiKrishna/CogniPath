@@ -3,11 +3,13 @@ import logging
 import time
 from typing import Any, Optional
 
+from collections import defaultdict
+
 logger = logging.getLogger("cognipath.ai_helper")
 
 # Circuit Breaker state
-_CONSECUTIVE_FAILURES = 0
-_LAST_FAILURE_TIME = 0.0
+_CONSECUTIVE_FAILURES = defaultdict(int)
+_LAST_FAILURE_TIME = defaultdict(float)
 _CIRCUIT_OPEN_DURATION = 30.0  # 30 seconds circuit breaker open time
 
 async def gemini_generate(client: Any, model: str, contents: Any, timeout: float = 20.0, max_retries: int = 2) -> Any:
@@ -16,13 +18,13 @@ async def gemini_generate(client: Any, model: str, contents: Any, timeout: float
 
     # Check Circuit Breaker
     now = time.time()
-    if _CONSECUTIVE_FAILURES >= 5:
-        if now - _LAST_FAILURE_TIME < _CIRCUIT_OPEN_DURATION:
+    if _CONSECUTIVE_FAILURES[model] >= 5:
+        if now - _LAST_FAILURE_TIME[model] < _CIRCUIT_OPEN_DURATION:
             logger.warning("[AI Circuit Breaker] Circuit is OPEN due to consecutive failures. Returning fallback.")
             raise RuntimeError("AI service temporarily unavailable (circuit breaker open).")
         else:
             # Half-open: reset failure count
-            _CONSECUTIVE_FAILURES = 0
+            _CONSECUTIVE_FAILURES[model] = 0
 
     if not client:
         raise ValueError("Gemini client is not initialized.")
@@ -41,7 +43,7 @@ async def gemini_generate(client: Any, model: str, contents: Any, timeout: float
                 timeout=timeout
             )
             # Success: reset circuit breaker
-            _CONSECUTIVE_FAILURES = 0
+            _CONSECUTIVE_FAILURES[model] = 0
             return response
         except asyncio.TimeoutError:
             last_err = TimeoutError(f"AI generation timed out after {timeout}s.")
@@ -55,7 +57,7 @@ async def gemini_generate(client: Any, model: str, contents: Any, timeout: float
             await asyncio.sleep(backoff_delay)
 
     # All retries failed
-    _CONSECUTIVE_FAILURES += 1
-    _LAST_FAILURE_TIME = time.time()
-    logger.error("[AI Helper] All %d attempts failed. Consecutive failures: %d", max_retries + 1, _CONSECUTIVE_FAILURES)
+    _CONSECUTIVE_FAILURES[model] += 1
+    _LAST_FAILURE_TIME[model] = time.time()
+    logger.error("[AI Helper] All %d attempts failed. Consecutive failures: %d", max_retries + 1, _CONSECUTIVE_FAILURES[model])
     raise last_err

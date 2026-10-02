@@ -32,6 +32,8 @@ import {
   ShieldCheck,
   Clock,
   AlertTriangle,
+  AlertCircle,
+  RefreshCw,
   Zap
 } from 'lucide-react';
 import { podsAPI } from '../services/api';
@@ -224,6 +226,7 @@ export default function LearningPods({ courseId, user }) {
   ]);
   const [activePod, setActivePod] = useState(null);
   const [isConnecting, setIsConnecting] = useState(false);
+  const [isReconnecting, setIsReconnecting] = useState(false);
   const [wsReconnectAttempts, setWsReconnectAttempts] = useState(0);
   const [connectionError, setConnectionError] = useState(null);
   const [wsReady, setWsReady] = useState(false);
@@ -291,7 +294,10 @@ export default function LearningPods({ courseId, user }) {
   const audioIntervalRef = useRef(null);
 
   const wsRef = useRef(null);
+  const lastWsUrlRef = useRef('');
   const pingTimerRef = useRef(null);
+  const isLeavingRef = useRef(false);
+  const reconnectTimerRef = useRef(null);
   const chatEndRef = useRef(null);
   const myClientId = useRef(`peer_${Math.random().toString(36).substring(2, 9)}`).current;
   // Registry for extra ws message handlers (e.g. LiveKshetraNative's WebRTC handler)
@@ -511,31 +517,7 @@ export default function LearningPods({ courseId, user }) {
       return peerConnectionsRef.current[targetClientId];
     }
 
-    const iceServers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' },
-      { urls: 'stun:stun.cloudflare.com:3478' },
-      {
-        urls: [
-          'turn:openrelay.metered.ca:80',
-          'turn:openrelay.metered.ca:443',
-          'turn:openrelay.metered.ca:443?transport=tcp'
-        ],
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      }
-    ];
-    if (import.meta.env.VITE_TURN_URL) {
-      iceServers.push({
-        urls: import.meta.env.VITE_TURN_URL,
-        username: import.meta.env.VITE_TURN_USERNAME || '',
-        credential: import.meta.env.VITE_TURN_CREDENTIAL || ''
-      });
-    }
-
+    const iceServers = getIceServers();
     const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 10 });
 
     pc.oniceconnectionstatechange = () => {
@@ -619,370 +601,547 @@ export default function LearningPods({ courseId, user }) {
     return pc;
   };
 
-  const joinPod = async (pod) => {
-    setActivePod(pod);
-    if (pod.remaining_seconds !== undefined && pod.remaining_seconds !== null) {
-      setRemainingSeconds(pod.remaining_seconds);
-    } else if (pod.expires_at) {
-      const diffSecs = Math.max(0, Math.floor((new Date(pod.expires_at).getTime() - Date.now()) / 1000));
-      setRemainingSeconds(diffSecs);
-    } else {
-      setRemainingSeconds((pod.scheduled_duration_minutes || 45) * 60);
+  const handleKnownCloseCode = (event) => {
+    let reasonMsg = event.reason || 'Connection closed';
+    if (event.code === 4401) reasonMsg = 'Authentication failed: Invalid token or incorrect passcode';
+    else if (event.code === 4403) reasonMsg = 'Access Denied: You are blacklisted from this pod';
+    else if (event.code === 4404) reasonMsg = 'Learning pod not found or expired';
+    else if (event.code === 4409) reasonMsg = 'Pod is at maximum participant capacity';
+    else if (event.code === 4410) reasonMsg = 'Pod has already concluded';
+    setModerationToast(`🛑 ${reasonMsg}`);
+    setTimeout(() => setModerationToast(''), 6000);
+    leavePod();
+  };
+
+  const handlePostHandshakeClose = (event, pod, passcodeToUse, wsUrl) => {
+    if (pingTimerRef.current) {
+      clearInterval(pingTimerRef.current);
+      pingTimerRef.current = null;
     }
-    setHostGraceCountdown(null);
-    setTimeWarningToast('');
+    setWsReady(false);
+    wsRef.current = null;
 
-    setMessages([
-      {
-        id: 'welcome',
-        sender_name: 'COGNIPATH Meeting Host',
-        content: `🟢 Welcome to "${pod.title}". Live WebRTC video conference active. Mention "@tutor <question>" in chat anytime for syllabus-grounded AI doubt resolution with citations.`,
-        is_ai_tutor: true,
-        timestamp: 'Just now'
-      }
-    ]);
+    if (isLeavingRef.current) return;
 
-    // Start Real Camera Media
-    const stream = await startLocalMedia();
-
-    // Connect WebSocket Signaling
-    let wsUrl = '';
-    const apiBase = import.meta.env.VITE_API_BASE_URL;
-    if (apiBase && (apiBase.startsWith('http://') || apiBase.startsWith('https://'))) {
-      const parsed = new URL(apiBase);
-      const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-      wsUrl = `${wsProto}//${parsed.host}/api/v1/pods/ws/${pod.id}?client_id=${myClientId}&user_name=${encodeURIComponent(
-        user?.full_name || 'Guest User'
-      )}&user_id=${user?.id || ''}&role=${user?.role || 'STUDENT'}`;
-    } else {
-      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const host = window.location.host;
-      wsUrl = `${protocol}//${host}/api/v1/pods/ws/${pod.id}?client_id=${myClientId}&user_name=${encodeURIComponent(
-        user?.full_name || 'Guest User'
-      )}&user_id=${user?.id || ''}&role=${user?.role || 'STUDENT'}`;
+    console.log('[WebSocket] Post-handshake close event:', event.code, event.reason);
+    const knownErrorCodes = [4401, 4403, 4404, 4409, 4410];
+    if (knownErrorCodes.includes(event.code)) {
+      handleKnownCloseCode(event);
+      return;
     }
 
-    try {
+    scheduleReconnect(pod, passcodeToUse, wsUrl, 1);
+  };
+
+  const scheduleReconnect = (pod, passcodeToUse, wsUrl, attempt) => {
+    if (isLeavingRef.current) return;
+    if (attempt > 6) {
+      setIsReconnecting(false);
+      setConnectionError('Unable to re-establish connection after 6 attempts. Please retry.');
+      return;
+    }
+
+    setIsReconnecting(true);
+    setWsReconnectAttempts(attempt);
+    setConnectionError(null);
+
+    const delay = Math.min(15000, 1000 * Math.pow(2, attempt - 1));
+    console.log(`[WebSocket] Scheduling reconnect attempt ${attempt}/6 in ${delay}ms`);
+
+    reconnectTimerRef.current = setTimeout(() => {
+      if (isLeavingRef.current) return;
+      lastWsUrlRef.current = wsUrl;
+      console.log(`[WebSocket] Reconnect attempt ${attempt} connecting to:`, wsUrl);
       const ws = new WebSocket(wsUrl);
+
       ws.onopen = () => {
-        console.log('[WebSocket] Pod signaling connected to:', wsUrl);
+        console.log('[WebSocket] Reconnect succeeded on attempt:', attempt);
         if (pingTimerRef.current) clearInterval(pingTimerRef.current);
         pingTimerRef.current = setInterval(() => {
           if (ws.readyState === WebSocket.OPEN) {
             ws.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
           }
         }, 25000);
+
+        wsRef.current = ws;
+        setWsReady(true);
+        setIsReconnecting(false);
+        setWsReconnectAttempts(0);
+        setConnectionError(null);
+
+        ws.onmessage = (event) => handlePodMessage(event, pod, ws);
+        ws.onclose = (event) => handlePostHandshakeClose(event, pod, passcodeToUse, wsUrl);
+        ws.onerror = (err) => console.warn('[WebSocket] Error on reconnected socket:', err);
       };
-      ws.onmessage = async (event) => {
-        try {
-          const data = JSON.parse(event.data);
 
-          // Skip WebRTC signaling in kshetra/split mode — LiveKshetraNative handles it
-          const isKshetraMode = viewModeRef.current === 'kshetra' || viewModeRef.current === 'split';
+      ws.onerror = () => {
+        console.warn(`[WebSocket] Reconnect attempt ${attempt} failed.`);
+      };
 
-          // Dispatch to LiveKshetraNative's WebRTC handler (when in kshetra/split mode)
-          if (isKshetraMode) {
-            const WEBRTC_TYPES = ['PEER_JOINED', 'SIGNAL_OFFER', 'SIGNAL_ANSWER', 'SIGNAL_ICE', 'PEER_LEFT', 'MEDIA_STATE_CHANGE', 'FORCE_MUTE_PARTICIPANT', 'ALL_PEERS_MUTED'];
-            if (wsExtraHandlersRef.current.length > 0) {
-              wsExtraHandlersRef.current.forEach((handler) => {
-                try { handler(data); } catch (e) { console.warn('[WS dispatch] handler error:', e); }
-              });
-            } else if (WEBRTC_TYPES.includes(data.type)) {
-              // Buffer — handler not registered yet (LiveKshetraNative still initializing media)
-              console.log('[WS buffer] No handler yet, buffering:', data.type);
-              pendingKshetraMessagesRef.current.push(data);
-            }
-          }
-
-          if (data.type === 'CHAT_MESSAGE') {
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Date.now().toString() + Math.random(),
-                sender_name: data.sender_name,
-                content: data.content,
-                is_ai_tutor: data.is_ai_tutor,
-                citations: data.citations,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              }
-            ]);
-          } else if (data.type === 'PEER_JOINED') {
-            if (data.participants) {
-              setConnectedPeers(data.participants.filter((p) => p.client_id !== myClientId));
-            }
-            // Only do WebRTC in video mode — kshetra/split mode delegates to LiveKshetraNative
-            if (!isKshetraMode && data.client_id !== myClientId) {
-              const pc = getOrCreatePeerConnection(data.client_id, true);
-              const offer = await pc.createOffer();
-              await pc.setLocalDescription(offer);
-              ws.send(
-                JSON.stringify({
-                  type: 'SIGNAL_OFFER',
-                  from_client: myClientId,
-                  to_client: data.client_id,
-                  sdp: pc.localDescription
-                })
-              );
-            }
-          } else if (data.type === 'KICKED_BY_HOST') {
-            alert(`You have been removed from this pod by the meeting host: ${data.reason || 'Host moderation removal'}`);
-            leavePod();
-          } else if (data.type === 'FORCE_MUTE_PARTICIPANT' || data.type === 'REMOTE_MUTE') {
-            if (localStreamRef.current) {
-              localStreamRef.current.getAudioTracks().forEach((t) => {
-                t.enabled = false;
-              });
-            }
-            setMicOn(false);
-            setIsForceMutedByHost(true);
-            setUnmuteRequestPending(false);
-            setModerationToast('You were muted by the pod host. Click the lock to request unmute.');
-            setTimeout(() => setModerationToast(''), 6000);
-            if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-              wsRef.current.send(
-                JSON.stringify({
-                  type: 'MEDIA_STATE_CHANGE',
-                  client_id: myClientId,
-                  mic_on: false,
-                  camera_on: cameraOn
-                })
-              );
-            }
-          } else if (data.type === 'UNMUTE_PERMISSION_REQUESTED') {
-            // Host receives participant's request to unmute
-            const reqSenderId = data.sender_client_id || data.sender_id;
-            const reqSenderName = data.sender_name || 'Participant';
-            if (canModerate && reqSenderId !== myClientId) {
-              setPendingUnmuteRequests((prev) => [
-                ...prev.filter((r) => r.senderId !== reqSenderId),
-                {
-                  id: reqSenderId,
-                  senderId: reqSenderId,
-                  senderName: reqSenderName,
-                  timestamp: data.timestamp || new Date().toLocaleTimeString()
-                }
-              ]);
-              setModerationToast(`🔔 ${reqSenderName} requested permission to unmute.`);
-              setTimeout(() => setModerationToast(''), 5000);
-            }
-          } else if (data.type === 'EVENT_UNMUTE_PERMISSION_GRANTED') {
-            // Participant receives host's invitation to unmute -> opens consent modal
-            setUnmuteRequestPending(false);
-            setConsentHostName(data.host_name || 'The Pod Host');
-            setShowConsentModal(true);
-          } else if (data.type === 'EVENT_UNMUTE_PERMISSION_DENIED') {
-            setUnmuteRequestPending(false);
-            setModerationToast(`Host declined your unmute request (${data.reason || 'Wait for Q&A section'}).`);
-            setTimeout(() => setModerationToast(''), 5000);
-          } else if (data.type === 'HOST_MUTED_PEER') {
-            setMutedPeers((prev) => ({ ...prev, [data.client_id]: true }));
-            const remoteStream = remoteStreams[data.client_id];
-            if (remoteStream) {
-              remoteStream.getAudioTracks().forEach((t) => {
-                t.enabled = false;
-              });
-            }
-          } else if (data.type === 'HOST_UNMUTED_PEER') {
-            setMutedPeers((prev) => ({ ...prev, [data.client_id]: false }));
-            const remoteStream = remoteStreams[data.client_id];
-            if (remoteStream) {
-              remoteStream.getAudioTracks().forEach((t) => {
-                t.enabled = true;
-              });
-            }
-          } else if (data.type === 'ALL_PEERS_MUTED') {
-            if (data.muted_by !== myClientId) {
-              if (localStreamRef.current) {
-                localStreamRef.current.getAudioTracks().forEach((t) => {
-                  t.enabled = false;
-                });
-              }
-              setMicOn(false);
-              setModerationToast('All participants have been muted by the host.');
-              setTimeout(() => setModerationToast(''), 4000);
-            }
-            setMutedPeers((prev) => {
-              const updated = { ...prev };
-              connectedPeers.forEach((p) => {
-                if (p.client_id !== data.muted_by) updated[p.client_id] = true;
-              });
-              return updated;
-            });
-          } else if (data.type === 'MEDIA_STATE_CHANGE') {
-            if (data.mic_on !== undefined) {
-              setMutedPeers((prev) => ({ ...prev, [data.client_id]: !data.mic_on }));
-            }
-          } else if (data.type === 'REMOTE_DISABLE_VIDEO') {
-            if (localStreamRef.current) {
-              localStreamRef.current.getVideoTracks().forEach((t) => {
-                t.enabled = false;
-              });
-            }
-            setCameraOn(false);
-            setModerationToast('Your video camera was remotely disabled by the meeting host.');
-            setTimeout(() => setModerationToast(''), 4000);
-          } else if (data.type === 'PARTICIPANT_KICKED') {
-            setConnectedPeers((prev) => prev.filter((p) => p.client_id !== data.client_id));
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Date.now().toString() + Math.random(),
-                sender_name: 'Pod Security HUD',
-                content: `🚨 A participant was removed and blacklisted from this pod (${data.reason}).`,
-                is_ai_tutor: false,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              }
-            ]);
-          } else if (!isKshetraMode && data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
-            const pc = getOrCreatePeerConnection(data.from_client, false);
-            try {
-              const isPolite = myClientId > data.from_client;
-              const offerCollision = pc.signalingState !== 'stable';
-              if (offerCollision) {
-                if (!isPolite) { console.warn(`[WebRTC] Glare with ${data.from_client}: impolite, ignoring`); return; }
-                await pc.setLocalDescription({ type: 'rollback' });
-              }
-              await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-              const buffered = iceCandidateBufferRef.current[data.from_client] || [];
-              for (const candidate of buffered) {
-                try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
-              }
-              delete iceCandidateBufferRef.current[data.from_client];
-              const answer = await pc.createAnswer();
-              await pc.setLocalDescription(answer);
-              ws.send(JSON.stringify({ type: 'SIGNAL_ANSWER', from_client: myClientId, to_client: data.from_client, sdp: pc.localDescription }));
-            } catch (err) { console.error('[WebRTC] Answer response error:', err); }
-          } else if (!isKshetraMode && data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
-            const pc = peerConnectionsRef.current[data.from_client];
-            if (pc) {
-              try {
-                await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
-                const buffered = iceCandidateBufferRef.current[data.from_client] || [];
-                for (const candidate of buffered) {
-                  try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
-                }
-                delete iceCandidateBufferRef.current[data.from_client];
-              } catch (err) { console.error('[WebRTC] Set remote description error:', err); }
-            }
-          } else if (!isKshetraMode && data.type === 'SIGNAL_ICE' && data.to_client === myClientId) {
-            const pc = peerConnectionsRef.current[data.from_client];
-            if (pc && pc.remoteDescription && pc.remoteDescription.type) {
-              try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
-            } else {
-              if (!iceCandidateBufferRef.current[data.from_client]) iceCandidateBufferRef.current[data.from_client] = [];
-              iceCandidateBufferRef.current[data.from_client].push(data.candidate);
-            }
-          } else if (data.type === 'PEER_LEFT') {
-            const pc = peerConnectionsRef.current[data.client_id];
-            if (pc) {
-              pc.close();
-              delete peerConnectionsRef.current[data.client_id];
-            }
-            delete iceCandidateBufferRef.current[data.client_id];
-            delete peerStreamsRef.current[data.client_id];
-            setRemoteStreams((prev) => {
-              const updated = { ...prev };
-              delete updated[data.client_id];
-              return updated;
-            });
-            setConnectedPeers((prev) => prev.filter((p) => p.client_id !== data.client_id));
-            setMutedPeers((prev) => {
-              const updated = { ...prev };
-              delete updated[data.client_id];
-              return updated;
-            });
-          } else if (data.type === 'HAND_RAISE') {
-            setHandRaisedUsers((prev) =>
-              data.raised
-                ? [...prev.filter((u) => u !== data.user_name), data.user_name]
-                : prev.filter((u) => u !== data.user_name)
-            );
-          } else if (data.type === 'WHITEBOARD_DRAW') {
-            drawLine(data.x0, data.y0, data.x1, data.y1, data.color, data.size, data.isEraser);
-          } else if (data.type === 'WHITEBOARD_CLEAR') {
-            const canvas = canvasRef.current;
-            if (canvas) {
-              const ctx = canvas.getContext('2d');
-              ctx.fillStyle = '#0b0f19';
-              ctx.fillRect(0, 0, canvas.width, canvas.height);
-            }
-          } else if (data.type === 'POD_TIME_WARNING') {
-            setTimeWarningToast(data.message || `⚠️ Only ${data.minutes_remaining}m remaining in this session!`);
-            if (data.remaining_seconds != null) {
-              setRemainingSeconds(data.remaining_seconds);
-            }
-            setTimeout(() => setTimeWarningToast(''), 8000);
-          } else if (data.type === 'HOST_LEFT_TEMPORARILY') {
-            setHostGraceCountdown(data.grace_period_seconds || 180);
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Date.now().toString() + Math.random(),
-                sender_name: 'Pod System Notice',
-                content: `⚠️ Meeting host disconnected. A ${Math.round((data.grace_period_seconds || 180) / 60)}-minute grace period is active for host reconnection.`,
-                is_ai_tutor: false,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              }
-            ]);
-          } else if (data.type === 'HOST_RECONNECTED') {
-            setHostGraceCountdown(null);
-            setMessages((prev) => [
-              ...prev,
-              {
-                id: Date.now().toString() + Math.random(),
-                sender_name: 'Pod System Notice',
-                content: `🟢 Host has reconnected to the room. Grace period cleared.`,
-                is_ai_tutor: false,
-                timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-              }
-            ]);
-          } else if (data.type === 'EVENT_ROOM_CLOSED') {
-            stopAllMedia();
-            if (pingTimerRef.current) {
-              clearInterval(pingTimerRef.current);
-              pingTimerRef.current = null;
-            }
-            if (wsRef.current) {
-              wsRef.current.close();
-              wsRef.current = null;
-            }
-            setSessionSummary({
-              podTitle: activePod?.title || data.title || 'Learning Pod',
-              topic: activePod?.topic || data.topic || 'General Session',
-              status: data.status || 'COMPLETED',
-              reason: data.reason || 'Scheduled meeting duration concluded.',
-              durationMinutes: data.duration_minutes || activePod?.scheduled_duration_minutes || 45,
-              totalParticipants: data.total_participants || (connectedPeers.length + 1),
-              endedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-            });
-            setActivePod(null);
-            setHandRaised(false);
-            setHandRaisedUsers([]);
-            setRemainingSeconds(null);
-            setHostGraceCountdown(null);
-            fetchPods();
-          }
-        } catch (e) {
-          console.error(e);
+      ws.onclose = (event) => {
+        if (isLeavingRef.current) return;
+        const knownErrorCodes = [4401, 4403, 4404, 4409, 4410];
+        if (knownErrorCodes.includes(event.code)) {
+          handleKnownCloseCode(event);
+          return;
         }
+        scheduleReconnect(pod, passcodeToUse, wsUrl, attempt + 1);
+      };
+    }, delay);
+  };
+
+  const retryConnection = () => {
+    if (!activePod) return;
+    setConnectionError(null);
+    setWsReconnectAttempts(0);
+    const url = lastWsUrlRef.current;
+    if (url) {
+      scheduleReconnect(activePod, enteredPasscode, url, 1);
+    } else {
+      joinPod(activePod, enteredPasscode);
+    }
+  };
+
+  const handlePodMessage = async (event, pod, ws) => {
+    try {
+      const data = JSON.parse(event.data);
+
+      // Dispatch to LiveKshetraNative's WebRTC handler (when in kshetra/split mode)
+      const isKshetraMode = viewModeRef.current === 'kshetra' || viewModeRef.current === 'split';
+      if (isKshetraMode) {
+        const WEBRTC_TYPES = ['PEER_JOINED', 'SIGNAL_OFFER', 'SIGNAL_ANSWER', 'SIGNAL_ICE', 'PEER_LEFT', 'MEDIA_STATE_CHANGE', 'FORCE_MUTE_PARTICIPANT', 'ALL_PEERS_MUTED'];
+        if (wsExtraHandlersRef.current.length > 0) {
+          wsExtraHandlersRef.current.forEach((handler) => {
+            try { handler(data); } catch (e) { console.warn('[WS dispatch] handler error:', e); }
+          });
+        } else if (WEBRTC_TYPES.includes(data.type)) {
+          // Buffer — handler not registered yet (LiveKshetraNative still initializing media)
+          console.log('[WS buffer] No handler yet, buffering:', data.type);
+          pendingKshetraMessagesRef.current.push(data);
+        }
+      }
+
+      if (data.type === 'CHAT_MESSAGE') {
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString() + Math.random(),
+            sender_name: data.sender_name,
+            content: data.content,
+            is_ai_tutor: data.is_ai_tutor,
+            citations: data.citations,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        ]);
+      } else if (data.type === 'PEER_JOINED') {
+        if (data.participants) {
+          setConnectedPeers(data.participants.filter((p) => p.client_id !== myClientId));
+        }
+        // Only do WebRTC in video mode — kshetra/split mode delegates to LiveKshetraNative
+        if (!isKshetraMode && data.client_id !== myClientId) {
+          const pc = getOrCreatePeerConnection(data.client_id, true);
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(
+              JSON.stringify({
+                type: 'SIGNAL_OFFER',
+                from_client: myClientId,
+                to_client: data.client_id,
+                sdp: pc.localDescription
+              })
+            );
+          }
+        }
+      } else if (data.type === 'KICKED_BY_HOST') {
+        setModerationToast(`You have been removed from this pod by the meeting host: ${data.reason || 'Host moderation removal'}`);
+        leavePod();
+      } else if (data.type === 'FORCE_MUTE_PARTICIPANT' || data.type === 'REMOTE_MUTE') {
+        if (localStreamRef.current) {
+          localStreamRef.current.getAudioTracks().forEach((t) => {
+            t.enabled = false;
+          });
+        }
+        setMicOn(false);
+        setIsForceMutedByHost(true);
+        setUnmuteRequestPending(false);
+        setModerationToast('You were muted by the pod host. Click the lock to request unmute.');
+        setTimeout(() => setModerationToast(''), 6000);
+        if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+          wsRef.current.send(
+            JSON.stringify({
+              type: 'MEDIA_STATE_CHANGE',
+              client_id: myClientId,
+              mic_on: false,
+              camera_on: cameraOn
+            })
+          );
+        }
+      } else if (data.type === 'UNMUTE_PERMISSION_REQUESTED') {
+        // Host receives participant's request to unmute
+        const reqSenderId = data.sender_client_id || data.sender_id;
+        const reqSenderName = data.sender_name || 'Participant';
+        if (canModerate && reqSenderId !== myClientId) {
+          setPendingUnmuteRequests((prev) => [
+            ...prev.filter((r) => r.senderId !== reqSenderId),
+            {
+              id: reqSenderId,
+              senderId: reqSenderId,
+              senderName: reqSenderName,
+              timestamp: data.timestamp || new Date().toLocaleTimeString()
+            }
+          ]);
+          setModerationToast(`🔔 ${reqSenderName} requested permission to unmute.`);
+          setTimeout(() => setModerationToast(''), 5000);
+        }
+      } else if (data.type === 'EVENT_UNMUTE_PERMISSION_GRANTED') {
+        // Participant receives host's invitation to unmute -> opens consent modal
+        setUnmuteRequestPending(false);
+        setConsentHostName(data.host_name || 'The Pod Host');
+        setShowConsentModal(true);
+      } else if (data.type === 'EVENT_UNMUTE_PERMISSION_DENIED') {
+        setUnmuteRequestPending(false);
+        setModerationToast(`Host declined your unmute request (${data.reason || 'Wait for Q&A section'}).`);
+        setTimeout(() => setModerationToast(''), 5000);
+      } else if (data.type === 'HOST_MUTED_PEER') {
+        setMutedPeers((prev) => ({ ...prev, [data.client_id]: true }));
+        const remoteStream = remoteStreams[data.client_id];
+        if (remoteStream) {
+          remoteStream.getAudioTracks().forEach((t) => {
+            t.enabled = false;
+          });
+        }
+      } else if (data.type === 'HOST_UNMUTED_PEER') {
+        setMutedPeers((prev) => ({ ...prev, [data.client_id]: false }));
+        const remoteStream = remoteStreams[data.client_id];
+        if (remoteStream) {
+          remoteStream.getAudioTracks().forEach((t) => {
+            t.enabled = true;
+          });
+        }
+      } else if (data.type === 'ALL_PEERS_MUTED') {
+        if (data.muted_by !== myClientId) {
+          if (localStreamRef.current) {
+            localStreamRef.current.getAudioTracks().forEach((t) => {
+              t.enabled = false;
+            });
+          }
+          setMicOn(false);
+          setModerationToast('All participants have been muted by the host.');
+          setTimeout(() => setModerationToast(''), 4000);
+        }
+        setMutedPeers((prev) => {
+          const updated = { ...prev };
+          connectedPeers.forEach((p) => {
+            if (p.client_id !== data.muted_by) updated[p.client_id] = true;
+          });
+          return updated;
+        });
+      } else if (data.type === 'MEDIA_STATE_CHANGE') {
+        if (data.mic_on !== undefined) {
+          setMutedPeers((prev) => ({ ...prev, [data.client_id]: !data.mic_on }));
+        }
+      } else if (data.type === 'REMOTE_DISABLE_VIDEO') {
+        if (localStreamRef.current) {
+          localStreamRef.current.getVideoTracks().forEach((t) => {
+            t.enabled = false;
+          });
+        }
+        setCameraOn(false);
+        setModerationToast('Your video camera was remotely disabled by the meeting host.');
+        setTimeout(() => setModerationToast(''), 4000);
+      } else if (data.type === 'PARTICIPANT_KICKED') {
+        setConnectedPeers((prev) => prev.filter((p) => p.client_id !== data.client_id));
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString() + Math.random(),
+            sender_name: 'Pod Security HUD',
+            content: `🚨 A participant was removed and blacklisted from this pod (${data.reason}).`,
+            is_ai_tutor: false,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        ]);
+      } else if (!isKshetraMode && data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
+        const pc = getOrCreatePeerConnection(data.from_client, false);
+        try {
+          const isPolite = myClientId > data.from_client;
+          const offerCollision = pc.signalingState !== 'stable';
+          if (offerCollision) {
+            if (!isPolite) { console.warn(`[WebRTC] Glare with ${data.from_client}: impolite, ignoring`); return; }
+            await pc.setLocalDescription({ type: 'rollback' });
+          }
+          await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+          const buffered = iceCandidateBufferRef.current[data.from_client] || [];
+          for (const candidate of buffered) {
+            try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+          }
+          delete iceCandidateBufferRef.current[data.from_client];
+          const answer = await pc.createAnswer();
+          await pc.setLocalDescription(answer);
+          if (ws && ws.readyState === WebSocket.OPEN) {
+            ws.send(JSON.stringify({ type: 'SIGNAL_ANSWER', from_client: myClientId, to_client: data.from_client, sdp: pc.localDescription }));
+          }
+        } catch (err) { console.error('[WebRTC] Answer response error:', err); }
+      } else if (!isKshetraMode && data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
+        const pc = peerConnectionsRef.current[data.from_client];
+        if (pc) {
+          try {
+            await pc.setRemoteDescription(new RTCSessionDescription(data.sdp));
+            const buffered = iceCandidateBufferRef.current[data.from_client] || [];
+            for (const candidate of buffered) {
+              try { await pc.addIceCandidate(new RTCIceCandidate(candidate)); } catch (e) {}
+            }
+            delete iceCandidateBufferRef.current[data.from_client];
+          } catch (err) { console.error('[WebRTC] Set remote description error:', err); }
+        }
+      } else if (!isKshetraMode && data.type === 'SIGNAL_ICE' && data.to_client === myClientId) {
+        const pc = peerConnectionsRef.current[data.from_client];
+        if (pc && pc.remoteDescription && pc.remoteDescription.type) {
+          try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (e) {}
+        } else {
+          if (!iceCandidateBufferRef.current[data.from_client]) iceCandidateBufferRef.current[data.from_client] = [];
+          iceCandidateBufferRef.current[data.from_client].push(data.candidate);
+        }
+      } else if (data.type === 'PEER_LEFT') {
+        const pc = peerConnectionsRef.current[data.client_id];
+        if (pc) {
+          pc.close();
+          delete peerConnectionsRef.current[data.client_id];
+        }
+        delete iceCandidateBufferRef.current[data.client_id];
+        delete peerStreamsRef.current[data.client_id];
+        setRemoteStreams((prev) => {
+          const updated = { ...prev };
+          delete updated[data.client_id];
+          return updated;
+        });
+        setConnectedPeers((prev) => prev.filter((p) => p.client_id !== data.client_id));
+        setMutedPeers((prev) => {
+          const updated = { ...prev };
+          delete updated[data.client_id];
+          return updated;
+        });
+      } else if (data.type === 'HAND_RAISE') {
+        setHandRaisedUsers((prev) =>
+          data.raised
+            ? [...prev.filter((u) => u !== data.user_name), data.user_name]
+            : prev.filter((u) => u !== data.user_name)
+        );
+      } else if (data.type === 'WHITEBOARD_DRAW') {
+        drawLine(data.x0, data.y0, data.x1, data.y1, data.color, data.size, data.isEraser);
+      } else if (data.type === 'WHITEBOARD_CLEAR') {
+        const canvas = canvasRef.current;
+        if (canvas) {
+          const ctx = canvas.getContext('2d');
+          ctx.fillStyle = '#0b0f19';
+          ctx.fillRect(0, 0, canvas.width, canvas.height);
+        }
+      } else if (data.type === 'POD_TIME_WARNING') {
+        setTimeWarningToast(data.message || `⚠️ Only ${data.minutes_remaining}m remaining in this session!`);
+        if (data.remaining_seconds != null) {
+          setRemainingSeconds(data.remaining_seconds);
+        }
+        setTimeout(() => setTimeWarningToast(''), 8000);
+      } else if (data.type === 'HOST_LEFT_TEMPORARILY') {
+        setHostGraceCountdown(data.grace_period_seconds || 180);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString() + Math.random(),
+            sender_name: 'Pod System Notice',
+            content: `⚠️ Meeting host disconnected. A ${Math.round((data.grace_period_seconds || 180) / 60)}-minute grace period is active for host reconnection.`,
+            is_ai_tutor: false,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        ]);
+      } else if (data.type === 'HOST_RECONNECTED') {
+        setHostGraceCountdown(null);
+        setMessages((prev) => [
+          ...prev,
+          {
+            id: Date.now().toString() + Math.random(),
+            sender_name: 'Pod System Notice',
+            content: `🟢 Host has reconnected to the room. Grace period cleared.`,
+            is_ai_tutor: false,
+            timestamp: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+          }
+        ]);
+      } else if (data.type === 'EVENT_ROOM_CLOSED') {
+        stopAllMedia();
+        if (pingTimerRef.current) {
+          clearInterval(pingTimerRef.current);
+          pingTimerRef.current = null;
+        }
+        setWsReady(false);
+        if (wsRef.current) {
+          try { wsRef.current.close(); } catch (e) {}
+          wsRef.current = null;
+        }
+        setSessionSummary({
+          podTitle: pod?.title || data.title || 'Learning Pod',
+          topic: pod?.topic || data.topic || 'General Session',
+          status: data.status || 'COMPLETED',
+          reason: data.reason || 'Scheduled meeting duration concluded.',
+          durationMinutes: data.duration_minutes || pod?.scheduled_duration_minutes || 45,
+          totalParticipants: data.total_participants || (connectedPeers.length + 1),
+          endedAt: new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+        });
+        setActivePod(null);
+        setHandRaised(false);
+        setHandRaisedUsers([]);
+        setRemainingSeconds(null);
+        setHostGraceCountdown(null);
+        fetchPods();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const joinPod = async (pod, passcodeOverride = null) => {
+    isLeavingRef.current = false;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
+    setIsConnecting(true);
+    setIsReconnecting(false);
+    setWsReconnectAttempts(0);
+    setConnectionError(null);
+    setModerationToast('Connecting to Learning Pod signaling server...');
+
+    const passcodeToUse = passcodeOverride !== null ? passcodeOverride : (enteredPasscode || '');
+
+    // Connect WebSocket Signaling FIRST and wait for onopen (10s timeout)
+    const token = localStorage.getItem('cognipath_token') || '';
+    let wsUrl = '';
+    const apiBase = import.meta.env.VITE_API_BASE_URL;
+    let urlBase = '';
+    if (apiBase && (apiBase.startsWith('http://') || apiBase.startsWith('https://'))) {
+      const parsed = new URL(apiBase);
+      const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+      urlBase = `${wsProto}//${parsed.host}`;
+    } else {
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const host = window.location.host;
+      urlBase = `${protocol}//${host}`;
+    }
+
+    wsUrl = `${urlBase}/api/v1/pods/ws/${pod.id}?client_id=${myClientId}&token=${encodeURIComponent(token)}`;
+    if (passcodeToUse) {
+      wsUrl += `&passcode=${encodeURIComponent(passcodeToUse)}`;
+    }
+    lastWsUrlRef.current = wsUrl;
+
+    try {
+      const ws = new WebSocket(wsUrl);
+
+      // Wait for onopen before calling setActivePod
+      await new Promise((resolve, reject) => {
+        const timeoutTimer = setTimeout(() => {
+          try { ws.close(); } catch (e) {}
+          reject(new Error('Signaling connection timed out after 10s.'));
+        }, 10000);
+
+        ws.onopen = () => {
+          clearTimeout(timeoutTimer);
+          console.log('[WebSocket] Pod signaling connected to:', wsUrl);
+          if (pingTimerRef.current) clearInterval(pingTimerRef.current);
+          pingTimerRef.current = setInterval(() => {
+            if (ws.readyState === WebSocket.OPEN) {
+              ws.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
+            }
+          }, 25000);
+
+          // 1 & 2: Set wsRef.current and setWsReady(true) IMMEDIATELY upon handshake resolution
+          wsRef.current = ws;
+          setWsReady(true);
+          resolve();
+        };
+
+        ws.onerror = () => {
+          clearTimeout(timeoutTimer);
+          reject(new Error('WebSocket connection failed.'));
+        };
+
+        ws.onclose = (event) => {
+          clearTimeout(timeoutTimer);
+          console.log('[WebSocket] Closed during handshake:', event.code, event.reason);
+          let reasonMsg = event.reason || 'Connection closed';
+          if (event.code === 4401) reasonMsg = 'Authentication failed: Invalid token or incorrect passcode';
+          else if (event.code === 4403) reasonMsg = 'Access Denied: You are blacklisted from this pod';
+          else if (event.code === 4404) reasonMsg = 'Learning pod not found or expired';
+          else if (event.code === 4409) reasonMsg = 'Pod is at maximum participant capacity';
+          else if (event.code === 4410) reasonMsg = 'Pod has already concluded';
+          else if (event.code === 1006 || !event.code) reasonMsg = 'Signaling connection failed (code 1006). The backend server may be waking up or unreachable. Please check VITE_API_BASE_URL and network connectivity.';
+          reject(new Error(reasonMsg));
+        };
+      });
+
+      // 2: Assign onmessage and post-handshake close handlers immediately
+      ws.onmessage = (event) => handlePodMessage(event, pod, ws);
+      ws.onclose = (event) => handlePostHandshakeClose(event, pod, passcodeToUse, wsUrl);
+      ws.onerror = (err) => {
+        console.warn('[WebSocket] Error on active connection:', err);
       };
 
+      // 1 & 2: Set wsRef.current and wsReady BEFORE setActivePod
       wsRef.current = ws;
+      setWsReady(true);
+      setActivePod(pod);
+      setIsConnecting(false);
+      setModerationToast('');
+
+      if (pod.remaining_seconds !== undefined && pod.remaining_seconds !== null) {
+        setRemainingSeconds(pod.remaining_seconds);
+      } else if (pod.expires_at) {
+        const diffSecs = Math.max(0, Math.floor((new Date(pod.expires_at).getTime() - Date.now()) / 1000));
+        setRemainingSeconds(diffSecs);
+      } else {
+        setRemainingSeconds((pod.scheduled_duration_minutes || 45) * 60);
+      }
+      setHostGraceCountdown(null);
+      setTimeWarningToast('');
+
+      setMessages([
+        {
+          id: 'welcome',
+          sender_name: 'COGNIPATH Meeting Host',
+          content: `🟢 Welcome to "${pod.title}". Live WebRTC video conference active. Mention "@tutor <question>" in chat anytime for syllabus-grounded AI doubt resolution with citations.`,
+          is_ai_tutor: true,
+          timestamp: 'Just now'
+        }
+      ]);
+
+      // Acquire user media after socket is ready and buffering
+      await startLocalMedia();
     } catch (err) {
-      console.warn('WebSocket signaling connection fallback.');
+      console.warn('WebSocket signaling connection fallback.', err);
+      setIsConnecting(false);
+      setModerationToast(`Connection failed: ${err.message}`);
+      setTimeout(() => setModerationToast(''), 5000);
     }
   };
 
   const leavePod = () => {
+    isLeavingRef.current = true;
+    if (reconnectTimerRef.current) {
+      clearTimeout(reconnectTimerRef.current);
+      reconnectTimerRef.current = null;
+    }
     stopAllMedia();
     if (pingTimerRef.current) {
       clearInterval(pingTimerRef.current);
       pingTimerRef.current = null;
     }
     if (wsRef.current) {
-      wsRef.current.close();
+      try { wsRef.current.close(); } catch (e) {}
       wsRef.current = null;
     }
+    setWsReady(false);
+    setIsReconnecting(false);
+    setConnectionError(null);
     iceCandidateBufferRef.current = {};
     peerStreamsRef.current = {};
     // Clear handler registry and pending buffer so they don't persist across pod sessions
@@ -1329,7 +1488,8 @@ export default function LearningPods({ courseId, user }) {
       }
       joinPod(created);
     } catch (err) {
-      alert(err.response?.data?.detail || 'Failed to create pod');
+      setModerationToast(err.response?.data?.detail || 'Failed to create pod');
+      setTimeout(() => setModerationToast(''), 5000);
     }
   };
 
@@ -1352,7 +1512,8 @@ export default function LearningPods({ courseId, user }) {
     const rawCode = customCode || kshetraCodeInput;
     const cleanCode = cleanKshetraCode(rawCode);
     if (!cleanCode) {
-      alert('Please enter a valid Live Kshetra meeting code or link (e.g. sih-tree-rotations or sih-math-101)');
+      setModerationToast('Please enter a valid Live Kshetra meeting code or link (e.g. sih-tree-rotations or sih-math-101)');
+      setTimeout(() => setModerationToast(''), 5000);
       return;
     }
 
@@ -1386,7 +1547,8 @@ export default function LearningPods({ courseId, user }) {
       setKshetraCodeInput('');
       joinPod(created);
     } catch (err) {
-      alert(err.response?.data?.detail || 'Failed to initialize Live Kshetra pod');
+      setModerationToast(err.response?.data?.detail || 'Failed to initialize Live Kshetra pod');
+      setTimeout(() => setModerationToast(''), 5000);
     }
   };
 
@@ -1407,7 +1569,8 @@ export default function LearningPods({ courseId, user }) {
       setViewMode('kshetra');
       joinPod(created);
     } catch (err) {
-      alert(err.response?.data?.detail || 'Failed to start instant Live Kshetra pod');
+      setModerationToast(err.response?.data?.detail || 'Failed to start instant Live Kshetra pod');
+      setTimeout(() => setModerationToast(''), 5000);
     }
   };
 
@@ -2030,6 +2193,36 @@ export default function LearningPods({ courseId, user }) {
                 className="px-2.5 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 font-bold uppercase text-[10px] tracking-wider"
               >
                 Retry Camera Access
+              </button>
+            </div>
+          )}
+
+          {/* Reconnecting / Network Issue Banner */}
+          {isReconnecting && (
+            <div className="p-3 rounded-xl bg-amber-500/20 border border-amber-500/50 text-amber-200 text-xs flex items-center justify-between shadow-xl animate-pulse">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="h-4 w-4 text-amber-400 animate-spin shrink-0" />
+                <span>
+                  <strong>Reconnecting signaling channel...</strong> Attempt {wsReconnectAttempts} of 6. Re-establishing live audio/video session.
+                </span>
+              </div>
+            </div>
+          )}
+
+          {connectionError && (
+            <div className="p-3 rounded-xl bg-rose-500/20 border border-rose-500/50 text-rose-200 text-xs flex items-center justify-between shadow-xl">
+              <div className="flex items-center gap-2">
+                <AlertCircle className="h-4 w-4 text-rose-400 shrink-0" />
+                <span>
+                  <strong>Connection lost:</strong> {connectionError}
+                </span>
+              </div>
+              <button
+                onClick={retryConnection}
+                className="px-3 py-1.5 rounded-lg bg-rose-600 hover:bg-rose-500 text-white font-bold text-xs flex items-center gap-1.5 shadow"
+              >
+                <RefreshCw className="h-3 w-3" />
+                <span>Retry</span>
               </button>
             </div>
           )}

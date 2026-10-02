@@ -1,4 +1,5 @@
 import json
+import logging
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -6,7 +7,7 @@ from sqlalchemy.future import select
 
 from app.core.database import get_db
 from app.core.security import get_current_user, require_roles
-from app.models.models import User, Course, Module, Exam, ExamQuestion, ExamSubmission, StudentBadge
+from app.models.models import User, Course, Module, Exam, ExamQuestion, ExamSubmission, StudentBadge, Enrollment
 from app.schemas.schemas import (
     ExamCreate, ExamResponse, ExamQuestionSchema, ExamReorderRequest,
     ExamSubmitRequest, ExamSubmitResponse, AISuggestionRequest, AISuggestionResponse,
@@ -14,7 +15,35 @@ from app.schemas.schemas import (
 )
 from app.services.exam_service import exam_service
 
+logger = logging.getLogger("cognipath.exams_api")
+
 router = APIRouter(prefix="/exams", tags=["Dual-Engine Assessments (Exams & Quizzes)"])
+
+async def _check_course_ownership_or_enrolment(course_id: int, user: User, db: AsyncSession, write: bool = False) -> Course:
+    c_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = c_res.scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    if user.role == "ADMIN":
+        return course
+
+    if write:
+        if user.role != "EDUCATOR" or course.educator_id != user.id:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not own this course.")
+        return course
+
+    # Read access
+    if user.role == "EDUCATOR" and course.educator_id == user.id:
+        return course
+
+    enrol_res = await db.execute(
+        select(Enrollment).where(Enrollment.course_id == course_id, Enrollment.user_id == user.id)
+    )
+    if not enrol_res.scalars().first():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not enrolled in this course.")
+    return course
+
 
 @router.post("", response_model=ExamResponse, status_code=status.HTTP_201_CREATED)
 async def create_exam(
@@ -23,6 +52,8 @@ async def create_exam(
     db: AsyncSession = Depends(get_db)
 ):
     """Educator creates a Module-level Quiz or comprehensive Final Course Exam."""
+    await _check_course_ownership_or_enrolment(req.course_id, current_user, db, write=True)
+
     exam = Exam(
         course_id=req.course_id,
         module_id=req.module_id,
@@ -52,7 +83,7 @@ async def create_exam(
             db.add(q_obj)
         await db.commit()
 
-    return await get_exam_details(exam.id, db)
+    return await get_exam_details(exam.id, db, is_educator=True)
 
 @router.get("/{exam_id}", response_model=ExamResponse)
 async def get_exam(
@@ -61,7 +92,13 @@ async def get_exam(
     current_user: User = Depends(get_current_user)
 ):
     """Retrieve full exam details with ordered questions (answers masked for students)."""
-    is_educator = (current_user.role in ("EDUCATOR", "ADMIN"))
+    res = await db.execute(select(Exam).where(Exam.id == exam_id))
+    exam = res.scalars().first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    course = await _check_course_ownership_or_enrolment(exam.course_id, current_user, db, write=False)
+    is_educator = (current_user.role == "ADMIN" or (current_user.role == "EDUCATOR" and course.educator_id == current_user.id))
     return await get_exam_details(exam_id, db, is_educator=is_educator)
 
 async def get_exam_details(exam_id: int, db: AsyncSession, is_educator: bool = False) -> ExamResponse:
@@ -101,18 +138,23 @@ async def get_exam_details(exam_id: int, db: AsyncSession, is_educator: bool = F
     )
 
 @router.get("/course/{course_id}", response_model=List[ExamResponse])
-async def list_course_exams(course_id: int, db: AsyncSession = Depends(get_db)):
-    """List all module quizzes and final exams for a course."""
+async def list_course_exams(
+    course_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """List all module quizzes and final exams for a course with student answer masking."""
+    course = await _check_course_ownership_or_enrolment(course_id, current_user, db, write=False)
+    is_educator = (current_user.role == "ADMIN" or (current_user.role == "EDUCATOR" and course.educator_id == current_user.id))
+
     res = await db.execute(select(Exam).where(Exam.course_id == course_id))
     exams = res.scalars().all()
     results = []
     for e in exams:
-        results.append(await get_exam_details(e.id, db))
+        results.append(await get_exam_details(e.id, db, is_educator=is_educator))
     return results
 
-@router.post("/{exam_id}/questions"
-# Require Educator/Admin
-, response_model=ExamQuestionSchema)
+@router.post("/{exam_id}/questions", response_model=ExamQuestionSchema)
 async def add_question(
     exam_id: int,
     q_in: ExamQuestionSchema,
@@ -121,8 +163,11 @@ async def add_question(
 ):
     """Add a question (manual or pushed from AI suggestion drawer)."""
     exam_res = await db.execute(select(Exam).where(Exam.id == exam_id))
-    if not exam_res.scalars().first():
+    exam = exam_res.scalars().first()
+    if not exam:
         raise HTTPException(status_code=404, detail="Exam not found")
+
+    await _check_course_ownership_or_enrolment(exam.course_id, current_user, db, write=True)
 
     # Determine next order index
     count_res = await db.execute(select(ExamQuestion).where(ExamQuestion.exam_id == exam_id))
@@ -161,6 +206,13 @@ async def drop_question(
     db: AsyncSession = Depends(get_db)
 ):
     """Remove/drop a question from the active exam builder."""
+    exam_res = await db.execute(select(Exam).where(Exam.id == exam_id))
+    exam = exam_res.scalars().first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    await _check_course_ownership_or_enrolment(exam.course_id, current_user, db, write=True)
+
     q_res = await db.execute(
         select(ExamQuestion).where(ExamQuestion.exam_id == exam_id, ExamQuestion.id == question_id)
     )
@@ -180,6 +232,13 @@ async def reorder_questions(
     db: AsyncSession = Depends(get_db)
 ):
     """Batch updates question order indices following drag-and-drop actions."""
+    exam_res = await db.execute(select(Exam).where(Exam.id == exam_id))
+    exam = exam_res.scalars().first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    await _check_course_ownership_or_enrolment(exam.course_id, current_user, db, write=True)
+
     for item in req.question_orders:
         q_res = await db.execute(
             select(ExamQuestion).where(ExamQuestion.exam_id == exam_id, ExamQuestion.id == item.question_id)
@@ -189,15 +248,19 @@ async def reorder_questions(
             q.order_index = item.order_index
 
     await db.commit()
-    updated = await get_exam_details(exam_id, db)
+    updated = await get_exam_details(exam_id, db, is_educator=True)
     return updated.questions
 
 @router.post("/ai-suggest", response_model=AISuggestionResponse)
 async def get_ai_suggestions(
     req: AISuggestionRequest,
-    current_user: User = Depends(require_roles('EDUCATOR', 'ADMIN'))
+    current_user: User = Depends(require_roles('EDUCATOR', 'ADMIN')),
+    db: AsyncSession = Depends(get_db)
 ):
     """Generates AI question suggestions for the two-column interactive exam builder drawer."""
+    if req.course_id:
+        await _check_course_ownership_or_enrolment(req.course_id, current_user, db, write=True)
+
     suggestions = await exam_service.generate_ai_suggestions(
         course_id=req.course_id,
         module_id=req.module_id,
@@ -218,6 +281,13 @@ async def submit_exam(
     db: AsyncSession = Depends(get_db)
 ):
     """Student submits answers, system grades instantly and mints a verified badge if qualified."""
+    exam_res = await db.execute(select(Exam).where(Exam.id == exam_id))
+    exam = exam_res.scalars().first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+
+    await _check_course_ownership_or_enrolment(exam.course_id, current_user, db, write=False)
+
     try:
         result = await exam_service.evaluate_submission(
             exam_id=exam_id,
@@ -226,12 +296,28 @@ async def submit_exam(
             db=db
         )
         return result
+    except HTTPException:
+        raise
+    except ValueError as ve:
+        logger.exception(ve)
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Exam evaluation failed")
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.exception(f"Error evaluating exam {exam_id} submission for student {current_user.id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="An error occurred while evaluating your exam submission. Please try again."
+        )
 
 @router.get("/badges/student/{student_id}", response_model=List[StudentBadgeResponse])
-async def get_student_badges(student_id: int, db: AsyncSession = Depends(get_db)):
+async def get_student_badges(
+    student_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Retrieve all verified digital credential badges earned by a student."""
+    if current_user.role not in ("EDUCATOR", "ADMIN") and current_user.id != student_id:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You cannot access another student's credentials.")
+
     res = await db.execute(select(StudentBadge).where(StudentBadge.student_id == student_id))
     badges = res.scalars().all()
     out = []

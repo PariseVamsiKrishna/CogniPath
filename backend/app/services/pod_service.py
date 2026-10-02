@@ -1,8 +1,9 @@
 import json
+import re
 import logging
 import asyncio
 from typing import Dict, Set, Any, Optional
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from fastapi import WebSocket
 from sqlalchemy.future import select
 
@@ -127,7 +128,9 @@ class PodConnectionManager:
         role: str = "STUDENT",
         is_creator: bool = False
     ):
-        await websocket.accept()
+        from starlette.websockets import WebSocketState
+        if websocket.client_state != WebSocketState.CONNECTED:
+            await websocket.accept()
         self.ensure_monitor_running()
 
         room_key = str(pod_id)
@@ -136,6 +139,16 @@ class PodConnectionManager:
             self.active_connections[room_key] = set()
             self.pod_peers[room_key] = {}
             self.peer_sockets[room_key] = {}
+
+        # If client_id already exists in peer_sockets[room_key], close the old socket and remove it from active_connections
+        if client_id in self.peer_sockets.get(room_key, {}):
+            old_ws = self.peer_sockets[room_key][client_id]
+            if old_ws != websocket:
+                self.active_connections.get(room_key, set()).discard(old_ws)
+                try:
+                    await old_ws.close(code=1000, reason="Replaced by new connection")
+                except Exception:
+                    pass
 
         self.active_connections[room_key].add(websocket)
         self.peer_sockets[room_key][client_id] = websocket
@@ -174,7 +187,8 @@ class PodConnectionManager:
         # If host had a pending grace period timer, cancel it
         if is_host and room_key in self.host_grace_timers:
             timer = self.host_grace_timers.pop(room_key)
-            timer.cancel()
+            if timer is not asyncio.current_task():
+                timer.cancel()
             logger.info(f"Host reconnected to pod {room_key}. Cancelled grace timer.")
             await self.broadcast_to_pod(room_key, {
                 "type": "HOST_RECONNECTED",
@@ -231,7 +245,9 @@ class PodConnectionManager:
         """Starts an async countdown granting the host time to reconnect."""
         room_key = str(pod_id)
         if room_key in self.host_grace_timers:
-            self.host_grace_timers[room_key].cancel()
+            timer = self.host_grace_timers[room_key]
+            if timer is not asyncio.current_task():
+                timer.cancel()
 
         async def _grace_countdown():
             try:
@@ -262,9 +278,11 @@ class PodConnectionManager:
         now = datetime.now(timezone.utc)
         duration_minutes = 0.0
 
-        # Cancel any pending host grace timer
+        # Cancel any pending host grace timer (avoid self-cancellation if called from grace countdown)
         if room_key in self.host_grace_timers:
-            self.host_grace_timers[room_key].cancel()
+            timer = self.host_grace_timers[room_key]
+            if timer is not asyncio.current_task():
+                timer.cancel()
             self.host_grace_timers.pop(room_key, None)
 
         # Update database record if integer pod_id
@@ -358,7 +376,7 @@ class PodConnectionManager:
         if room_key in self.active_connections:
             raw = json.dumps(message)
             dead_sockets = set()
-            for connection in list(self.active_connections[room_key]):
+            for connection in list(self.active_connections.get(room_key, set())):
                 try:
                     await connection.send_text(raw)
                 except Exception:

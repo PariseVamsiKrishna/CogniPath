@@ -143,6 +143,14 @@ async def trigger_student_intervention(
     db: AsyncSession = Depends(get_db)
 ):
     """Educator action to intervene and send targeted micro-revision packet to an at-risk student."""
+    if current_user.role != "ADMIN":
+        chk = await db.execute(
+            select(Enrollment).join(Course, Enrollment.course_id == Course.id)
+            .where(Enrollment.user_id == student_id, Course.educator_id == current_user.id)
+        )
+        if not chk.scalars().first():
+            raise HTTPException(status_code=403, detail="Student is not enrolled in any of your courses.")
+
     return {
         "status": "success",
         "student_id": student_id,

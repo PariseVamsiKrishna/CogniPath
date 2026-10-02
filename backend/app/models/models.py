@@ -213,6 +213,9 @@ class PodMessage(Base):
 
 class CommunityChannel(Base):
     __tablename__ = "community_channels"
+    __table_args__ = (
+        UniqueConstraint('course_id', 'name', name='uq_course_channel'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
@@ -462,7 +465,6 @@ class EducatorPodQuota(Base):
     day_date = Column(String(20), nullable=False)  # YYYY-MM-DD
     week_start_date = Column(String(20), nullable=False)  # YYYY-MM-DD
     daily_created = Column(Integer, default=0, nullable=False)
-    weekly_created = Column(Integer, default=0, nullable=False)
 
     educator = relationship("User", back_populates="pod_quotas")
 
