@@ -215,13 +215,11 @@ async def create_pod(
                 educator_id=current_user.id,
                 day_date=today_str,
                 week_start_date=week_start_str,
-                daily_created=1,
-                weekly_created=weekly_used + 1
+                daily_created=1
             )
             db.add(quota)
         else:
             quota.daily_created += 1
-            quota.weekly_created = weekly_used + 1
         await db.commit()
 
     return PodResponse(

@@ -43,8 +43,7 @@ async def test_daily_and_weekly_quota_enforcement(client, db_session):
         educator_id=educator.id,
         day_date=(now - timedelta(days=1)).strftime("%Y-%m-%d"),
         week_start_date=week_start_str,
-        daily_created=11,
-        weekly_created=11
+        daily_created=11
     )
     db_session.add(q_prev)
     await db_session.commit()
