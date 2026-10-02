@@ -74,72 +74,36 @@ function RemotePeerTile({
   const videoRef = useRef(null);
   const audioRef = useRef(null);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
-  const [hasVideoTrack, setHasVideoTrack] = useState(false);
 
-  // Monitor video track presence and live status dynamically
-  useEffect(() => {
-    if (!stream) {
-      setHasVideoTrack(false);
-      return;
-    }
-    const updateVideo = () => {
-      const vTracks = stream.getVideoTracks();
-      const active = vTracks.length > 0 && vTracks.some((t) => t.readyState !== 'ended');
-      setHasVideoTrack(active);
-    };
+  // Direct video visibility check matching working reference implementation
+  const showVideo = Boolean(stream && peer?.videoOn !== false);
 
-    updateVideo();
-
-    stream.onaddtrack = updateVideo;
-    stream.onremovetrack = updateVideo;
-    const vTracks = stream.getVideoTracks();
-    vTracks.forEach((t) => {
-      t.onunmute = updateVideo;
-      t.onmute = updateVideo;
-      t.onended = updateVideo;
-    });
-
-    return () => {
-      stream.onaddtrack = null;
-      stream.onremovetrack = null;
-      vTracks.forEach((t) => {
-        t.onunmute = null;
-        t.onmute = null;
-        t.onended = null;
-      });
-    };
-  }, [stream]);
-
-  // Video track rendering (ALWAYS active and muted to guarantee continuous frame decoding)
+  // Video stream attachment
   useEffect(() => {
     if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.muted = true;
-      const playPromise = videoRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          console.warn('[WebRTC] Video play notice:', err);
-        });
+      if (videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
       }
+      videoRef.current.play().catch((err) => {
+        console.warn(`[RemotePeerTile] Video play error for ${peer.name}:`, err.message);
+      });
     }
-  }, [stream, hasVideoTrack, peer.videoOn]);
+  }, [stream, showVideo, peer?.name]);
 
-  // Audio track playback via dedicated HTML5 Audio element
+  // Dedicated HTML5 audio element for clean, unmuted voice decoding
   useEffect(() => {
     if (audioRef.current && stream) {
-      audioRef.current.srcObject = stream;
-      audioRef.current.muted = peer.audioOn === false;
-      const playPromise = audioRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => setAutoplayBlocked(false))
-          .catch((err) => {
-            console.warn('[WebRTC] Audio autoplay blocked:', err);
-            setAutoplayBlocked(true);
-          });
+      if (audioRef.current.srcObject !== stream) {
+        audioRef.current.srcObject = stream;
       }
+      audioRef.current.play()
+        .then(() => setAutoplayBlocked(false))
+        .catch((err) => {
+          console.warn(`[RemotePeerTile] Audio autoplay blocked for ${peer.name}:`, err.message);
+          setAutoplayBlocked(true);
+        });
     }
-  }, [stream, peer.audioOn]);
+  }, [stream, peer?.name, peer?.audioOn]);
 
   const handleUnblockAudio = () => {
     if (audioRef.current) {
@@ -150,8 +114,6 @@ function RemotePeerTile({
     }
   };
 
-  const showAvatar = !hasVideoTrack || peer.videoOn === false;
-
   return (
     <div
       className={`relative rounded-2xl bg-[#0e1424] border transition-all duration-300 flex flex-col items-center justify-center overflow-hidden min-h-[190px] shadow-xl group ${
@@ -159,22 +121,25 @@ function RemotePeerTile({
           ? 'ring-2 ring-emerald-400 border-emerald-400 shadow-lg shadow-emerald-400/20'
           : 'border-[#1e2638]'
       }`}
+      onClick={autoplayBlocked ? handleUnblockAudio : undefined}
     >
-      {/* Dedicated Hidden Audio Element for Reliable Remote Audio Playback */}
+      {/* Dedicated Hidden Audio Element for Remote Audio Playback */}
       <audio ref={audioRef} autoPlay playsInline />
 
-      {/* Remote Video Stream (Always mounted & playing, muted to bypass autoplay restrictions) */}
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        className="w-full h-full object-cover"
-      />
+      {/* Remote Video Stream */}
+      {stream && (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className={`w-full h-full object-cover ${!showVideo ? 'hidden' : 'block'}`}
+        />
+      )}
 
-      {/* Avatar Overlay when Camera is Off or Video Track is Initializing */}
-      {showAvatar && !autoplayBlocked && (
-        <div className="absolute inset-0 bg-[#0e1424] flex flex-col items-center justify-center space-y-3 z-10">
+      {/* Avatar Placeholder when Camera is Off or Stream is Pending */}
+      {!showVideo && (
+        <div className="w-full h-full flex flex-col items-center justify-center space-y-3 z-10">
           <div
             className={`h-20 w-20 rounded-full flex items-center justify-center text-xl font-bold font-heading shadow-xl transition-transform ${
               peer.isSpeaking && peer.audioOn !== false ? 'scale-110 ring-4 ring-emerald-400/30' : ''
@@ -481,6 +446,16 @@ export default function LiveKshetraNative({
       }
     };
   }, []);
+
+  // Ensure local video element always receives and plays local stream
+  useEffect(() => {
+    if (localVideoRef.current && localStreamRef.current) {
+      if (localVideoRef.current.srcObject !== localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+      localVideoRef.current.play().catch(() => {});
+    }
+  }, [mediaReady, videoOn]);
 
   // ---------------------------------------------------------------------------
   // 2. WEBRTC PEER CONNECTION FACTORY & SIGNALING
