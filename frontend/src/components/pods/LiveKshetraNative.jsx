@@ -84,7 +84,7 @@ function RemotePeerTile({
     }
     const updateVideo = () => {
       const vTracks = stream.getVideoTracks();
-      const active = vTracks.length > 0 && vTracks.some((t) => t.enabled && t.readyState === 'live');
+      const active = vTracks.length > 0 && vTracks.some((t) => t.readyState !== 'ended');
       setHasVideoTrack(active);
     };
 
@@ -263,7 +263,8 @@ export default function LiveKshetraNative({
   sharedWsRef = null,        // ← If provided, reuse this WebSocket instead of opening a new one
   sharedClientId = null,     // ← If provided, use this client_id instead of generating a new one
   wsHandlersRef = null,      // ← Registry to register this component's ws message handler into
-  pendingMessagesRef = null  // ← Buffer of messages that arrived before handler was registered
+  pendingMessagesRef = null, // ← Buffer of messages that arrived before handler was registered
+  sharedLocalStreamRef = null // ← Local media stream reference from parent
 }) {
   const cleanCode = (meetingCode || 'sih-pod-live').trim().replace(/\s+/g, '-').toLowerCase();
   const userName = user?.full_name || 'Learner';
@@ -393,17 +394,25 @@ export default function LiveKshetraNative({
 
     async function initMedia() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: { echoCancellation: true, noiseSuppression: true }
-        });
+        let stream = sharedLocalStreamRef?.current;
+        if (!stream || !stream.active || stream.getTracks().length === 0) {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+            audio: { echoCancellation: true, noiseSuppression: true }
+          });
+        }
 
         if (!isMounted) {
-          stream.getTracks().forEach((t) => t.stop());
+          if (!sharedLocalStreamRef?.current) {
+            stream.getTracks().forEach((t) => t.stop());
+          }
           return;
         }
 
         localStreamRef.current = stream;
+        if (sharedLocalStreamRef) {
+          sharedLocalStreamRef.current = stream;
+        }
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
@@ -607,10 +616,14 @@ export default function LiveKshetraNative({
   const createAndSendOffer = async (targetClientId, ws) => {
     const pc = getOrCreatePeerConnection(targetClientId, true);
     try {
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true
+      });
       await pc.setLocalDescription(offer);
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(
+      const activeWs = ws || wsRef.current;
+      if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+        activeWs.send(
           JSON.stringify({
             type: 'SIGNAL_OFFER',
             from_client: myClientId,
@@ -654,6 +667,21 @@ export default function LiveKshetraNative({
               }
             }
             setPeers(existingPeers);
+
+            // Proactively initiate call to existing peers after brief timeout (with Perfect Negotiation)
+            if (existingPeers.length > 0) {
+              setTimeout(() => {
+                if (!isMounted) return;
+                const wsToUse = wsRef.current;
+                existingPeers.forEach(async (peer) => {
+                  const existingPc = peerConnectionsRef.current[peer.client_id];
+                  if (!existingPc || (existingPc.signalingState === 'stable' && existingPc.connectionState !== 'connected')) {
+                    console.log(`[WebRTC] Proactively connecting to existing peer: ${peer.client_id}`);
+                    await createAndSendOffer(peer.client_id, wsToUse);
+                  }
+                });
+              }, 600);
+            }
           } else {
             playChime(720, 0.15);
             showToast(`${data.user_name || 'Participant'} joined the pod`);
@@ -673,7 +701,7 @@ export default function LiveKshetraNative({
             const wsToUse = wsRef.current;
             await createAndSendOffer(data.client_id, wsToUse);
           }
-        } else if (data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
+        } else if (data.type === 'SIGNAL_OFFER' && (!data.to_client || data.to_client === myClientId)) {
           console.log(`[WebRTC] Received offer from ${data.from_client}`);
           // Ensure the peer is in the peers state so the video tile is rendered in the UI
           setPeers((prev) => {
@@ -705,7 +733,7 @@ export default function LiveKshetraNative({
               wsToUse.send(JSON.stringify({ type: 'SIGNAL_ANSWER', from_client: myClientId, to_client: data.from_client, sdp: pc.localDescription }));
             }
           } catch (err) { console.error('[WebRTC] Answer error:', err); }
-        } else if (data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
+        } else if (data.type === 'SIGNAL_ANSWER' && (!data.to_client || data.to_client === myClientId)) {
           console.log(`[WebRTC] Received answer from ${data.from_client}`);
           // Ensure the peer is in the peers state so the video tile is rendered in the UI
           setPeers((prev) => {
@@ -727,7 +755,7 @@ export default function LiveKshetraNative({
               delete iceCandidateBufferRef.current[data.from_client];
             } catch (err) { console.error('[WebRTC] Set remote desc error:', err); }
           }
-        } else if (data.type === 'SIGNAL_ICE' && data.to_client === myClientId && data.candidate) {
+        } else if (data.type === 'SIGNAL_ICE' && (!data.to_client || data.to_client === myClientId) && data.candidate) {
           const pc = peerConnectionsRef.current[data.from_client];
           if (pc && pc.remoteDescription && pc.remoteDescription.type) {
             try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (err) {}

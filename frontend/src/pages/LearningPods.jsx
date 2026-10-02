@@ -2044,6 +2044,7 @@ export default function LearningPods({ courseId, user }) {
                     sharedClientId={myClientId}
                     wsHandlersRef={wsExtraHandlersRef}
                     pendingMessagesRef={pendingKshetraMessagesRef}
+                    sharedLocalStreamRef={localStreamRef}
                   />
                 </div>
               )}
@@ -2290,6 +2291,7 @@ export default function LearningPods({ courseId, user }) {
                       sharedClientId={myClientId}
                       wsHandlersRef={wsExtraHandlersRef}
                       pendingMessagesRef={pendingKshetraMessagesRef}
+                      sharedLocalStreamRef={localStreamRef}
                     />
                   </div>
                   <div className="relative flex-1 bg-[#0b0f19] rounded-xl border border-slate-800 overflow-hidden">
