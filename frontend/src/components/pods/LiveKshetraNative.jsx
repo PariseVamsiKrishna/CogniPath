@@ -363,8 +363,8 @@ export default function LiveKshetraNative({
 
     async function initMedia() {
       try {
-        let stream = sharedLocalStreamRef?.current;
-        if (!stream || !stream.active || stream.getTracks().length === 0) {
+        let stream = sharedLocalStreamRef ? sharedLocalStreamRef.current : null;
+        if (!sharedLocalStreamRef && (!stream || !stream.active || stream.getTracks().length === 0)) {
           stream = await navigator.mediaDevices.getUserMedia({
             video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
             audio: { echoCancellation: true, noiseSuppression: true }
@@ -372,7 +372,7 @@ export default function LiveKshetraNative({
         }
 
         if (!isMounted) {
-          if (!sharedLocalStreamRef?.current) {
+          if (!sharedLocalStreamRef?.current && stream) {
             stream.getTracks().forEach((t) => t.stop());
           }
           return;
@@ -388,28 +388,30 @@ export default function LiveKshetraNative({
 
         // Setup Audio Analyser
         try {
-          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          audioContextRef.current = audioCtx;
-          const analyser = audioCtx.createAnalyser();
-          analyser.fftSize = 64;
-          analyserRef.current = analyser;
+          if (stream && stream.getAudioTracks().length > 0) {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            audioContextRef.current = audioCtx;
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 64;
+            analyserRef.current = analyser;
 
-          const source = audioCtx.createMediaStreamSource(stream);
-          source.connect(analyser);
+            const source = audioCtx.createMediaStreamSource(stream);
+            source.connect(analyser);
 
-          const dataArray = new Uint8Array(analyser.frequencyBinCount);
-          const checkVolume = () => {
-            if (!isMounted) return;
-            analyser.getByteFrequencyData(dataArray);
-            let sum = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-              sum += dataArray[i];
-            }
-            const avg = sum / dataArray.length;
-            setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
-            animFrameRef.current = requestAnimationFrame(checkVolume);
-          };
-          checkVolume();
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            const checkVolume = () => {
+              if (!isMounted) return;
+              analyser.getByteFrequencyData(dataArray);
+              let sum = 0;
+              for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
+              }
+              const avg = sum / dataArray.length;
+              setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
+              animFrameRef.current = requestAnimationFrame(checkVolume);
+            };
+            checkVolume();
+          }
         } catch (audioErr) {
           console.warn('AudioContext setup skipped:', audioErr);
         }

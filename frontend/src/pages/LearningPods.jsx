@@ -1089,6 +1089,11 @@ export default function LearningPods({ courseId, user }) {
       // 1 & 2: Set wsRef.current and wsReady BEFORE setActivePod
       wsRef.current = ws;
       setWsReady(true);
+      setModerationToast('Requesting camera & microphone access...');
+
+      // Acquire user media after socket is ready and buffering
+      await startLocalMedia();
+
       setActivePod(pod);
       setIsConnecting(false);
       setModerationToast('');
@@ -1114,8 +1119,7 @@ export default function LearningPods({ courseId, user }) {
         }
       ]);
 
-      // Acquire user media after socket is ready and buffering
-      await startLocalMedia();
+      // (Media already acquired above)
     } catch (err) {
       console.warn('WebSocket signaling connection fallback.', err);
       setIsConnecting(false);
