@@ -64,5 +64,7 @@ jobs:
           python -c "from app.main import app; print('FastAPI loaded successfully with routes:', len(app.routes))"
 
       - name: Run Backend Pytest Suite
+        env:
+          PYTHONPATH: ${{ github.workspace }}/backend
         run: |
-          pytest -q
+          python -m pytest -q
