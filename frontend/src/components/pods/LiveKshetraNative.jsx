@@ -263,7 +263,8 @@ export default function LiveKshetraNative({
   sharedWsRef = null,        // ← If provided, reuse this WebSocket instead of opening a new one
   sharedClientId = null,     // ← If provided, use this client_id instead of generating a new one
   wsHandlersRef = null,      // ← Registry to register this component's ws message handler into
-  pendingMessagesRef = null  // ← Buffer of messages that arrived before handler was registered
+  pendingMessagesRef = null, // ← Buffer of messages that arrived before handler was registered
+  sharedLocalStreamRef = null,
 }) {
   const cleanCode = (meetingCode || 'sih-pod-live').trim().replace(/\s+/g, '-').toLowerCase();
   const userName = user?.full_name || 'Learner';
@@ -393,17 +394,25 @@ export default function LiveKshetraNative({
 
     async function initMedia() {
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 } },
-          audio: { echoCancellation: true, noiseSuppression: true }
-        });
+        let stream = sharedLocalStreamRef ? sharedLocalStreamRef.current : null;
+        if (!sharedLocalStreamRef && (!stream || !stream.active || stream.getTracks().length === 0)) {
+          stream = await navigator.mediaDevices.getUserMedia({
+            video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' },
+            audio: { echoCancellation: true, noiseSuppression: true }
+          });
+        }
 
         if (!isMounted) {
-          stream.getTracks().forEach((t) => t.stop());
+          if (!sharedLocalStreamRef?.current && stream) {
+            stream.getTracks().forEach((t) => t.stop());
+          }
           return;
         }
 
         localStreamRef.current = stream;
+        if (sharedLocalStreamRef) {
+          sharedLocalStreamRef.current = stream;
+        }
         if (localVideoRef.current) {
           localVideoRef.current.srcObject = stream;
         }
@@ -461,7 +470,7 @@ export default function LiveKshetraNative({
     return () => {
       isMounted = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      if (localStreamRef.current) {
+      if (localStreamRef.current && !sharedLocalStreamRef) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
       }
       if (screenStreamRef.current) {

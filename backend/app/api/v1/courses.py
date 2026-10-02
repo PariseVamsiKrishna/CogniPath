@@ -56,6 +56,16 @@ def extract_youtube_video_id(url: str) -> str:
     return "qH6clASSS54"
 
 
+async def _check_course_ownership(course_id: int, current_user: User, db: AsyncSession):
+    course_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = course_res.scalars().first()
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+    if course.educator_id != current_user.id and current_user.role != 'ADMIN':
+        raise HTTPException(status_code=403, detail="Not authorized to modify this course")
+    return course
+
+
 # ==============================================================================
 # COURSE ROOT ENDPOINTS & RATING SCENARIOS
 # ==============================================================================
@@ -84,9 +94,8 @@ async def get_course_rating_stats(course: Course, db: AsyncSession):
         avg_rating = round(sum(all_scores) / len(all_scores), 1)
         total_count = len(all_scores)
     else:
-        # Default benchmark for standard demo courses
-        avg_rating = 4.9 if course.id == 1 else (4.8 if course.id == 2 else 4.7)
-        total_count = 18 if course.id == 1 else (12 if course.id == 2 else 9)
+        avg_rating = 0.0
+        total_count = 0
 
     return educator_name, avg_rating, total_count
 
@@ -496,7 +505,7 @@ async def get_topic_ratings(
 # ==============================================================================
 
 @router.get("/{course_id}", response_model=CourseResponse)
-async def get_course(course_id: int, db: AsyncSession = Depends(get_db)):
+async def get_course(course_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Get single course basic details enriched with creator name and star ratings."""
     result = await db.execute(select(Course).where(Course.id == course_id))
     course = result.scalars().first()
@@ -587,7 +596,7 @@ async def get_course_ratings(
 
 
 @router.get("/{course_id}/hierarchy", response_model=CourseHierarchyResponse)
-async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db)):
+async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     """Get complete hierarchical syllabus: Course -> Modules -> Topics & View-Only PDF Resources."""
     res = await db.execute(select(Course).where(Course.id == course_id))
     course = res.scalars().first()
@@ -806,9 +815,7 @@ async def create_module(
     db: AsyncSession = Depends(get_db)
 ):
     """Educator adds a new curriculum module to a course."""
-    course_res = await db.execute(select(Course).where(Course.id == course_id))
-    if not course_res.scalars().first():
-        raise HTTPException(status_code=404, detail="Course not found")
+    await _check_course_ownership(course_id, current_user, db)
 
     count_res = await db.execute(select(Module).where(Module.course_id == course_id))
     existing_count = len(count_res.scalars().all())
@@ -1042,7 +1049,8 @@ async def upload_module_resource(
 @router.get("/resources/{resource_id}/view")
 async def view_module_resource(
     resource_id: int,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
 ):
     """Secure endpoint streaming PDF bytes for in-browser canvas rendering with watermarks."""
     res = await db.execute(select(ModuleResource).where(ModuleResource.id == resource_id))
@@ -1108,7 +1116,7 @@ async def verify_badge(
         "difficulty_level": badge.difficulty_level,
         "issued_at": badge.issued_at.isoformat(),
         "student_name": student.full_name if student else "Enrolled Student",
-        "student_email": student.email if student else "",
+        "student_email": f"{student.email[:3]}***@{student.email.split('@')[1]}" if student and "@" in student.email else "",
         "course_title": course.title if course else "COGNIPATH Verified Track",
         "course_code": course.code if course else "CP101",
         "verification_hash": badge.verification_hash,

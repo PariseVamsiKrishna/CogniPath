@@ -615,6 +615,9 @@ export default function LearningPods({ courseId, user }) {
   };
 
   const joinPod = async (pod) => {
+    // Start Real Camera Media FIRST to prevent race condition with LiveKshetraNative
+    const stream = await startLocalMedia();
+
     setActivePod(pod);
     if (pod.remaining_seconds !== undefined && pod.remaining_seconds !== null) {
       setRemainingSeconds(pod.remaining_seconds);
@@ -636,9 +639,6 @@ export default function LearningPods({ courseId, user }) {
         timestamp: 'Just now'
       }
     ]);
-
-    // Start Real Camera Media
-    const stream = await startLocalMedia();
 
     // Connect WebSocket Signaling
     let wsUrl = '';
@@ -2044,6 +2044,7 @@ export default function LearningPods({ courseId, user }) {
                     sharedClientId={myClientId}
                     wsHandlersRef={wsExtraHandlersRef}
                     pendingMessagesRef={pendingKshetraMessagesRef}
+                    sharedLocalStreamRef={localStreamRef}
                   />
                 </div>
               )}
@@ -2290,6 +2291,7 @@ export default function LearningPods({ courseId, user }) {
                       sharedClientId={myClientId}
                       wsHandlersRef={wsExtraHandlersRef}
                       pendingMessagesRef={pendingKshetraMessagesRef}
+                      sharedLocalStreamRef={localStreamRef}
                     />
                   </div>
                   <div className="relative flex-1 bg-[#0b0f19] rounded-xl border border-slate-800 overflow-hidden">

@@ -183,6 +183,10 @@ export const coursesAPI = {
 };
 
 export const examsAPI = {
+  list: async (courseId) => {
+    const res = await apiClient.get(`/exams/course/${courseId}`);
+    return res.data;
+  },
   create: async (examData) => {
     const res = await apiClient.post('/exams', examData);
     return res.data;
@@ -214,6 +218,10 @@ export const examsAPI = {
 };
 
 export const assignmentsAPI = {
+  list: async (moduleId) => {
+    const res = await apiClient.get(`/assignments/module/${moduleId}`);
+    return res.data;
+  },
   create: async (assignmentData) => {
     const res = await apiClient.post('/assignments', assignmentData);
     return res.data;

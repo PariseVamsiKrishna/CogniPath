@@ -48,8 +48,8 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Permits local Vite dev server and external clients
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
+    allow_headers=["Authorization", "Content-Type", "Accept"],
 )
 
 # Mount API Routers under /api/v1

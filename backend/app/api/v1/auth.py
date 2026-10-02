@@ -47,7 +47,7 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
     return {
         "access_token": access_token,
         "token_type": "bearer",
-        "user": db_user,
+        "user": UserResponse.model_validate(db_user),
         "id": db_user.id,
         "email": db_user.email,
         "full_name": db_user.full_name,
@@ -133,7 +133,10 @@ async def update_profile(
                 )
             current_user.email = profile_in.email
 
-    current_user.role = profile_in.role.upper()
+    requested_role = profile_in.role.upper()
+    if requested_role == "ADMIN" and current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Cannot escalate to ADMIN role")
+    current_user.role = requested_role
     current_user.university = profile_in.university
     current_user.department = profile_in.department
     current_user.institutional_email = profile_in.institutional_email
