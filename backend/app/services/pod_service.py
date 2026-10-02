@@ -1,14 +1,15 @@
-import json
-import re
-import logging
 import asyncio
-from typing import Dict, Set, Any, Optional
-from datetime import datetime, timezone, timedelta
+import json
+import logging
+import re
+from datetime import datetime, timedelta, timezone
+from typing import Any
+
 from fastapi import WebSocket
 from sqlalchemy.future import select
 
 from app.core.database import AsyncSessionLocal
-from app.models.models import LearningPod
+from app.models.models import LearningPod, PodMessage
 from app.services.rag_service import rag_service
 
 logger = logging.getLogger("cognipath.pod")
@@ -24,20 +25,20 @@ class PodConnectionManager:
     def __init__(self):
         self.background_tasks = set()
         # room_key -> set of active WebSockets
-        self.active_connections: Dict[str, Set[WebSocket]] = {}
+        self.active_connections: dict[str, set[WebSocket]] = {}
         # room_key -> peer metadata dict: client_id -> {"name": ..., "user_id": ..., "role": ..., "is_host": ...}
-        self.pod_peers: Dict[str, Dict[str, Any]] = {}
+        self.pod_peers: dict[str, dict[str, Any]] = {}
         # room_key -> client_id -> WebSocket
-        self.peer_sockets: Dict[str, Dict[str, WebSocket]] = {}
+        self.peer_sockets: dict[str, dict[str, WebSocket]] = {}
         # room_key -> host client_id or user_id
-        self.pod_hosts: Dict[str, Any] = {}
+        self.pod_hosts: dict[str, Any] = {}
         # room_key -> grace period task
-        self.host_grace_timers: Dict[str, asyncio.Task] = {}
+        self.host_grace_timers: dict[str, asyncio.Task] = {}
         # room_key -> set of warned thresholds
-        self.pod_warned_5m: Set[str] = set()
-        self.pod_warned_1m: Set[str] = set()
+        self.pod_warned_5m: set[str] = set()
+        self.pod_warned_1m: set[str] = set()
         # Lifecycle monitor background task
-        self.monitor_task: Optional[asyncio.Task] = None
+        self.monitor_task: asyncio.Task | None = None
 
     def ensure_monitor_running(self):
         """Starts background periodic monitor task if not already active."""
@@ -55,7 +56,7 @@ class PodConnectionManager:
                 await self.check_active_pods_lifecycle()
             except asyncio.CancelledError:
                 break
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"Error in pod lifecycle monitor loop: {e}")
 
     async def check_active_pods_lifecycle(self):
@@ -66,7 +67,7 @@ class PodConnectionManager:
             # Query active pods expiring within 5 minutes or already expired
             result = await session.execute(
                 select(LearningPod).where(
-                    LearningPod.is_active == True,
+                    LearningPod.is_active,
                     LearningPod.expires_at <= five_min_ahead
                 )
             )
@@ -124,7 +125,7 @@ class PodConnectionManager:
         websocket: WebSocket,
         client_id: str,
         user_name: str,
-        user_id: Optional[int] = None,
+        user_id: int | None = None,
         role: str = "STUDENT",
         is_creator: bool = False
     ):
@@ -147,7 +148,7 @@ class PodConnectionManager:
                 self.active_connections.get(room_key, set()).discard(old_ws)
                 try:
                     await old_ws.close(code=1000, reason="Replaced by new connection")
-                except Exception:
+                except Exception:  # noqa: BLE001
                     pass
 
         self.active_connections[room_key].add(websocket)
@@ -209,7 +210,7 @@ class PodConnectionManager:
             "participants": list(self.pod_peers[room_key].values())
         })
 
-    def disconnect(self, pod_id: Any, websocket: WebSocket, client_id: str, user_id: Optional[int] = None):
+    def disconnect(self, pod_id: Any, websocket: WebSocket, client_id: str, user_id: int | None = None):
         room_key = str(pod_id)
         if room_key in self.active_connections:
             if websocket not in self.active_connections[room_key] and client_id not in self.pod_peers.get(room_key, {}):
@@ -272,7 +273,7 @@ class PodConnectionManager:
 
         self.host_grace_timers[room_key] = asyncio.create_task(_grace_countdown())
 
-    async def teardown_pod(self, pod_id: Any, reason: str, status: str = "COMPLETED") -> Dict[str, Any]:
+    async def teardown_pod(self, pod_id: Any, reason: str, status: str = "COMPLETED") -> dict[str, Any]:
         """Terminates an active pod, disconnects all attendees, and updates database records."""
         room_key = str(pod_id)
         now = datetime.now(timezone.utc)
@@ -323,7 +324,7 @@ class PodConnectionManager:
         for ws in sockets:
             try:
                 await ws.close(code=1000, reason=reason[:120])
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
 
         # Cleanup in-memory registry
@@ -351,7 +352,7 @@ class PodConnectionManager:
         if socket:
             try:
                 await socket.send_text(json.dumps(message))
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"Failed to send direct message to client {client_id}: {e}")
 
     async def kick_client(self, pod_id: Any, client_id: str, reason: str = "Removed by host"):
@@ -366,7 +367,7 @@ class PodConnectionManager:
                     "pod_id": room_key
                 }))
                 await socket.close(code=1008, reason="Kicked by host")
-            except Exception:
+            except Exception:  # noqa: BLE001
                 pass
             self.disconnect(room_key, socket, client_id)
 
@@ -379,7 +380,7 @@ class PodConnectionManager:
             for connection in list(self.active_connections.get(room_key, set())):
                 try:
                     await connection.send_text(raw)
-                except Exception:
+                except Exception:  # noqa: BLE001
                     dead_sockets.add(connection)
             for dead in dead_sockets:
                 self.active_connections[room_key].discard(dead)
@@ -394,7 +395,7 @@ class PodConnectionManager:
         course_id: int,
         sender_name: str,
         content: str,
-        user_id: Optional[int] = None
+        user_id: int | None = None
     ):
         """Broadcasts user message and triggers AI Tutor co-pilot if summoned with @tutor."""
         room_key = str(pod_id)
@@ -413,7 +414,7 @@ class PodConnectionManager:
                     )
                     session.add(msg)
                     await session.commit()
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"Failed to persist pod message: {e}")
 
         # Broadcast peer message
@@ -441,7 +442,7 @@ class PodConnectionManager:
                         ),
                         timeout=20.0
                     )
-                except Exception as e:
+                except Exception as e:  # noqa: BLE001
                     logger.error(f"Error generating AI Tutor response in pod: {e}")
                     tutor_answer = "I'm currently unable to process your question. Please try asking again in a moment."
                     citations = []
@@ -458,7 +459,7 @@ class PodConnectionManager:
                             )
                             session.add(tutor_msg)
                             await session.commit()
-                    except Exception as e:
+                    except Exception as e:  # noqa: BLE001
                         logger.error(f"Failed to persist tutor response: {e}")
 
                 await self.broadcast_to_pod(room_key, {

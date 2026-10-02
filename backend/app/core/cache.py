@@ -1,14 +1,15 @@
 import time
-from typing import Any, Optional, Dict, Tuple
+from typing import Any
+
 
 class TTLCache:
     """Lightweight thread-safe in-memory TTL cache with manual key invalidation."""
     def __init__(self, default_ttl: int = 300, max_size: int = 1000):
         self.default_ttl = default_ttl
         self.max_size = max_size
-        self._cache: Dict[str, Tuple[Any, float]] = {}
+        self._cache: dict[str, tuple[Any, float]] = {}
 
-    def get(self, key: str) -> Optional[Any]:
+    def get(self, key: str) -> Any | None:
         if key not in self._cache:
             return None
         val, expiry = self._cache[key]
@@ -17,7 +18,7 @@ class TTLCache:
             return None
         return val
 
-    def set(self, key: str, value: Any, ttl: Optional[int] = None) -> None:
+    def set(self, key: str, value: Any, ttl: int | None = None) -> None:
         if len(self._cache) >= self.max_size:
             # Purge expired or oldest
             now = time.time()

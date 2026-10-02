@@ -1,41 +1,78 @@
-from app.core.cache import ttl_cache
+import json
+import logging
 import os
 import re
 import shutil
-import logging
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy import delete, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_, delete, update
 
-from datetime import datetime, timezone
-import json
+from app.core.cache import ttl_cache
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import get_current_user, require_roles, get_optional_current_user
+from app.core.security import get_current_user, get_optional_current_user, require_roles
 from app.models.models import (
-    Course, Enrollment, User, CommunityChannel, CommunityMessage, Module, Topic,
-    ModuleResource, StudentBadge, Exam, ExamQuestion, ExamSubmission, CourseRating, TopicRating,
-    StudentActivityLog, Document, Quiz, QuizQuestion, StudentQuizAttempt, StudentConceptRetention,
-    LearningPod, PodMessage, PodBlacklist, Assignment, AssignmentSubmission,
-    StudentSkillMastery, CurriculumAuditReport
+    Assignment,
+    AssignmentSubmission,
+    CommunityChannel,
+    CommunityMessage,
+    Course,
+    CourseRating,
+    CurriculumAuditReport,
+    Document,
+    Enrollment,
+    Exam,
+    ExamQuestion,
+    ExamSubmission,
+    LearningPod,
+    Module,
+    ModuleResource,
+    PodBlacklist,
+    PodMessage,
+    Quiz,
+    QuizQuestion,
+    StudentActivityLog,
+    StudentBadge,
+    StudentConceptRetention,
+    StudentQuizAttempt,
+    StudentSkillMastery,
+    Topic,
+    TopicRating,
+    User,
 )
 from app.schemas.schemas import (
-    CourseCreate, CourseResponse, CourseHierarchyResponse,
-    ModuleCreate, ModuleResponse, ModuleUpdate,
-    TopicCreate, TopicResponse, TopicUpdate,
-    ModuleResourceResponse, StudentBadgeResponse,
-    RAGMCQGenerateRequest, RAGMCQGenerateResponse,
-    ModuleExamCreateRequest, ExamResponse, ExamQuestionSchema,
-    TabsSummaryResponse, TabsSummaryCourse, TabsSummaryModule,
-    CourseExploreItem, CourseRatingCreate, CourseRatingResponse,
-    CourseRatingsSummary, TopicRatingCreate, TopicRatingResponse, TopicRatingSummary
+    CourseCreate,
+    CourseExploreItem,
+    CourseHierarchyResponse,
+    CourseRatingCreate,
+    CourseRatingResponse,
+    CourseRatingsSummary,
+    CourseResponse,
+    ExamResponse,
+    ModuleCreate,
+    ModuleExamCreateRequest,
+    ModuleResourceResponse,
+    ModuleResponse,
+    ModuleUpdate,
+    RAGMCQGenerateRequest,
+    RAGMCQGenerateResponse,
+    TabsSummaryCourse,
+    TabsSummaryModule,
+    TabsSummaryResponse,
+    TopicCreate,
+    TopicRatingCreate,
+    TopicRatingResponse,
+    TopicRatingSummary,
+    TopicResponse,
+    TopicUpdate,
 )
-from app.services.ingestion_service import ingestion_service
-from app.services.exam_service import exam_service
 from app.services.chroma_service import chroma_service
+from app.services.exam_service import exam_service
+from app.services.ingestion_service import ingestion_service
 
 logger = logging.getLogger("cognipath.courses")
 
@@ -100,7 +137,7 @@ async def get_course_rating_stats(course: Course, db: AsyncSession):
 
     return educator_name, avg_rating, total_count
 
-async def get_course_ratings_summary(course_id: int, user_id: Optional[int], db: AsyncSession):
+async def get_course_ratings_summary(course_id: int, user_id: int | None, db: AsyncSession):
     """Summarizes course reviews and current user rating."""
     ratings_res = await db.execute(
         select(CourseRating).where(CourseRating.course_id == course_id).order_by(CourseRating.created_at.desc())
@@ -146,12 +183,12 @@ async def get_course_ratings_summary(course_id: int, user_id: Optional[int], db:
         reviews=reviews_out
     )
 
-@router.get("/explore", response_model=List[CourseExploreItem])
+@router.get("/explore", response_model=list[CourseExploreItem])
 async def explore_courses(
-    q: Optional[str] = None,
-    category: Optional[str] = None,
+    q: str | None = None,
+    category: str | None = None,
     sort_by: str = "rating",  # "rating" | "popular" | "newest"
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -227,8 +264,8 @@ async def explore_courses(
 
     return items
 
-@router.get("/enrolled", response_model=List[CourseResponse])
-@router.get("/my-courses", response_model=List[CourseResponse])
+@router.get("/enrolled", response_model=list[CourseResponse])
+@router.get("/my-courses", response_model=list[CourseResponse])
 async def get_enrolled_courses(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -298,10 +335,10 @@ async def get_enrolled_courses(
         ))
     return out
 
-@router.get("", response_model=List[CourseResponse])
+@router.get("", response_model=list[CourseResponse])
 async def list_courses(
     enrolled_only: bool = False,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """List courses with enriched creator name, star ratings, and student enrollment flag."""
@@ -467,7 +504,7 @@ async def rate_topic(
 @router.get("/topics/{topic_id}/ratings", response_model=TopicRatingSummary)
 async def get_topic_ratings(
     topic_id: int,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Get rating summary and current user rating for a topic."""
@@ -587,7 +624,7 @@ async def rate_course(
 @router.get("/{course_id}/ratings", response_model=CourseRatingsSummary)
 async def get_course_ratings(
     course_id: int,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve full reviews and star rating distribution for a course."""
@@ -1290,7 +1327,7 @@ async def save_module_exam(
 @router.get("/tabs-summary", response_model=TabsSummaryResponse)
 @module_router.get("/user/courses/tabs-summary", response_model=TabsSummaryResponse)
 async def get_tabs_summary(
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """

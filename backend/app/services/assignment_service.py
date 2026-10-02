@@ -1,11 +1,12 @@
-from app.services.ai_helper import gemini_generate
 import json
 import logging
-from typing import Dict, Any, List, Optional
+from typing import Any
+
 from pypdf import PdfReader
 
 from app.core.config import settings
 from app.schemas.schemas import AIEvaluationFeedback, CriterionScoreItem
+from app.services.ai_helper import gemini_generate
 
 logger = logging.getLogger("cognipath.assignments")
 
@@ -30,8 +31,8 @@ class AssignmentService:
     async def auto_grade_submission(
         self,
         submission_text: str,
-        rubric: List[Dict[str, Any]],
-        model_answer: Optional[str] = None,
+        rubric: list[dict[str, Any]],
+        model_answer: str | None = None,
         max_score: float = 100.0
     ) -> AIEvaluationFeedback:
         """Evaluates student submission against rubric criteria and model answer using Gemini AI."""
@@ -84,12 +85,9 @@ No markdown formatting, no code block backticks. Pure JSON only.
 """
                 resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 if isinstance(parsed, dict) and "criteria_scores" in parsed:
                     criteria_items = [

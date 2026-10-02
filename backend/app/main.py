@@ -1,17 +1,29 @@
-import time
 import logging
+import time
 from contextlib import asynccontextmanager
+
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
+from app.api.v1 import (
+    analytics,
+    assignments,
+    auth,
+    communities,
+    courses,
+    curriculum_audit,
+    documents,
+    exams,
+    pods,
+    quizzes,
+    roadmap,
+    socratic,
+    tutor,
+)
 from app.core.config import settings
 from app.core.database import init_db
 from app.core.seed import seed_demo_data
-from app.api.v1 import (
-    auth, courses, documents, tutor, quizzes, analytics, pods, communities,
-    socratic, roadmap, curriculum_audit, exams, assignments
-)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -19,11 +31,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cognipath.main")
 
-from app.services.pod_service import pod_manager
-from app.models.models import LearningPod
+from sqlalchemy.future import select
+
 from app.core.database import AsyncSessionLocal
 from app.core.security import get_password_hash
-from sqlalchemy.future import select
+from app.models.models import LearningPod
+from app.services.pod_service import pod_manager
+
 
 async def migrate_legacy_passcodes():
     try:

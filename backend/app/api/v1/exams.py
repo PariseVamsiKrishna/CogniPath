@@ -1,17 +1,30 @@
 import json
 import logging
-from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.database import get_db
 from app.core.security import get_current_user, require_roles
-from app.models.models import User, Course, Module, Exam, ExamQuestion, ExamSubmission, StudentBadge, Enrollment
+from app.models.models import (
+    Course,
+    Enrollment,
+    Exam,
+    ExamQuestion,
+    StudentBadge,
+    User,
+)
 from app.schemas.schemas import (
-    ExamCreate, ExamResponse, ExamQuestionSchema, ExamReorderRequest,
-    ExamSubmitRequest, ExamSubmitResponse, AISuggestionRequest, AISuggestionResponse,
-    StudentBadgeResponse
+    AISuggestionRequest,
+    AISuggestionResponse,
+    ExamCreate,
+    ExamQuestionSchema,
+    ExamReorderRequest,
+    ExamResponse,
+    ExamSubmitRequest,
+    ExamSubmitResponse,
+    StudentBadgeResponse,
 )
 from app.services.exam_service import exam_service
 
@@ -137,7 +150,7 @@ async def get_exam_details(exam_id: int, db: AsyncSession, is_educator: bool = F
         questions=q_schemas
     )
 
-@router.get("/course/{course_id}", response_model=List[ExamResponse])
+@router.get("/course/{course_id}", response_model=list[ExamResponse])
 async def list_course_exams(
     course_id: int,
     db: AsyncSession = Depends(get_db),
@@ -222,9 +235,8 @@ async def drop_question(
 
     await db.delete(q_obj)
     await db.commit()
-    return None
 
-@router.put("/{exam_id}/reorder", response_model=List[ExamQuestionSchema])
+@router.put("/{exam_id}/reorder", response_model=list[ExamQuestionSchema])
 async def reorder_questions(
     exam_id: int,
     req: ExamReorderRequest,
@@ -308,7 +320,7 @@ async def submit_exam(
             detail="An error occurred while evaluating your exam submission. Please try again."
         )
 
-@router.get("/badges/student/{student_id}", response_model=List[StudentBadgeResponse])
+@router.get("/badges/student/{student_id}", response_model=list[StudentBadgeResponse])
 async def get_student_badges(
     student_id: int,
     current_user: User = Depends(get_current_user),

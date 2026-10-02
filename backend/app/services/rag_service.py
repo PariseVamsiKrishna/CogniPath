@@ -1,7 +1,8 @@
-import time
 import logging
-from typing import List, Dict, Any, Tuple
+import time
+
 from openai import AsyncOpenAI
+
 try:
     from google import genai
     HAS_GENAI = True
@@ -9,9 +10,9 @@ except ImportError:
     HAS_GENAI = False
 
 from app.core.config import settings
-from app.services.chroma_service import chroma_service
 from app.schemas.schemas import Citation
 from app.services.ai_helper import gemini_generate
+from app.services.chroma_service import chroma_service
 
 logger = logging.getLogger("cognipath.rag")
 
@@ -45,7 +46,7 @@ class RAGService:
             try:
                 self._gemini_client = genai.Client(api_key=settings.GEMINI_API_KEY)
                 logger.info("RAGService: Google Gemini client initialized.")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.warning(f"RAGService: Gemini client initialization warning: {e}")
 
     async def retrieve_context(
@@ -53,7 +54,7 @@ class RAGService:
         course_id: int,
         query: str,
         n_results: int = 4
-    ) -> Tuple[str, List[Citation]]:
+    ) -> tuple[str, list[Citation]]:
         """Retrieves top context chunks and formats citations."""
         results = await chroma_service.query_similar(course_id, query, n_results=n_results)
         
@@ -61,10 +62,10 @@ class RAGService:
         metas = results.get("metadatas", [[]])[0]
         distances = results.get("distances", [[]])[0]
 
-        citations: List[Citation] = []
-        context_parts: List[str] = []
+        citations: list[Citation] = []
+        context_parts: list[str] = []
 
-        for idx, (doc, meta) in enumerate(zip(docs, metas)):
+        for idx, (doc, meta) in enumerate(zip(docs, metas, strict=False)):
             if not doc:
                 continue
             doc_title = meta.get("doc_title", "Course Document")
@@ -88,7 +89,7 @@ class RAGService:
         course_id: int,
         query: str,
         target_language: str = "en"
-    ) -> Tuple[str, List[Citation], int]:
+    ) -> tuple[str, list[Citation], int]:
         """Generates a grounded RAG response for a student query."""
         start_time = time.time()
         context_text, citations = await self.retrieve_context(course_id, query, n_results=4)
@@ -107,9 +108,9 @@ class RAGService:
                             answer = resp.text
                             latency_ms = int((time.time() - start_time) * 1000)
                             return answer, citations, latency_ms
-                    except Exception as ge:
+                    except Exception as ge:  # noqa: BLE001
                         logger.warning(f"Gemini {m} retry notice: {ge}")
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"Gemini RAG inference error: {e}")
 
         # 2. If OpenAI client is configured
@@ -128,7 +129,7 @@ class RAGService:
                 answer = resp.choices[0].message.content
                 latency_ms = int((time.time() - start_time) * 1000)
                 return answer, citations, latency_ms
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 logger.error(f"OpenAI RAG inference error: {e}")
 
         # Fallback static response

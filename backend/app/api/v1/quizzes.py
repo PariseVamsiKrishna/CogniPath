@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -8,12 +8,20 @@ from sqlalchemy.future import select
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.models import (
-    User, Course, Quiz, QuizQuestion, StudentQuizAttempt,
-    StudentConceptRetention, StudentActivityLog, Enrollment
+    Enrollment,
+    Quiz,
+    QuizQuestion,
+    StudentActivityLog,
+    StudentConceptRetention,
+    StudentQuizAttempt,
+    User,
 )
 from app.schemas.schemas import (
-    QuizResponse, QuizQuestionSchema, QuizSubmitRequest,
-    QuizSubmitResponse, SpacedConceptItem
+    QuizQuestionSchema,
+    QuizResponse,
+    QuizSubmitRequest,
+    QuizSubmitResponse,
+    SpacedConceptItem,
 )
 from app.services.quiz_service import quiz_service
 
@@ -199,7 +207,7 @@ async def submit_quiz_attempt(
         feedback=feedback
     )
 
-@router.get("/due", response_model=List[SpacedConceptItem])
+@router.get("/due", response_model=list[SpacedConceptItem])
 async def get_due_retention_items(
     course_id: int,
     current_user: User = Depends(get_current_user),

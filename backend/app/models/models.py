@@ -1,9 +1,21 @@
 from datetime import datetime, timezone
+
 from sqlalchemy import (
-    Index, Column, Integer, String, Text, Boolean, Float, DateTime, ForeignKey, UniqueConstraint
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
+
 from app.core.database import Base
+
 
 def utcnow():
     return datetime.now(timezone.utc)

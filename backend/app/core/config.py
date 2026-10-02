@@ -1,6 +1,6 @@
-import os
 import logging
-from typing import List
+import os
+
 from pydantic_settings import BaseSettings
 
 logger = logging.getLogger("cognipath.config")
@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     raw_cors: str = os.getenv("CORS_ORIGINS", "http://localhost:3000,http://localhost:5173,http://127.0.0.1:3000,http://127.0.0.1:5173")
 
     @property
-    def CORS_ORIGINS(self) -> List[str]:
+    def CORS_ORIGINS(self) -> list[str]:
         if not self.raw_cors:
             return ["http://localhost:5173"]
         return [origin.strip() for origin in self.raw_cors.split(",") if origin.strip()]

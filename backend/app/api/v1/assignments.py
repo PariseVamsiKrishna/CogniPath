@@ -1,21 +1,30 @@
-import uuid
-import os
 import json
-import shutil
 import logging
-from typing import List, Optional
+import os
+import uuid
 from datetime import datetime, timezone
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_roles
-from app.models.models import User, Assignment, AssignmentSubmission, Module, Course, Enrollment
+from app.models.models import (
+    Assignment,
+    AssignmentSubmission,
+    Course,
+    Enrollment,
+    Module,
+    User,
+)
 from app.schemas.schemas import (
-    AssignmentCreate, AssignmentResponse, AssignmentSubmissionResponse,
-    AIEvaluationFeedback, RubricCriterion
+    AIEvaluationFeedback,
+    AssignmentCreate,
+    AssignmentResponse,
+    AssignmentSubmissionResponse,
+    RubricCriterion,
 )
 from app.services.assignment_service import assignment_service
 
@@ -98,7 +107,7 @@ async def create_assignment(
         created_at=assignment.created_at
     )
 
-@router.get("/module/{module_id}", response_model=List[AssignmentResponse])
+@router.get("/module/{module_id}", response_model=list[AssignmentResponse])
 async def list_module_assignments(
     module_id: int,
     current_user: User = Depends(get_current_user),
@@ -157,8 +166,8 @@ async def get_assignment(
 @router.post("/{assignment_id}/submit", response_model=AssignmentSubmissionResponse)
 async def submit_assignment(
     assignment_id: int,
-    submission_text: Optional[str] = Form(None),
-    file: Optional[UploadFile] = File(None),
+    submission_text: str | None = Form(None),
+    file: UploadFile | None = File(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -271,7 +280,7 @@ async def submit_assignment(
         submitted_at=sub.submitted_at
     )
 
-@router.get("/submissions/student/{student_id}", response_model=List[AssignmentSubmissionResponse])
+@router.get("/submissions/student/{student_id}", response_model=list[AssignmentSubmissionResponse])
 async def list_student_submissions(
     student_id: int,
     db: AsyncSession = Depends(get_db),

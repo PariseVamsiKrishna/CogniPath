@@ -1,20 +1,27 @@
-from typing import List, Optional
 import sqlalchemy.exc
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.models import CommunityChannel, CommunityMessage, User, Course, Enrollment
+from app.models.models import (
+    CommunityChannel,
+    CommunityMessage,
+    Course,
+    Enrollment,
+    User,
+)
 from app.schemas.schemas import (
-    CommunityChannelResponse, CommunityMessageCreate, CommunityMessageResponse
+    CommunityChannelResponse,
+    CommunityMessageCreate,
+    CommunityMessageResponse,
 )
 
 router = APIRouter(prefix="/communities", tags=["Native Community Hub"])
 
-@router.get("/courses/{course_id}/channels", response_model=List[CommunityChannelResponse])
+@router.get("/courses/{course_id}/channels", response_model=list[CommunityChannelResponse])
 async def list_course_channels(course_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """List all community channels available in a course."""
     result = await db.execute(
@@ -47,7 +54,7 @@ async def list_course_channels(course_id: int, current_user: User = Depends(get_
             return result.scalars().all()
     return channels
 
-@router.get("/channels/{channel_id}/messages", response_model=List[CommunityMessageResponse])
+@router.get("/channels/{channel_id}/messages", response_model=list[CommunityMessageResponse])
 async def list_channel_messages(channel_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Retrieve message feed for a channel."""
     result = await db.execute(

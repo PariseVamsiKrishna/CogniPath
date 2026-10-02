@@ -1,17 +1,16 @@
-import uuid
-import os
-import shutil
 import asyncio
 import logging
-from typing import List
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+import os
+import uuid
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.security import get_current_user, require_roles
-from app.models.models import Document, Course, User, Enrollment
+from app.models.models import Course, Document, Enrollment, User
 from app.schemas.schemas import DocumentResponse
 from app.services.ingestion_service import ingestion_service
 
@@ -117,7 +116,7 @@ async def upload_document(
 
     return doc_record
 
-@router.get("/course/{course_id}", response_model=List[DocumentResponse])
+@router.get("/course/{course_id}", response_model=list[DocumentResponse])
 async def list_course_documents(
     course_id: int,
     current_user: User = Depends(get_current_user),

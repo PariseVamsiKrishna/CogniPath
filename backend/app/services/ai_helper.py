@@ -1,9 +1,8 @@
 import asyncio
 import logging
 import time
-from typing import Any, Optional
-
 from collections import defaultdict
+from typing import Any
 
 logger = logging.getLogger("cognipath.ai_helper")
 

@@ -1,10 +1,11 @@
-import os
-import uuid
 import asyncio
 import logging
-from typing import List, Dict, Any, Tuple, Optional
-from pypdf import PdfReader
+import os
+import uuid
+from typing import Any
+
 import docx
+from pypdf import PdfReader
 
 from app.services.chroma_service import chroma_service
 
@@ -12,12 +13,12 @@ logger = logging.getLogger("cognipath.ingestion")
 
 class RecursiveCharacterTextSplitter:
     """Recursive Character Text Splitter with customizable chunk size and overlap."""
-    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 150, separators: List[str] = None):
+    def __init__(self, chunk_size: int = 1000, chunk_overlap: int = 150, separators: list[str] = None):
         self.chunk_size = chunk_size
         self.chunk_overlap = chunk_overlap
         self.separators = separators or ["\n\n", "\n", ". ", " ", ""]
 
-    def split_text(self, text: str) -> List[str]:
+    def split_text(self, text: str) -> list[str]:
         if len(text) <= self.chunk_size:
             return [text.strip()] if text.strip() else []
 
@@ -57,10 +58,10 @@ class DocumentIngestionService:
     def __init__(self):
         self.splitter = RecursiveCharacterTextSplitter(chunk_size=1000, chunk_overlap=150)
 
-    def extract_text(self, file_path: str, file_type: str) -> List[Tuple[str, int]]:
+    def extract_text(self, file_path: str, file_type: str) -> list[tuple[str, int]]:
         """Extracts text and page numbers from file. Returns list of (page_text, page_number)."""
         ext = file_type.lower().replace(".", "")
-        pages_content: List[Tuple[str, int]] = []
+        pages_content: list[tuple[str, int]] = []
 
         if ext == "pdf":
             try:
@@ -104,13 +105,13 @@ class DocumentIngestionService:
         file_type: str,
         topic: str = "General",
         educator_id: int = 1,
-        module_id: Optional[int] = None
+        module_id: int | None = None
     ) -> int:
         """Parses, chunks, embeds, and indexes document into ChromaDB without blocking async loop."""
         pages = await asyncio.to_thread(self.extract_text, file_path, file_type)
-        all_chunks: List[str] = []
-        all_metadatas: List[Dict[str, Any]] = []
-        all_ids: List[str] = []
+        all_chunks: list[str] = []
+        all_metadatas: list[dict[str, Any]] = []
+        all_ids: list[str] = []
 
         chunk_counter = 0
         for page_text, page_num in pages:
@@ -151,7 +152,7 @@ class DocumentIngestionService:
         doc_id: int,
         doc_title: str,
         topic: str = "General",
-        module_id: Optional[int] = None
+        module_id: int | None = None
     ) -> int:
         """Direct file ingestion helper supporting course and module resources."""
         ext = os.path.splitext(file_path)[1].lower().replace(".", "") or "pdf"

@@ -1,18 +1,19 @@
 import json
+
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.models import User, StudentActivityLog
+from app.models.models import StudentActivityLog, User
 from app.schemas.schemas import (
+    SupplementaryVideoResponse,
+    SupplementaryVideoSuggestRequest,
     TutorQueryRequest,
     TutorQueryResponse,
-    SupplementaryVideoSuggestRequest,
-    SupplementaryVideoResponse
 )
+from app.services.bhashini_service import SUPPORTED_INDIC_LANGUAGES, bhashini_service
 from app.services.rag_service import rag_service
-from app.services.bhashini_service import bhashini_service, SUPPORTED_INDIC_LANGUAGES
 
 router = APIRouter(prefix="/tutor", tags=["AI Tutor"])
 
@@ -120,7 +121,7 @@ async def suggest_supplementary_video(
         matched_video = {
             "title": f"Deep Dive Visual Breakdown: {req.topic}",
             "youtube_video_id": "qH6clASSS54",
-            "embed_url": f"https://www.youtube-nocookie.com/embed/qH6clASSS54",
+            "embed_url": "https://www.youtube-nocookie.com/embed/qH6clASSS54",
             "channel": "CogniPath AI Knowledge Engine",
             "duration": "10 mins",
             "relevance_reason": f"Step-by-step conceptual walkthrough designed to reinforce core invariants of {req.topic}.",

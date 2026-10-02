@@ -1,21 +1,33 @@
-from app.services.ai_helper import gemini_generate
-import json
 import hashlib
+import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import Any
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from app.core.config import settings
 from app.models.models import (
-    Exam, ExamQuestion, ExamSubmission, StudentBadge, Course, Module, Topic, ModuleResource, User
+    Course,
+    Exam,
+    ExamQuestion,
+    ExamSubmission,
+    Module,
+    ModuleResource,
+    StudentBadge,
+    Topic,
+    User,
 )
 from app.schemas.schemas import (
-    AISuggestionItem, ExamSubmitItem, ExamSubmitResponse, ExamQuestionSchema, RAGMCQItem
+    AISuggestionItem,
+    ExamSubmitItem,
+    ExamSubmitResponse,
+    RAGMCQItem,
 )
+from app.services.ai_helper import gemini_generate
 from app.services.chroma_service import chroma_service
-from app.core.config import settings
 
 logger = logging.getLogger("cognipath.exams")
 
@@ -25,14 +37,14 @@ class ExamService:
     async def generate_ai_suggestions(
         self,
         course_id: int,
-        module_id: Optional[int] = None,
+        module_id: int | None = None,
         topic: str = "Computer Science Concepts",
         count: int = 3,
         difficulty: str = "Intermediate"
-    ) -> List[AISuggestionItem]:
+    ) -> list[AISuggestionItem]:
         """Generates dynamic candidate questions grounded in course chunks for the right-hand builder drawer."""
         # 1. Retrieve course context chunks
-        context_chunks: List[str] = []
+        context_chunks: list[str] = []
         try:
             results = await chroma_service.query_similar(course_id, topic, n_results=count + 2)
             docs = results.get("documents", [[]])[0]
@@ -67,12 +79,9 @@ No markdown formatting, no backticks. Pure JSON array only.
 """
                 resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 if isinstance(parsed, list) and len(parsed) >= 1:
                     items = []
@@ -98,10 +107,10 @@ No markdown formatting, no backticks. Pure JSON array only.
                 question_type="MCQ",
                 question_text=f"Which core architectural principle governs the operational efficiency of {topic}?",
                 options=[
-                    f"Strict invariant preservation guaranteeing bounded logarithmic/linear search",
-                    f"Arbitrary memory mutation without structural synchronization",
-                    f"Single-threaded sequential lookups across unindexed memory arrays",
-                    f"Deprecated legacy pointer structures unsuitable for concurrent access"
+                    "Strict invariant preservation guaranteeing bounded logarithmic/linear search",
+                    "Arbitrary memory mutation without structural synchronization",
+                    "Single-threaded sequential lookups across unindexed memory arrays",
+                    "Deprecated legacy pointer structures unsuitable for concurrent access"
                 ],
                 correct_answer="0",
                 explanation=f"{topic} relies on explicit ordering invariants to bound operational complexity.",
@@ -113,7 +122,7 @@ No markdown formatting, no backticks. Pure JSON array only.
                 question_type="SHORT_ANSWER",
                 question_text=f"Explain how pathological or skewed input sequences affect the worst-case time complexity of {topic}.",
                 options=None,
-                correct_answer=f"Skewed insertions eliminate balanced branching, causing tree or graph structures to degenerate into linear chains operating in O(N) time.",
+                correct_answer="Skewed insertions eliminate balanced branching, causing tree or graph structures to degenerate into linear chains operating in O(N) time.",
                 explanation=f"Balance preservation is essential in {topic} to prevent worst-case linear degradation.",
                 source_ref=f"{topic} Complexity Analysis, Page 3",
                 bloom_level="ANALYZE"
@@ -123,13 +132,13 @@ No markdown formatting, no backticks. Pure JSON array only.
                 question_type="MCQ",
                 question_text=f"When applying {topic} in production distributed systems, what is the primary engineering trade-off?",
                 options=[
-                    f"Guaranteed query latency vs write-time rebalancing/synchronization overhead",
-                    f"Zero CPU memory footprint vs infinite cache invalidations",
-                    f"Unlimited throughput with complete loss of consistency",
-                    f"Eliminating all algorithmic space complexity entirely"
+                    "Guaranteed query latency vs write-time rebalancing/synchronization overhead",
+                    "Zero CPU memory footprint vs infinite cache invalidations",
+                    "Unlimited throughput with complete loss of consistency",
+                    "Eliminating all algorithmic space complexity entirely"
                 ],
                 correct_answer="0",
-                explanation=f"Rebalancing and invariant checks require constant-time pointer updates during write operations.",
+                explanation="Rebalancing and invariant checks require constant-time pointer updates during write operations.",
                 source_ref=f"{topic} Applied Engineering Guide",
                 bloom_level="APPLY"
             )
@@ -139,7 +148,7 @@ No markdown formatting, no backticks. Pure JSON array only.
         self,
         exam_id: int,
         student_id: int,
-        responses: List[ExamSubmitItem],
+        responses: list[ExamSubmitItem],
         db: AsyncSession
     ) -> ExamSubmitResponse:
         """Evaluates student exam submission, calculates scores, and issues verified digital badge upon completion."""
@@ -275,11 +284,11 @@ No markdown formatting, no backticks. Pure JSON array only.
         self,
         course_id: int,
         module_id: int,
-        topic: Optional[str] = None,
+        topic: str | None = None,
         count: int = 4,
         difficulty: str = "Intermediate",
-        db: Optional[AsyncSession] = None
-    ) -> Dict[str, Any]:
+        db: AsyncSession | None = None
+    ) -> dict[str, Any]:
         """
         RAG-Powered Module MCQ Generation:
         1. Query vector embeddings strictly filtered by module_id.
@@ -288,7 +297,7 @@ No markdown formatting, no backticks. Pure JSON array only.
         4. Provide robust topic-aware fallback if LLM/vector store is unavailable.
         """
         sources_used = []
-        context_chunks: List[str] = []
+        context_chunks: list[str] = []
         module_title = f"Module {module_id}"
 
         # 1. Fetch DB ground truth for the module (topics, notes, title)
@@ -363,12 +372,9 @@ Each JSON object must have EXACTLY these fields:
 """
                 resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 if isinstance(parsed, list) and len(parsed) >= 1:
                     questions = []

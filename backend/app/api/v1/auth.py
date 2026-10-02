@@ -5,10 +5,19 @@ from sqlalchemy.future import select
 
 from app.core.database import get_db
 from app.core.security import (
-    verify_password, get_password_hash, create_access_token, get_current_user
+    create_access_token,
+    get_current_user,
+    get_password_hash,
+    verify_password,
 )
 from app.models.models import User
-from app.schemas.schemas import UserCreate, UserLogin, UserResponse, Token, UserProfileUpdate
+from app.schemas.schemas import (
+    Token,
+    UserCreate,
+    UserLogin,
+    UserProfileUpdate,
+    UserResponse,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 

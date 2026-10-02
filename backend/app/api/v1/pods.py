@@ -1,24 +1,40 @@
 import json
+import logging
 import re
 import secrets
-import logging
-from typing import List, Optional
 from datetime import datetime, timedelta, timezone
-import httpx
-from jose import jwt, JWTError
-from app.core.config import settings
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import HTMLResponse
+from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.core.database import get_db, AsyncSessionLocal
-from app.core.security import get_current_user, verify_password, get_password_hash
-from app.models.models import LearningPod, PodMessage, User, PodBlacklist, EducatorPodQuota
+from app.core.config import settings
+from app.core.database import AsyncSessionLocal, get_db
+from app.core.security import get_current_user, get_password_hash, verify_password
+from app.models.models import (
+    EducatorPodQuota,
+    LearningPod,
+    PodBlacklist,
+    PodMessage,
+    User,
+)
 from app.schemas.schemas import (
-    PodCreate, PodResponse, PodMessageSchema,
-    PodPasscodeVerifyRequest, PodPasscodeVerifyResponse,
-    PodEndRequest, PodEndResponse
+    PodCreate,
+    PodEndRequest,
+    PodEndResponse,
+    PodMessageSchema,
+    PodPasscodeVerifyRequest,
+    PodPasscodeVerifyResponse,
+    PodResponse,
 )
 from app.services.pod_service import pod_manager
 
@@ -55,14 +71,14 @@ def _pod_to_response(pod: LearningPod, host_name: str) -> PodResponse:
 
 
 
-@router.get("", response_model=List[PodResponse])
+@router.get("", response_model=list[PodResponse])
 async def list_pods(course_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """List all active learning pods for a specific course with host details and duration info."""
     now = datetime.now(timezone.utc)
     result = await db.execute(
         select(LearningPod).where(
             LearningPod.course_id == course_id,
-            LearningPod.is_active == True
+            LearningPod.is_active
         ).order_by(LearningPod.created_at.desc())
     )
     pods = result.scalars().all()
@@ -154,7 +170,7 @@ async def create_pod(
         existing_active = await db.execute(
             select(LearningPod).where(
                 LearningPod.kshetra_meeting_code == kshetra_code,
-                LearningPod.is_active == True
+                LearningPod.is_active
             )
         )
         if existing_active.scalars().first():
@@ -170,7 +186,7 @@ async def create_pod(
             existing_active = await db.execute(
                 select(LearningPod).where(
                     LearningPod.kshetra_meeting_code == candidate_code,
-                    LearningPod.is_active == True
+                    LearningPod.is_active
                 )
             )
             if not existing_active.scalars().first():
@@ -483,7 +499,7 @@ async def get_pod(pod_id: int, current_user: User = Depends(get_current_user), d
 @router.post("/{pod_id}/end", response_model=PodEndResponse)
 async def end_pod_for_everyone(
     pod_id: int,
-    req: Optional[PodEndRequest] = None,
+    req: PodEndRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -512,7 +528,7 @@ async def end_pod_for_everyone(
     )
 
 
-@router.get("/{pod_id}/messages", response_model=List[PodMessageSchema])
+@router.get("/{pod_id}/messages", response_model=list[PodMessageSchema])
 async def get_pod_messages(pod_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Retrieve message history for a learning pod."""
     result = await db.execute(
@@ -530,8 +546,8 @@ async def pod_websocket_endpoint(
     websocket: WebSocket,
     room_id: str,
     client_id: str = "guest",
-    token: Optional[str] = None,
-    passcode: Optional[str] = None
+    token: str | None = None,
+    passcode: str | None = None
 ):
     """WebSocket endpoint for WebRTC mesh signaling, live chat with @Tutor co-pilot, and host moderation."""
     # Always accept the websocket connection first so closing with custom close codes (4401-4410)
@@ -581,7 +597,7 @@ async def pod_websocket_endpoint(
                 select(LearningPod)
                 .where(
                     LearningPod.kshetra_meeting_code == clean_code,
-                    LearningPod.is_active == True
+                    LearningPod.is_active
                 )
                 .order_by(LearningPod.id.desc())
             )
