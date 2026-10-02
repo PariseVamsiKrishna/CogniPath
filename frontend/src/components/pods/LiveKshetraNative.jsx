@@ -507,15 +507,13 @@ export default function LiveKshetraNative({
       });
     }
 
-    // Only create transceivers if we are the INITIATOR (caller) and don't already have local tracks for that kind.
-    // Callee (answerer) gets transceivers created automatically by setRemoteDescription from the offer.
-    if (isInitiator) {
-      const existingTransceivers = pc.getTransceivers();
-      const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio' || t.sender.track?.kind === 'audio');
-      const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video' || t.sender.track?.kind === 'video');
-      if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
-      if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
-    }
+    // Always ensure both audio & video transceivers exist so remote media can be received
+    // and local media can be attached later via replaceTrack without needing offer/answer renegotiation!
+    const existingTransceivers = pc.getTransceivers();
+    const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio' || t.sender.track?.kind === 'audio');
+    const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video' || t.sender.track?.kind === 'video');
+    if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
+    if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
 
     // Receive remote tracks — build MediaStream manually for clean reference change
     pc.ontrack = (event) => {
@@ -887,14 +885,13 @@ export default function LiveKshetraNative({
     console.log(`[WebRTC] Media now ready — transmitting tracks to ${existingPcs.length} existing peer connection(s)`);
     existingPcs.forEach(([peerId, pc]) => {
       if (pc.connectionState === 'closed' || pc.connectionState === 'failed') return;
-      const senders = pc.getSenders();
+      const transceivers = pc.getTransceivers();
       tracks.forEach(async (track) => {
-        // Find existing sender matching this track kind (or an unassigned sender)
-        const sender = senders.find((s) => s.track && s.track.kind === track.kind) ||
-                       senders.find((s) => !s.track);
-        if (sender) {
+        // Find existing transceiver matching this track kind via its receiver track
+        const transceiver = transceivers.find((t) => t.receiver && t.receiver.track && t.receiver.track.kind === track.kind);
+        if (transceiver && transceiver.sender) {
           try {
-            await sender.replaceTrack(track);
+            await transceiver.sender.replaceTrack(track);
             console.log(`[WebRTC] replaceTrack (${track.kind}) succeeded for peer ${peerId}`);
           } catch (e) {
             console.warn('[WebRTC] replaceTrack error:', e);
