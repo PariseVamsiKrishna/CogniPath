@@ -4,13 +4,15 @@ import logging
 from typing import List, Optional
 from datetime import datetime, timedelta, timezone
 import httpx
+from jose import jwt, JWTError
+from app.core.config import settings
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
 from fastapi.responses import HTMLResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.core.database import get_db, AsyncSessionLocal
-from app.core.security import get_current_user
+from app.core.security import get_current_user, verify_password, get_password_hash
 from app.models.models import LearningPod, PodMessage, User, PodBlacklist, EducatorPodQuota
 from app.schemas.schemas import (
     PodCreate, PodResponse, PodMessageSchema,
@@ -456,34 +458,88 @@ async def pod_websocket_endpoint(
     websocket: WebSocket,
     room_id: str,
     client_id: str = "guest",
-    user_name: str = "Peer",
-    user_id: Optional[str] = None,
-    role: str = "STUDENT",
-    is_creator: Optional[str] = None
+    token: Optional[str] = None,
+    passcode: Optional[str] = None
 ):
     """WebSocket endpoint for WebRTC mesh signaling, live chat with @Tutor co-pilot, and host moderation."""
     room_key = str(room_id).strip()
-    is_creator_bool = str(is_creator).lower() in ("true", "1", "yes")
-
-    parsed_user_id = None
-    if user_id is not None and str(user_id).strip().isdigit():
-        parsed_user_id = int(str(user_id).strip())
-
     parsed_pod_id = int(room_key) if room_key.isdigit() else None
 
-    # Check blacklist before admitting
-    if parsed_pod_id and parsed_user_id:
-        async with AsyncSessionLocal() as check_session:
-            bl_res = await check_session.execute(
-                select(PodBlacklist).where(
-                    PodBlacklist.pod_id == parsed_pod_id,
-                    PodBlacklist.user_id == parsed_user_id
-                )
-            )
-            if bl_res.scalars().first():
-                await websocket.close(code=1008, reason="Blacklisted from pod")
-                return
+    if not token:
+        await websocket.close(code=4401, reason="Missing JWT token")
+        return
 
+    # Decode JWT
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        token_user_id = payload.get("sub")
+        if not token_user_id:
+            raise JWTError()
+    except JWTError:
+        await websocket.close(code=4401, reason="Invalid JWT token")
+        return
+
+    async with AsyncSessionLocal() as session:
+        # Load User
+        user_res = await session.execute(select(User).where(User.id == int(token_user_id)))
+        user = user_res.scalars().first()
+        if not user:
+            await websocket.close(code=4401, reason="User not found")
+            return
+
+        parsed_user_id = user.id
+        user_name = user.full_name or "Peer"
+        role = user.role
+
+        # Load Pod
+        if not parsed_pod_id:
+            await websocket.close(code=4404, reason="Pod ID invalid")
+            return
+            
+        pod_res = await session.execute(select(LearningPod).where(LearningPod.id == parsed_pod_id))
+        pod_obj = pod_res.scalars().first()
+        if not pod_obj:
+            await websocket.close(code=4404, reason="Pod not found")
+            return
+            
+        if not pod_obj.is_active or (pod_obj.expires_at and pod_obj.expires_at < datetime.now(timezone.utc)):
+            await websocket.close(code=4410, reason="Pod is ended or expired")
+            return
+
+        # Check Blacklist
+        bl_res = await session.execute(
+            select(PodBlacklist).where(
+                PodBlacklist.pod_id == parsed_pod_id,
+                PodBlacklist.user_id == parsed_user_id
+            )
+        )
+        if bl_res.scalars().first():
+            await websocket.close(code=4403, reason="Blacklisted from pod")
+            return
+
+        # Check Capacity
+        active_conns = pod_manager.active_connections.get(room_key, [])
+        if len(active_conns) >= pod_obj.max_peers:
+            await websocket.close(code=4409, reason="Pod is full")
+            return
+
+        # Check Passcode (only if not host)
+        is_creator_bool = (parsed_user_id == pod_obj.host_id)
+        # If user is educator and owns the course, they are also host
+        # (Assuming course check is done via course ownership but for now host_id is primary)
+        
+        if pod_obj.passcode_hash and not is_creator_bool:
+            if not passcode:
+                await websocket.close(code=4401, reason="Passcode required")
+                return
+            if not verify_password(passcode, pod_obj.passcode_hash):
+                await websocket.close(code=4401, reason="Invalid passcode")
+                return
+                
+        course_id = pod_obj.course_id
+        host_id = pod_obj.host_id
+
+    # Join the room
     await pod_manager.connect(
         pod_id=room_key,
         websocket=websocket,
@@ -493,16 +549,6 @@ async def pod_websocket_endpoint(
         role=role,
         is_creator=is_creator_bool
     )
-
-    course_id = 1
-    host_id = None
-    if parsed_pod_id:
-        async with AsyncSessionLocal() as session:
-            pod_res = await session.execute(select(LearningPod).where(LearningPod.id == parsed_pod_id))
-            pod_obj = pod_res.scalars().first()
-            if pod_obj:
-                course_id = pod_obj.course_id
-                host_id = pod_obj.host_id
 
     try:
         while True:
@@ -597,6 +643,7 @@ async def pod_websocket_endpoint(
                     })
 
             elif msg_type == "DENY_UNMUTE_PERMISSION":
+                if not is_creator_bool: continue
                 target_client_id = data.get("target_client_id") or data.get("targetUserId")
                 reason = data.get("reason", "Host denied unmute request")
                 if target_client_id:
@@ -606,6 +653,7 @@ async def pod_websocket_endpoint(
                     })
 
             elif msg_type == "MUTE_ALL":
+                if not is_creator_bool: continue
                 for cid, sock in list(pod_manager.peer_sockets.get(room_key, {}).items()):
                     if cid != client_id:
                         try:
@@ -639,6 +687,7 @@ async def pod_websocket_endpoint(
 
 
             elif msg_type == "DISABLE_VIDEO":
+                if not is_creator_bool: continue
                 target_client_id = data.get("target_client_id")
                 if target_client_id:
                     await pod_manager.send_to_client(room_key, target_client_id, {"type": "REMOTE_DISABLE_VIDEO"})
@@ -673,6 +722,7 @@ async def pod_websocket_endpoint(
                             pass
 
             elif msg_type == "END_POD_FOR_ALL":
+                if not is_creator_bool: continue
                 is_auth_host = (
                     parsed_user_id and (parsed_user_id == host_id or role == "EDUCATOR")
                 ) or pod_manager.pod_hosts.get(room_key) == client_id
