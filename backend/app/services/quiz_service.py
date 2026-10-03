@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 from datetime import datetime, timedelta, timezone
@@ -112,7 +113,8 @@ STRICT REQUIREMENTS:
 
 Return ONLY a valid JSON array of objects. Do not include markdown code block formatting (no ```json or ```).
 """
-                resp = rag_service._gemini_client.models.generate_content(
+                resp = await asyncio.to_thread(
+                    rag_service._gemini_client.models.generate_content,
                     model=settings.GEMINI_MODEL_NAME,
                     contents=prompt
                 )

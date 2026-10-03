@@ -1,3 +1,4 @@
+import asyncio
 import time
 import logging
 from typing import List, Dict, Any, Tuple
@@ -95,10 +96,11 @@ class RAGService:
                 system_prompt = SYSTEM_TUTOR_PROMPT.format(context_text=context_text)
                 prompt_content = f"{system_prompt}\n\nStudent Question: {query}\nTarget Response Language: {target_language}"
 
-                models_to_try = ["gemini-3.6-flash"]
+                models_to_try = [settings.GEMINI_MODEL_NAME, "gemini-2.0-flash", "gemini-1.5-flash"]
                 for m in models_to_try:
                     try:
-                        resp = self._gemini_client.models.generate_content(
+                        resp = await asyncio.to_thread(
+                            self._gemini_client.models.generate_content,
                             model=m,
                             contents=prompt_content
                         )

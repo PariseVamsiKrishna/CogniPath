@@ -101,6 +101,7 @@ export default function CourseWorkspace({
   const [examTimeLeft, setExamTimeLeft] = useState(900);
   const [submissionResult, setSubmissionResult] = useState(null);
   const [submittingExam, setSubmittingExam] = useState(false);
+  const [generatingExamRAG, setGeneratingExamRAG] = useState(false);
 
   // Educator Modals
   const [showExamBuilderModal, setShowExamBuilderModal] = useState(false);
@@ -266,6 +267,20 @@ export default function CourseWorkspace({
     setActiveTopic(null);
     setActiveResource(null);
     setActiveContentType('exam');
+  };
+
+  const handleGenerateExamRAG = async () => {
+    if (!currentModule || generatingExamRAG) return;
+    setGeneratingExamRAG(true);
+    try {
+      await coursesAPI.generateExamRAG(currentModule.id, { question_count: 5, difficulty: 'medium' });
+      await loadModuleExamData(currentModule);
+      alert('AI exam generated successfully! Students can now take it.');
+    } catch (err) {
+      alert('Failed to generate exam. Make sure documents are uploaded to this module.');
+    } finally {
+      setGeneratingExamRAG(false);
+    }
   };
 
   const toggleTopicCompleted = (topicId) => {

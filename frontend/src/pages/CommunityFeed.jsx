@@ -46,7 +46,7 @@ export default function CommunityFeed({
 
   // Community tab toggle
 
-  const [communityTab, setCommunityTab] = useState(my);
+  const [communityTab, setCommunityTab] = useState('my');
   // Active selected community (course)
   const [selectedCourseId, setSelectedCourseId] = useState(() => {
     if (courseId && allAvailableCourses.some((c) => c.id === courseId)) {
@@ -131,18 +131,9 @@ export default function CommunityFeed({
   // Load Channels & Messages for current active course
   useEffect(() => {
     fetchChannelsAndMessages();
-  }, [activeCourse.id]);
+  }, [activeCourse.id, activeChannelName]);
 
   const fetchChannelsAndMessages = async () => {
-    try {
-      const chans = await communitiesAPI.listChannels(activeCourse.id);
-      if (chans && chans.length > 0) {
-        setChannels(chans);
-      }
-    } catch (err) {
-      console.warn('Using default WhatsApp channels:', err);
-    }
-
     // Default curated announcement + discussion messages
     const defaultAnnouncements = [
       {
@@ -192,6 +183,27 @@ export default function CommunityFeed({
       }
     ];
 
+    try {
+      const chans = await communitiesAPI.listChannels(activeCourse.id);
+      if (chans && chans.length > 0) {
+        setChannels(chans);
+        // fetch messages for current channel
+        const activeChan = chans.find(c => c.name.toLowerCase() === activeChannelName) || chans[0];
+        if (activeChan) {
+          try {
+            const msgs = await communitiesAPI.listMessages(activeChan.id);
+            if (msgs && msgs.length > 0) {
+              // add channel_name for frontend filtering
+              setMessages(msgs.map(m => ({ ...m, channel_name: activeChan.name })));
+              return;
+            }
+          } catch (e) {}
+        }
+      }
+    } catch (err) {
+      console.warn('API unavailable, using demo messages:', err);
+    }
+    // Fallback to demo messages only if API fails or returns empty
     setMessages([...defaultAnnouncements, ...defaultDiscussions]);
   };
 
@@ -232,6 +244,7 @@ export default function CommunityFeed({
       const activeChan = channels.find((c) => c.name.toLowerCase() === activeChannelName) || channels[0];
       if (activeChan) {
         await communitiesAPI.postMessage(activeChan.id, content);
+        fetchChannelsAndMessages();
       }
     } catch (err) {
       // Handled cleanly with optimistic update

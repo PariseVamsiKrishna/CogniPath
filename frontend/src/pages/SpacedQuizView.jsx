@@ -149,6 +149,9 @@ export default function SpacedQuizView({
 
   const fetchCards = async () => {
     if (!activeCourse?.id) return;
+    setDynamicDeck(null);
+    setCardIndex(0);
+    setIsFlipped(false);
     setLoadingCards(true);
     try {
       const quizData = await quizzesAPI.generate(activeCourse.id, activeCourse.title + ' key concepts');
@@ -177,6 +180,9 @@ export default function SpacedQuizView({
     let isMounted = true;
     async function load() {
       if (!activeCourse?.id) return;
+      setDynamicDeck(null);
+      setCardIndex(0);
+      setIsFlipped(false);
       setLoadingCards(true);
       try {
         const quizData = await quizzesAPI.generate(activeCourse.id, activeCourse.title + ' key concepts');
@@ -218,7 +224,9 @@ export default function SpacedQuizView({
   useEffect(() => {
     setCardIndex(0);
     setIsFlipped(false);
-  }, [activeCourse.id]);
+    setReviewedCards({});
+    setDynamicDeck(null);
+  }, [activeCourse?.id]);
 
   const activeCard = currentDeck[cardIndex] || currentDeck[0];
 
