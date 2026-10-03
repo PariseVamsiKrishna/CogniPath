@@ -1,113 +1,106 @@
 import React, { useEffect, useRef, useState } from 'react';
-import mermaid from 'mermaid';
-import html2canvas from 'html2canvas';
-import { jsPDF } from 'jspdf';
 import { Download, X, Loader2, BrainCircuit } from 'lucide-react';
 import { socraticAPI } from '../services/api';
 
-mermaid.initialize({
-  startOnLoad: false,
-  theme: 'dark',
-  securityLevel: 'loose',
-});
+// NOTE: mermaid and jsPDF are loaded dynamically (lazy) to keep the main bundle small.
+// They are only fetched when the user actually opens the mindmap modal.
 
 export default function SocraticMindmap({ topic, onClose }) {
   const [loading, setLoading] = useState(true);
-  const [mapData, setMapData] = useState(null);
   const [svgContent, setSvgContent] = useState('');
   const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false);
   const containerRef = useRef(null);
 
   useEffect(() => {
+    let cancelled = false;
+
     async function loadMap() {
       try {
         setLoading(true);
+        setError('');
+
+        // Lazy-load mermaid so the main bundle stays small
+        const { default: mermaid } = await import('mermaid');
+        mermaid.initialize({ startOnLoad: false, theme: 'dark', securityLevel: 'loose' });
+
         const data = await socraticAPI.getMindmap(topic);
-        setMapData(data);
-        
-        // Render mermaid
-        if (data.mermaid_code) {
-          const { svg } = await mermaid.render('mermaid-svg-container-' + Date.now(), data.mermaid_code);
-          setSvgContent(svg);
+
+        if (cancelled) return;
+
+        if (data && data.mermaid_code) {
+          const id = 'cgp-mindmap-' + Date.now();
+          const { svg } = await mermaid.render(id, data.mermaid_code);
+          if (!cancelled) setSvgContent(svg);
+        } else {
+          setError('No mindmap data returned from server.');
         }
       } catch (err) {
-        setError('Failed to generate mindmap. Please try again.');
+        if (!cancelled) setError('Failed to generate mindmap. Please try again.');
       } finally {
-        setLoading(false);
+        if (!cancelled) setLoading(false);
       }
     }
+
     loadMap();
+    return () => { cancelled = true; };
   }, [topic]);
 
   const handleExportPDF = async () => {
-    if (!containerRef.current) return;
+    if (!containerRef.current || exporting) return;
+    setExporting(true);
     try {
-      // Create a wrapper div specifically for export to ensure layout is correct
-      const exportContainer = document.createElement('div');
-      exportContainer.style.backgroundColor = '#0A0D1C';
-      exportContainer.style.padding = '40px';
-      exportContainer.style.width = '1920px';
-      exportContainer.style.display = 'flex';
-      exportContainer.style.flexDirection = 'column';
-      exportContainer.style.alignItems = 'center';
-      
-      // Add Title
-      const titleEl = document.createElement('h1');
-      titleEl.style.color = '#ECEDF7';
-      titleEl.style.fontFamily = 'sans-serif';
-      titleEl.style.marginBottom = '20px';
-      titleEl.innerText = `${topic} - COGNIPATH AI Mindmap`;
-      exportContainer.appendChild(titleEl);
+      const [{ default: html2canvas }, { jsPDF }] = await Promise.all([
+        import('html2canvas'),
+        import('jspdf')
+      ]);
 
-      // Add SVG
-      const svgClone = containerRef.current.cloneNode(true);
-      exportContainer.appendChild(svgClone);
-      document.body.appendChild(exportContainer);
-
-      const canvas = await html2canvas(exportContainer, {
+      const canvas = await html2canvas(containerRef.current, {
         scale: 2,
         backgroundColor: '#0A0D1C',
-        logging: false
+        logging: false,
       });
-      
-      document.body.removeChild(exportContainer);
 
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF({
-        orientation: 'landscape',
+        orientation: canvas.width > canvas.height ? 'landscape' : 'portrait',
         unit: 'px',
-        format: [canvas.width, canvas.height]
+        format: [canvas.width / 2, canvas.height / 2],
       });
-      pdf.addImage(imgData, 'PNG', 0, 0, canvas.width, canvas.height);
+      pdf.addImage(imgData, 'PNG', 0, 0, canvas.width / 2, canvas.height / 2);
       pdf.save(`Mindmap_${topic.replace(/\s+/g, '_')}.pdf`);
     } catch (err) {
       console.error('PDF export failed:', err);
+    } finally {
+      setExporting(false);
     }
   };
 
   return (
     <div className="fixed inset-0 bg-[#0A0D1C]/90 backdrop-blur-sm z-50 flex items-center justify-center p-4">
       <div className="bg-[#12162B] border border-[#262C4C] rounded-2xl max-w-5xl w-full flex flex-col max-h-[90vh] shadow-2xl overflow-hidden">
-        
+
         {/* Header */}
-        <div className="flex items-center justify-between p-5 border-b border-[#262C4C] bg-[#0A0D1C]/50">
-          <div className="flex items-center gap-3">
-            <div className="h-10 w-10 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 flex items-center justify-center">
+        <div className="flex items-center justify-between p-5 border-b border-[#262C4C] bg-[#0A0D1C]/50 shrink-0">
+          <div className="flex items-center gap-3 min-w-0">
+            <div className="h-10 w-10 rounded-xl bg-purple-600/20 text-purple-400 border border-purple-500/30 flex items-center justify-center shrink-0">
               <BrainCircuit className="h-5 w-5" />
             </div>
-            <div>
-              <h2 className="text-xl font-bold text-[#ECEDF7] truncate">{topic}</h2>
-              <span className="text-[11px] text-purple-400 font-bold uppercase tracking-widest">AI Generated Socratic Knowledge Graph</span>
+            <div className="min-w-0">
+              <h2 className="text-lg font-bold text-[#ECEDF7] truncate">{topic}</h2>
+              <span className="text-[10px] text-purple-400 font-bold uppercase tracking-widest">AI Socratic Knowledge Graph</span>
             </div>
           </div>
-          
-          <div className="flex items-center gap-3">
-            {!loading && !error && (
-              <button 
+
+          <div className="flex items-center gap-2 shrink-0 ml-4">
+            {!loading && !error && svgContent && (
+              <button
                 onClick={handleExportPDF}
-                className="px-5 py-2.5 bg-gradient-to-r from-purple-600 to-[#8B7CFF] hover:from-purple-500 hover:to-indigo-500 text-white border border-purple-500/50 rounded-xl text-xs font-bold transition flex items-center gap-2 shadow-lg shadow-purple-500/20"
+                disabled={exporting}
+                className="px-4 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-300 border border-purple-500/40 rounded-xl text-xs font-bold transition flex items-center gap-2 disabled:opacity-50"
               >
-                <Download className="h-4 w-4" /> Export High-Res PDF
+                {exporting ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4" />}
+                {exporting ? 'Exporting...' : 'Export PDF'}
               </button>
             )}
             <button onClick={onClose} className="p-2.5 text-[#8A90B4] hover:text-white rounded-xl hover:bg-[#262C4C] transition">
@@ -116,25 +109,26 @@ export default function SocraticMindmap({ topic, onClose }) {
           </div>
         </div>
 
-        {/* Content Area */}
-        <div className="flex-1 overflow-auto p-8 flex flex-col items-center justify-center min-h-[500px]">
+        {/* Content */}
+        <div className="flex-1 overflow-auto p-6 flex flex-col items-center justify-center min-h-[400px]">
           {loading && (
-            <div className="flex flex-col items-center gap-5 text-[#8A90B4]">
+            <div className="flex flex-col items-center gap-4 text-[#8A90B4]">
               <Loader2 className="h-10 w-10 animate-spin text-purple-500" />
-              <p className="text-sm font-semibold">Synthesizing neural knowledge graph for {topic}...</p>
+              <p className="text-sm font-semibold">Synthesizing knowledge graph for <span className="text-purple-300">{topic}</span>...</p>
+              <p className="text-xs text-[#8A90B4]/60">Loading AI renderer...</p>
             </div>
           )}
 
           {error && (
-            <div className="text-rose-400 bg-rose-500/10 border border-rose-500/30 p-5 rounded-xl text-sm font-bold flex items-center gap-2">
-              <X className="h-5 w-5" /> {error}
+            <div className="text-rose-400 bg-rose-500/10 border border-rose-500/30 p-5 rounded-xl text-sm font-bold flex items-center gap-2 max-w-md text-center">
+              <X className="h-5 w-5 shrink-0" /> {error}
             </div>
           )}
 
           {!loading && !error && svgContent && (
-            <div 
+            <div
               ref={containerRef}
-              className="w-full flex justify-center items-center overflow-auto"
+              className="w-full flex justify-center items-start overflow-auto bg-[#0A0D1C] rounded-xl p-4 border border-[#262C4C]"
               dangerouslySetInnerHTML={{ __html: svgContent }}
             />
           )}
