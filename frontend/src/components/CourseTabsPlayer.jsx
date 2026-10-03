@@ -345,6 +345,17 @@ export default function CourseTabsPlayer({
   };
 
   const handleSelectTopic = (topic) => {
+    // EXAM GATE: Students must pass the module exam before accessing topics
+    if (!isEducator && currentModule?.module_exam_id) {
+      const passKey = `cgp_exam_passed_${user?.id}_${currentModule.id}`;
+      const passed = localStorage.getItem(passKey) === 'true';
+      if (!passed) {
+        alert('⚠️ Complete the module exam first to unlock topics in this module.');
+        setActiveTab('exam');
+        syncToURL(activeCourseId, activeModuleId, 'exam', null);
+        return;
+      }
+    }
     setActiveTopic(topic);
     syncToURL(activeCourseId, activeModuleId, 'video', topic.id);
   };
@@ -914,6 +925,8 @@ export default function CourseTabsPlayer({
                 {currentModule.topics.map((topic, tIdx) => {
                   const isSelected = activeTopic?.id === topic.id;
                   const isDone = completedTopics[topic.id];
+                  const isTopicLocked = !isEducator && currentModule?.module_exam_id &&
+                    localStorage.getItem(`cgp_exam_passed_${user?.id}_${currentModule.id}`) !== 'true';
                   return (
                     <button
                       key={topic.id}
@@ -921,10 +934,14 @@ export default function CourseTabsPlayer({
                       className={`flex items-center gap-2 px-3 py-1.5 rounded-xl text-xs font-bold whitespace-nowrap transition ${
                         isSelected
                           ? 'bg-indigo-600/30 border border-indigo-400 text-white'
+                          : isTopicLocked
+                          ? 'bg-[#0f1520] border border-[#1a2335] text-slate-600 cursor-not-allowed'
                           : 'bg-[#121826] hover:bg-[#182133] border border-[#20293d] text-slate-400 hover:text-slate-200'
                       }`}
                     >
-                      {isDone ? (
+                      {isTopicLocked ? (
+                        <Lock className="h-3.5 w-3.5 text-slate-600 shrink-0" />
+                      ) : isDone ? (
                         <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
                       ) : (
                         <Circle className="h-3.5 w-3.5 text-slate-500 shrink-0" />

@@ -239,6 +239,20 @@ export default function CourseWorkspace({
   // 2. TREE NAVIGATION HANDLERS (WITH AUTO-CLEANUP RULE)
   // ---------------------------------------------------------------------------
   const handleSelectTopic = (mod, topic) => {
+    // EXAM GATE: Students must pass the module exam before accessing topics (if exam exists)
+    if (!isEducator && !localEnrolled) {
+      // Not enrolled — CourseWorkspace already shows enroll CTA, nothing to gate
+    } else if (!isEducator && mod.module_exam_id) {
+      const passKey = `cgp_exam_passed_${user?.id}_${mod.id}`;
+      const passed = localStorage.getItem(passKey) === 'true';
+      if (!passed) {
+        // Redirect to exam view instead
+        alert('⚠️ Complete the module exam first to unlock topics in this module.');
+        handleSelectExam(mod);
+        return;
+      }
+    }
+
     // AUTO-CLEANUP RULE: Reset ephemeral supplementary video whenever topic changes
     setEphemeralSecondaryVideo(null);
 
@@ -394,6 +408,10 @@ export default function CourseWorkspace({
       setExamActive(false);
 
       if (result.passed) {
+        // Persist exam pass so topic navigation gating works across sessions
+        const passKey = `cgp_exam_passed_${user?.id}_${currentModule?.id}`;
+        localStorage.setItem(passKey, 'true');
+
         confetti({
           particleCount: 85,
           spread: 75,
