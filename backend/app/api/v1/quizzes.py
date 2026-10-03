@@ -95,7 +95,8 @@ async def submit_quiz_attempt(
     correct_count = 0
     total = len(questions)
     for q in questions:
-        user_choice = req.answers.get(q.id)
+        # JSON keys are always strings; q.id is int — check both to be safe
+        user_choice = req.answers.get(str(q.id)) if req.answers.get(str(q.id)) is not None else req.answers.get(q.id)
         if user_choice is not None and user_choice == q.correct_option_index:
             correct_count += 1
 
