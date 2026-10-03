@@ -251,10 +251,23 @@ export default function CommunityFeed({
     }
   };
 
-  const handleUpvote = (msgId) => {
+  const handleUpvote = async (msgId) => {
+    // Optimistic update first — instant feedback
     setMessages((prev) =>
       prev.map((m) => (m.id === msgId ? { ...m, upvotes: (m.upvotes || 0) + 1 } : m))
     );
+    // Demo/placeholder messages have small IDs (101, 201); real DB messages have large IDs
+    const isRealMessage = typeof msgId === 'number' && msgId >= 1000;
+    if (isRealMessage) {
+      try {
+        await communitiesAPI.upvote(msgId);
+      } catch (err) {
+        // Rollback on failure
+        setMessages((prev) =>
+          prev.map((m) => (m.id === msgId ? { ...m, upvotes: Math.max(0, (m.upvotes || 1) - 1) } : m))
+        );
+      }
+    }
   };
 
   // Owner Member Management Actions

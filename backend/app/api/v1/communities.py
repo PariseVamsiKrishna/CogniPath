@@ -93,6 +93,7 @@ async def post_community_message(
 @router.post("/messages/{message_id}/upvote")
 async def upvote_community_message(
     message_id: int,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Upvote a helpful student answer or explanation."""
@@ -101,7 +102,7 @@ async def upvote_community_message(
     if not message:
         raise HTTPException(status_code=404, detail="Message not found")
 
-    message.upvotes += 1
+    message.upvotes = (message.upvotes or 0) + 1
     await db.commit()
     return {"status": "success", "upvotes": message.upvotes}
 
