@@ -1,5 +1,4 @@
 import React, { useState, useRef, useEffect } from 'react';
-import SocraticMindmap from '../components/SocraticMindmap';
 import {
   Sparkles,
   Send,
@@ -27,7 +26,7 @@ import {
   Check,
   X
 } from 'lucide-react';
-import SocraticMindmap from ../components/SocraticMindmap;
+import SocraticMindmap from '../components/SocraticMindmap';
 import { tutorAPI, socraticAPI } from '../services/api';
 
 /**

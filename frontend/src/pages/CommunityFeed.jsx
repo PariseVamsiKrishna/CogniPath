@@ -45,8 +45,8 @@ export default function CommunityFeed({
   ];
 
   // Community tab toggle
-  const [communityTab, setCommunityTab] = useState('my');
 
+  const [communityTab, setCommunityTab] = useState(my);
   // Active selected community (course)
   const [selectedCourseId, setSelectedCourseId] = useState(() => {
     if (courseId && allAvailableCourses.some((c) => c.id === courseId)) {
@@ -109,7 +109,6 @@ export default function CommunityFeed({
     }
   };
 
-  const [communityTab, setCommunityTab] = useState('my'); // 'my' or 'discover'
 
   // Channels & Messages State
   const [channels, setChannels] = useState([
