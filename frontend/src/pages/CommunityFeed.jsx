@@ -44,6 +44,9 @@ export default function CommunityFeed({
     { id: 3, title: 'Web Development Fundamentals', code: 'CS301', educator_id: 2, educator_name: 'Dr. Aisha Khan' }
   ];
 
+  // Community tab toggle
+  const [communityTab, setCommunityTab] = useState('my');
+
   // Active selected community (course)
   const [selectedCourseId, setSelectedCourseId] = useState(() => {
     if (courseId && allAvailableCourses.some((c) => c.id === courseId)) {

@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from 'react';
 import {
   CheckCircle2,
+import { quizzesAPI } from ../services/api;
   Calendar,
   Zap,
   TrendingUp,
