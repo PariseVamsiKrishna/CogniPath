@@ -1,4 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
+import SocraticMindmap from '../components/SocraticMindmap';
 import {
   Sparkles,
   Send,
@@ -26,6 +27,7 @@ import {
   Check,
   X
 } from 'lucide-react';
+import SocraticMindmap from ../components/SocraticMindmap;
 import { tutorAPI, socraticAPI } from '../services/api';
 
 /**
@@ -170,6 +172,7 @@ export default function StudentPortal({
   const [isRecording, setIsRecording] = useState(false);
   const [expandedCitations, setExpandedCitations] = useState({});
   const [isSocraticMode, setIsSocraticMode] = useState(false);
+  const [showMindmap, setShowMindmap] = useState(false);
   const [quizAnswers, setQuizAnswers] = useState({});
   const messagesEndRef = useRef(null);
 
@@ -366,6 +369,16 @@ export default function StudentPortal({
             <BrainCircuit className={`h-3.5 w-3.5 ${isSocraticMode ? 'text-purple-400 animate-pulse' : 'text-[#8A90B4]'}`} />
             <span className="hidden sm:inline">Socratic:</span>
             <span>{isSocraticMode ? 'ON' : 'OFF'}</span>
+          </button>
+          
+          <button
+            type="button"
+            onClick={() => setShowMindmap(true)}
+            className="px-3 py-1.5 rounded-xl text-xs font-bold border border-[#262C4C] bg-[#171C36] hover:bg-[#202747] text-[#ECEDF7] transition flex items-center gap-1.5"
+            title="Generate AI Concept Mindmap"
+          >
+            <BrainCircuit className="h-3.5 w-3.5 text-[#8B7CFF]" />
+            <span className="hidden sm:inline">Mindmap</span>
           </button>
         </div>
       </div>
@@ -626,6 +639,13 @@ export default function StudentPortal({
           </button>
         </form>
       </div>
+
+      {showMindmap && (
+        <SocraticMindmap 
+          topic={activeCourse.title} 
+          onClose={() => setShowMindmap(false)} 
+        />
+      )}
     </div>
   );
 }
