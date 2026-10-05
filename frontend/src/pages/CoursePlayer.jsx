@@ -139,6 +139,7 @@ export default function CoursePlayer({
         onOpenCreateCourse={isEducator ? () => setShowCreateModal(true) : undefined}
         onOpenRateModal={handleOpenRateModal}
         onDeleteCourse={(course) => setCourseToDelete(course)}
+        onUnenrollCourse={(course) => setCourseToDelete(course)}
         onSelectRecommendedTopic={async (rec) => {
           if (!isEducator && !courses.some((c) => c.id === rec.course_id)) {
             if (onEnrollCourse) {
@@ -195,9 +196,9 @@ export default function CoursePlayer({
           onClose={() => setCourseToDelete(null)}
           course={courseToDelete}
           isEducator={isEducator}
-          isCreator={isEducator && (courseToDelete.educator_id === user?.id || !courseToDelete.educator_id)}
+          isCreator={courseToDelete && (user?.role === 'EDUCATOR' || user?.role === 'ADMIN') && courseToDelete.educator_id === user?.id}
           onConfirm={async (c) => {
-            const isCreator = isEducator && (c.educator_id === user?.id || !c.educator_id);
+            const isCreator = c && (user?.role === 'EDUCATOR' || user?.role === 'ADMIN') && c.educator_id === user?.id;
             if (isCreator && onDeleteCoursePermanently) {
               await onDeleteCoursePermanently(c.id);
             } else if (onUnenrollCourse) {

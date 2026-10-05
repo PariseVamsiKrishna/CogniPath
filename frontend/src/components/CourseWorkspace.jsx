@@ -102,6 +102,7 @@ export default function CourseWorkspace({
   const [submissionResult, setSubmissionResult] = useState(null);
   const [submittingExam, setSubmittingExam] = useState(false);
   const [generatingExamRAG, setGeneratingExamRAG] = useState(false);
+  const [creatingFinalExam, setCreatingFinalExam] = useState(false);
 
   // Educator Modals
   const [showExamBuilderModal, setShowExamBuilderModal] = useState(false);
@@ -294,6 +295,27 @@ export default function CourseWorkspace({
       alert('Failed to generate exam. Make sure documents are uploaded to this module.');
     } finally {
       setGeneratingExamRAG(false);
+    }
+  };
+
+  const handleCreateFinalExam = async () => {
+    if (creatingFinalExam) return;
+    setCreatingFinalExam(true);
+    try {
+      await examsAPI.create({
+        course_id: courseId,
+        module_id: null,
+        title: `Final Exam: ${hierarchy?.title || 'Course'}`,
+        exam_type: 'FINAL_EXAM',
+        time_limit_mins: 45,
+        passing_score: 70,
+        questions: []
+      });
+      alert('✅ Final course exam created! Use the Exam Builder to add questions.');
+    } catch (err) {
+      alert('Failed to create final exam.');
+    } finally {
+      setCreatingFinalExam(false);
     }
   };
 
@@ -880,13 +902,24 @@ export default function CourseWorkspace({
 
                     <div className="flex items-center gap-3">
                       {isEducator ? (
-                        <button
-                          onClick={() => setShowExamBuilderModal(true)}
-                          className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-2 shadow-md shadow-indigo-600/30"
-                        >
-                          <Sparkles className="h-4 w-4" />
-                          <span>Edit RAG Assessment</span>
-                        </button>
+                        <div className="flex items-center gap-2">
+                          <button
+                            onClick={() => setShowExamBuilderModal(true)}
+                            className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-2 shadow-md shadow-indigo-600/30"
+                          >
+                            <Sparkles className="h-4 w-4" />
+                            <span>Edit RAG Assessment</span>
+                          </button>
+                          {isEducator && (
+                            <button
+                              onClick={handleCreateFinalExam}
+                              disabled={creatingFinalExam}
+                              className="px-4 py-2 bg-amber-600/20 hover:bg-amber-600/30 text-amber-300 border border-amber-500/40 rounded-xl text-xs font-bold transition flex items-center gap-2 disabled:opacity-50"
+                            >
+                              {creatingFinalExam ? 'Creating...' : '🏆 Add Final Exam'}
+                            </button>
+                          )}
+                        </div>
                       ) : !examActive && !submissionResult ? (
                         <button
                           onClick={() => {

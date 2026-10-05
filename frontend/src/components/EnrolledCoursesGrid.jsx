@@ -47,7 +47,8 @@ export default function EnrolledCoursesGrid({
   onOpenExploreCatalog,
   onOpenCreateCourse,
   onOpenRateModal,
-  onDeleteCourse,
+  onDeleteCourse,      // permanent delete (educator/admin)
+  onUnenrollCourse,   // student unenroll (removes progress)
   onSelectRecommendedTopic,
   user
 }) {
@@ -165,7 +166,7 @@ export default function EnrolledCoursesGrid({
                 index={idx}
                 onSelectCourse={onSelectCourse}
                 onOpenRateModal={onOpenRateModal}
-                onDeleteCourse={user?.role === 'ADMIN' || course.educator_id === user?.id ? onDeleteCourse : (user?.role === 'STUDENT' ? onDeleteCourse : null)}
+                onDeleteCourse={isEducator ? null : onUnenrollCourse}
                 user={user}
               />
             ))}

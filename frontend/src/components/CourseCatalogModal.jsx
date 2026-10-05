@@ -33,6 +33,7 @@ export default function CourseCatalogModal({
   onOpenRateModal
 }) {
   const [courses, setCourses] = useState([]);
+  const [hiddenCount, setHiddenCount] = useState(0);
   const [searchQuery, setSearchQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [sortBy, setSortBy] = useState('rating'); // 'rating' | 'popular' | 'newest'
@@ -53,7 +54,8 @@ export default function CourseCatalogModal({
         category: selectedCategory !== 'All' ? selectedCategory : undefined,
         sort_by: sortBy
       });
-      setCourses(data || []);
+      setHiddenCount((data || []).filter(c => c.is_enrolled).length);
+      setCourses((data || []).filter(c => !c.is_enrolled));
     } catch (err) {
       console.error('Failed to explore courses:', err);
     } finally {
@@ -204,6 +206,10 @@ export default function CourseCatalogModal({
               </button>
             ))}
           </div>
+
+          {hiddenCount > 0 && (
+            <p className="text-xs text-slate-500 text-center mt-1">Already-enrolled courses are hidden. Visit your dashboard to continue them.</p>
+          )}
         </div>
 
         {/* Modal Main Content: Course Grid */}
