@@ -41,7 +41,8 @@ async def generate_spaced_quiz(
     await db.commit()
     await db.refresh(quiz)
 
-    questions_out = []
+    # Batch insert all questions — one flush to get IDs, one commit total
+    q_objects = []
     for q_data in raw_questions:
         q_obj = QuizQuestion(
             quiz_id=quiz.id,
@@ -51,18 +52,23 @@ async def generate_spaced_quiz(
             explanation=q_data["explanation"],
             source_chunk_ref=q_data["source_ref"]
         )
+        q_objects.append(q_obj)
         db.add(q_obj)
-        await db.commit()
-        await db.refresh(q_obj)
 
-        questions_out.append(QuizQuestionSchema(
-            id=q_obj.id,
-            question_text=q_obj.question_text,
-            options=json.loads(q_obj.options),
-            correct_option_index=q_obj.correct_option_index,
-            explanation=q_obj.explanation,
-            source_chunk_ref=q_obj.source_chunk_ref
-        ))
+    await db.flush()   # assigns IDs without committing
+    await db.commit()  # single commit for all questions
+
+    questions_out = [
+        QuizQuestionSchema(
+            id=q.id,
+            question_text=q.question_text,
+            options=json.loads(q.options),
+            correct_option_index=q.correct_option_index,
+            explanation=q.explanation,
+            source_chunk_ref=q.source_chunk_ref
+        )
+        for q in q_objects
+    ]
 
     return QuizResponse(
         id=quiz.id,
