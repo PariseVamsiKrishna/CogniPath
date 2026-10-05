@@ -1,5 +1,6 @@
 import os
 import json
+import logging
 import shutil
 from typing import List, Optional
 from datetime import datetime, timezone
@@ -16,6 +17,8 @@ from app.schemas.schemas import (
     AIEvaluationFeedback, RubricCriterion
 )
 from app.services.assignment_service import assignment_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assignments", tags=["Assignment Engine & AI Auto-Evaluation"])
 
@@ -112,6 +115,19 @@ async def submit_assignment(
     assignment = res.scalars().first()
     if not assignment:
         raise HTTPException(status_code=404, detail="Assignment not found")
+
+    # Block duplicate submissions — one submission per student per assignment
+    existing = await db.execute(
+        select(AssignmentSubmission).where(
+            AssignmentSubmission.assignment_id == assignment_id,
+            AssignmentSubmission.student_id == current_user.id
+        )
+    )
+    if existing.scalars().first():
+        raise HTTPException(
+            status_code=400,
+            detail="You have already submitted this assignment. Multiple submissions are not allowed."
+        )
 
     file_url = None
     extracted = submission_text or ""
