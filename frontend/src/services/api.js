@@ -287,8 +287,8 @@ export const tutorAPI = {
 };
 
 export const quizzesAPI = {
-  generate: async (courseId, topic) => {
-    const res = await apiClient.post(`/quizzes/generate?course_id=${courseId}&topic=${encodeURIComponent(topic)}`);
+  generate: async (courseId, topic, force = false) => {
+    const res = await apiClient.post(`/quizzes/generate?course_id=${courseId}&topic=${encodeURIComponent(topic)}&force_regenerate=${force}`);
     return res.data;
   },
   submit: async (quizId, answers, qualityRating = null) => {

@@ -23,6 +23,7 @@ router = APIRouter(prefix="/quizzes", tags=["Adaptive Spaced Quizzes"])
 async def generate_spaced_quiz(
     course_id: int,
     topic: str = "Trees & Search Algorithms",
+    force_regenerate: bool = False,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -33,7 +34,7 @@ async def generate_spaced_quiz(
     )
     quiz = existing_res.scalars().first()
 
-    if quiz:
+    if quiz and not force_regenerate:
         # Return existing questions (already stored)
         q_res = await db.execute(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id))
         existing_questions = q_res.scalars().all()
@@ -56,19 +57,33 @@ async def generate_spaced_quiz(
                 ]
             )
 
-    # No quiz found — generate fresh questions via AI
+    if quiz and force_regenerate:
+        # Delete old questions so we can regenerate fresh ones
+        await db.execute(
+            select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id)
+        )
+        old_qs = (await db.execute(
+            select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id)
+        )).scalars().all()
+        for oq in old_qs:
+            await db.delete(oq)
+        await db.commit()
+
+    # No quiz found (or force_regenerate) — generate fresh questions via AI
     raw_questions = await quiz_service.generate_concept_micro_quiz(course_id, topic, None)
 
-    quiz = Quiz(
-        course_id=course_id,
-        topic=topic,
-        title=f"Spaced Retention Check: {topic}",
-        difficulty_level="adaptive",
-        created_by=current_user.id
-    )
-    db.add(quiz)
-    await db.commit()
-    await db.refresh(quiz)
+    if not quiz:
+        quiz = Quiz(
+            course_id=course_id,
+            topic=topic,
+            title=f"Spaced Retention Check: {topic}",
+            difficulty_level="adaptive",
+            created_by=current_user.id
+        )
+        db.add(quiz)
+        await db.commit()
+        await db.refresh(quiz)
+
 
     # Batch insert all questions — one flush to get IDs, one commit total
     q_objects = []

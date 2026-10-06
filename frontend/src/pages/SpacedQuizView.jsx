@@ -147,14 +147,14 @@ export default function SpacedQuizView({
   const [loadingCards, setLoadingCards] = useState(false);
   const [dynamicDeck, setDynamicDeck] = useState(null);
 
-  const fetchCards = async () => {
+  const fetchCards = async (force = false) => {
     if (!activeCourse?.id) return;
     setDynamicDeck(null);
     setCardIndex(0);
     setIsFlipped(false);
     setLoadingCards(true);
     try {
-      const quizData = await quizzesAPI.generate(activeCourse.id, activeCourse.title + ' key concepts');
+      const quizData = await quizzesAPI.generate(activeCourse.id, activeCourse.title + ' key concepts', force);
       if (quizData && quizData.questions && quizData.questions.length > 0) {
         const cards = quizData.questions.map((q, i) => ({
           id: 'ai_' + i,
@@ -448,7 +448,7 @@ export default function SpacedQuizView({
                   <span className="text-xs font-bold text-[#8A90B4]">
                     Card {cardIndex + 1} of {currentDeck.length}
                   </span>
-                  <button onClick={fetchCards} className="text-xs font-bold text-[#8B7CFF] hover:text-[#ECEDF7] transition flex items-center gap-1">
+                  <button onClick={() => fetchCards(true)} className="text-xs font-bold text-[#8B7CFF] hover:text-[#ECEDF7] transition flex items-center gap-1">
                     <RotateCcw className="h-3 w-3" /> Regenerate Cards
                   </button>
                 </div>
