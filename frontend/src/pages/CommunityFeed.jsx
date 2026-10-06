@@ -117,6 +117,8 @@ export default function CommunityFeed({
   ]);
   const [activeChannelName, setActiveChannelName] = useState('announcements'); // 'announcements' or 'discussion'
   const [messages, setMessages] = useState([]);
+  const [upvotedMessages, setUpvotedMessages] = useState(new Set()); // tracks IDs already upvoted this session
+  const [upvotingId, setUpvotingId] = useState(null);               // blocks concurrent clicks
   const [inputMessage, setInputMessage] = useState('');
   const [searchFilter, setSearchFilter] = useState('');
 
@@ -252,22 +254,35 @@ export default function CommunityFeed({
   };
 
   const handleUpvote = async (msgId) => {
-    // Optimistic update first — instant feedback
+    // Guard: already upvoted this session OR API call in-flight → ignore
+    if (upvotedMessages.has(msgId) || upvotingId === msgId) return;
+
+    // Mark as upvoted immediately (prevents rapid re-clicks)
+    setUpvotedMessages((prev) => new Set([...prev, msgId]));
+    setUpvotingId(msgId);
+
+    // Optimistic update — instant feedback
     setMessages((prev) =>
       prev.map((m) => (m.id === msgId ? { ...m, upvotes: (m.upvotes || 0) + 1 } : m))
     );
-    // Demo/placeholder messages have small IDs (101, 201); real DB messages have large IDs
+
     const isRealMessage = typeof msgId === 'number' && msgId >= 1000;
     if (isRealMessage) {
       try {
         await communitiesAPI.upvote(msgId);
       } catch (err) {
-        // Rollback on failure
+        // Rollback count AND allow re-try by removing from upvoted set
         setMessages((prev) =>
           prev.map((m) => (m.id === msgId ? { ...m, upvotes: Math.max(0, (m.upvotes || 1) - 1) } : m))
         );
+        setUpvotedMessages((prev) => {
+          const next = new Set(prev);
+          next.delete(msgId);
+          return next;
+        });
       }
     }
+    setUpvotingId(null);
   };
 
   // Owner Member Management Actions
@@ -701,7 +716,12 @@ export default function CommunityFeed({
                         <button
                           type="button"
                           onClick={() => handleUpvote(m.id)}
-                          className="px-2.5 py-1 rounded-lg bg-[#171C36] hover:bg-[#202747] border border-[#262C4C] hover:border-[#25D366]/40 text-[#8A90B4] hover:text-[#25D366] text-[11px] font-semibold transition flex items-center gap-1.5"
+                          disabled={upvotedMessages.has(m.id) || upvotingId === m.id}
+                          className={`px-2.5 py-1 rounded-lg border text-[11px] font-semibold transition flex items-center gap-1.5
+                            ${upvotedMessages.has(m.id)
+                              ? 'bg-[#25D366]/10 border-[#25D366]/40 text-[#25D366] cursor-default'
+                              : 'bg-[#171C36] hover:bg-[#202747] border-[#262C4C] hover:border-[#25D366]/40 text-[#8A90B4] hover:text-[#25D366] cursor-pointer'
+                            }`}
                         >
                           <ThumbsUp className="h-3 w-3" />
                           <span>{m.upvotes || 0}</span>
