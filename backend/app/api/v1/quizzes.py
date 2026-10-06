@@ -27,7 +27,36 @@ async def generate_spaced_quiz(
     db: AsyncSession = Depends(get_db)
 ):
     """Generates an on-demand spaced-repetition micro-quiz for the student."""
-    # Create or reuse a micro-quiz for the topic using AI grounded in course context
+    # Reuse existing quiz for the same course+topic to avoid duplicate DB records
+    existing_res = await db.execute(
+        select(Quiz).where(Quiz.course_id == course_id, Quiz.topic == topic)
+    )
+    quiz = existing_res.scalars().first()
+
+    if quiz:
+        # Return existing questions (already stored)
+        q_res = await db.execute(select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id))
+        existing_questions = q_res.scalars().all()
+        if existing_questions:
+            return QuizResponse(
+                id=quiz.id,
+                course_id=quiz.course_id,
+                topic=quiz.topic,
+                title=quiz.title,
+                difficulty_level=quiz.difficulty_level,
+                questions=[
+                    QuizQuestionSchema(
+                        id=q.id,
+                        question_text=q.question_text,
+                        options=json.loads(q.options),
+                        correct_option_index=q.correct_option_index,
+                        explanation=q.explanation,
+                        source_chunk_ref=q.source_chunk_ref
+                    ) for q in existing_questions
+                ]
+            )
+
+    # No quiz found — generate fresh questions via AI
     raw_questions = await quiz_service.generate_concept_micro_quiz(course_id, topic, None)
 
     quiz = Quiz(

@@ -331,10 +331,21 @@ export default function CourseCatalogModal({
             <div className="py-16 text-center space-y-4">
               <BookOpen className="h-12 w-12 text-slate-600 mx-auto" />
               <div>
-                <h3 className="text-base font-bold text-white">No courses match your query</h3>
-                <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
-                  Try searching with different terms or selecting another category filter.
-                </p>
+                {hiddenCount > 0 && courses.length === 0 ? (
+                  <>
+                    <h3 className="text-base font-bold text-white">You're enrolled in everything!</h3>
+                    <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                      All available courses are already in your dashboard. Check back later for new courses.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <h3 className="text-base font-bold text-white">No courses match your query</h3>
+                    <p className="text-xs text-slate-400 mt-1 max-w-sm mx-auto">
+                      Try searching with different terms or selecting another category filter.
+                    </p>
+                  </>
+                )}
               </div>
               <button
                 onClick={() => {
