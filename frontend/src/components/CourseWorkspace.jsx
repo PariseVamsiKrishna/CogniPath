@@ -286,13 +286,21 @@ export default function CourseWorkspace({
 
   const handleGenerateExamRAG = async () => {
     if (!currentModule || generatingExamRAG) return;
+
+    // Preflight: warn if no documents uploaded — RAG will fail silently otherwise
+    const hasDocuments = currentModule.resources && currentModule.resources.length > 0;
+    if (!hasDocuments) {
+      alert('⚠️ No documents found in this module.\n\nPlease upload at least one PDF or document to the module first. The AI generates exam questions by reading your uploaded course material.');
+      return;
+    }
+
     setGeneratingExamRAG(true);
     try {
       await coursesAPI.generateExamRAG(currentModule.id, { question_count: 5, difficulty: 'medium' });
       await loadModuleExamData(currentModule);
-      alert('AI exam generated successfully! Students can now take it.');
+      alert('✅ AI exam generated successfully! Students can now take it.');
     } catch (err) {
-      alert('Failed to generate exam. Make sure documents are uploaded to this module.');
+      alert('❌ Failed to generate exam. The AI could not read the module documents. Try re-uploading the documents and try again.');
     } finally {
       setGeneratingExamRAG(false);
     }
