@@ -415,10 +415,10 @@ async def end_pod_for_everyone(
     if not pod:
         raise HTTPException(status_code=404, detail="Pod not found")
 
-    if pod.host_id != current_user.id and current_user.role != "EDUCATOR":
+    if pod.host_id != current_user.id and current_user.role != "ADMIN":
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the pod host or an educator can end this meeting for everyone."
+            detail="Only the pod host or an admin can end this meeting for everyone."
         )
 
     reason = req.reason if req and req.reason else "Session ended by meeting host"

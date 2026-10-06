@@ -427,6 +427,19 @@ async def rate_topic(
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
 
+    # Verify the user is enrolled in the course containing this topic
+    mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
+    mod = mod_res.scalars().first()
+    if mod:
+        enr_res = await db.execute(
+            select(Enrollment).where(
+                Enrollment.user_id == current_user.id,
+                Enrollment.course_id == mod.course_id
+            )
+        )
+        if not enr_res.scalars().first() and current_user.role not in ("EDUCATOR", "ADMIN"):
+            raise HTTPException(status_code=403, detail="You must be enrolled in this course to rate topics.")
+
     existing_res = await db.execute(
         select(TopicRating).where(
             TopicRating.topic_id == topic_id,
@@ -541,6 +554,17 @@ async def rate_course(
     course = c_res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+
+    # Only enrolled users (or educators/admins) can rate
+    if current_user.role not in ("EDUCATOR", "ADMIN"):
+        enr_res = await db.execute(
+            select(Enrollment).where(
+                Enrollment.user_id == current_user.id,
+                Enrollment.course_id == course_id
+            )
+        )
+        if not enr_res.scalars().first():
+            raise HTTPException(status_code=403, detail="You must be enrolled in this course to submit a rating.")
 
     existing_res = await db.execute(
         select(CourseRating).where(

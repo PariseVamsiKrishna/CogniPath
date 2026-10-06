@@ -29,6 +29,13 @@ async def upload_document(
     if not course:
         raise HTTPException(status_code=404, detail="Course does not exist.")
 
+    # Verify ownership: only the course's own educator (or admin) can upload
+    if current_user.role != "ADMIN" and course.educator_id != current_user.id:
+        raise HTTPException(
+            status_code=403,
+            detail="You can only upload documents to courses you created."
+        )
+
     # Validate file extension
     filename = file.filename
     ext = os.path.splitext(filename)[1].lower().replace(".", "")

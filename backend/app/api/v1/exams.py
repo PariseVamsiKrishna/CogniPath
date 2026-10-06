@@ -16,6 +16,20 @@ from app.services.exam_service import exam_service
 
 router = APIRouter(prefix="/exams", tags=["Dual-Engine Assessments (Exams & Quizzes)"])
 
+async def _assert_exam_owner(exam_id: int, current_user: User, db: AsyncSession) -> Exam:
+    """Raises 403 unless current_user owns the course the exam belongs to (or is ADMIN)."""
+    exam_res = await db.execute(select(Exam).where(Exam.id == exam_id))
+    exam = exam_res.scalars().first()
+    if not exam:
+        raise HTTPException(status_code=404, detail="Exam not found")
+    if current_user.role == "ADMIN":
+        return exam
+    course_res = await db.execute(select(Course).where(Course.id == exam.course_id))
+    course = course_res.scalars().first()
+    if not course or course.educator_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Only the course educator can modify this exam")
+    return exam
+
 @router.post("", response_model=ExamResponse, status_code=status.HTTP_201_CREATED)
 async def create_exam(
     req: ExamCreate,
@@ -113,9 +127,7 @@ async def add_question(
     db: AsyncSession = Depends(get_db)
 ):
     """Add a question (manual or pushed from AI suggestion drawer)."""
-    exam_res = await db.execute(select(Exam).where(Exam.id == exam_id))
-    if not exam_res.scalars().first():
-        raise HTTPException(status_code=404, detail="Exam not found")
+    await _assert_exam_owner(exam_id, current_user, db)
 
     # Determine next order index
     count_res = await db.execute(select(ExamQuestion).where(ExamQuestion.exam_id == exam_id))
@@ -154,6 +166,7 @@ async def drop_question(
     db: AsyncSession = Depends(get_db)
 ):
     """Remove/drop a question from the active exam builder."""
+    await _assert_exam_owner(exam_id, current_user, db)
     q_res = await db.execute(
         select(ExamQuestion).where(ExamQuestion.exam_id == exam_id, ExamQuestion.id == question_id)
     )
@@ -173,6 +186,7 @@ async def reorder_questions(
     db: AsyncSession = Depends(get_db)
 ):
     """Batch updates question order indices following drag-and-drop actions."""
+    await _assert_exam_owner(exam_id, current_user, db)
     for item in req.question_orders:
         q_res = await db.execute(
             select(ExamQuestion).where(ExamQuestion.exam_id == exam_id, ExamQuestion.id == item.question_id)

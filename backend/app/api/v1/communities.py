@@ -68,8 +68,22 @@ async def post_community_message(
     course_res = await db.execute(select(Course).where(Course.id == channel.course_id))
     course = course_res.scalars().first()
 
-    # WhatsApp-style rule: Only the community owner/admin can post in announcements!
+    # Check: user must be enrolled OR be the educator/admin of this course
     is_owner = (course and course.educator_id == current_user.id) or current_user.role == "ADMIN"
+    if not is_owner:
+        enroll_res = await db.execute(
+            select(Enrollment).where(
+                Enrollment.user_id == current_user.id,
+                Enrollment.course_id == channel.course_id
+            )
+        )
+        if not enroll_res.scalars().first():
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You must be enrolled in this course to post in its community."
+            )
+
+    # WhatsApp-style rule: Only the community owner/admin can post in announcements!
     if channel.name.lower() in ["announcements", "announcement"] and not is_owner:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
