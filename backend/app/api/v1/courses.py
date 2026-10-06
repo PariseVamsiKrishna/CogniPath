@@ -632,22 +632,33 @@ async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db
         select(Module).where(Module.course_id == course_id).order_by(Module.order_index.asc())
     )
     modules = m_res.scalars().all()
+    module_ids = [m.id for m in modules]
 
-    module_responses = []
-    for m in modules:
-        # Topics
+    # Bulk-fetch ALL topics and resources in 2 queries (eliminates N+1)
+    topics_map: dict[int, list] = {m.id: [] for m in modules}
+    resources_map: dict[int, list] = {m.id: [] for m in modules}
+
+    if module_ids:
         t_res = await db.execute(
-            select(Topic).where(Topic.module_id == m.id).order_by(Topic.order_index.asc())
+            select(Topic)
+            .where(Topic.module_id.in_(module_ids))
+            .order_by(Topic.module_id.asc(), Topic.order_index.asc())
         )
-        topics = t_res.scalars().all()
+        for t in t_res.scalars().all():
+            if t.module_id in topics_map:
+                topics_map[t.module_id].append(t)
 
-        # Resources
         r_res = await db.execute(
-            select(ModuleResource).where(ModuleResource.module_id == m.id).order_by(ModuleResource.id.asc())
+            select(ModuleResource)
+            .where(ModuleResource.module_id.in_(module_ids))
+            .order_by(ModuleResource.module_id.asc(), ModuleResource.id.asc())
         )
-        resources = r_res.scalars().all()
+        for r in r_res.scalars().all():
+            if r.module_id in resources_map:
+                resources_map[r.module_id].append(r)
 
-        module_responses.append(ModuleResponse(
+    module_responses = [
+        ModuleResponse(
             id=m.id,
             course_id=m.course_id,
             title=m.title,
@@ -656,9 +667,11 @@ async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db
             has_module_exam=bool(getattr(m, "has_module_exam", False)),
             module_exam_id=getattr(m, "module_exam_id", None),
             created_at=m.created_at,
-            topics=[TopicResponse.model_validate(t) for t in topics],
-            resources=[ModuleResourceResponse.model_validate(r) for r in resources]
-        ))
+            topics=[TopicResponse.model_validate(t) for t in topics_map[m.id]],
+            resources=[ModuleResourceResponse.model_validate(r) for r in resources_map[m.id]]
+        )
+        for m in modules
+    ]
 
     return CourseHierarchyResponse(
         id=course.id,
