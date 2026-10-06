@@ -171,7 +171,17 @@ async def submit_assignment(
         await db.commit()
         await db.refresh(sub)
     except Exception as e:
-        logger.warning(f"Auto-grading warning: {e}")
+        logger.exception(f"AI auto-grading failed for submission {sub.id}: {e}")
+        # Mark as GRADING_FAILED so it's visible — not stuck as PENDING forever
+        sub.status = "GRADING_FAILED"
+        sub.ai_feedback_json = json.dumps({
+            "overall_score": 0,
+            "rubric_feedback": [],
+            "general_feedback": "Automatic grading failed. The educator will review this submission manually.",
+            "improvement_suggestions": []
+        })
+        await db.commit()
+        await db.refresh(sub)
 
     fb = None
     if sub.ai_feedback_json:

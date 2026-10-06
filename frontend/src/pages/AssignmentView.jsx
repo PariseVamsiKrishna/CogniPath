@@ -318,6 +318,19 @@ export default function AssignmentView({
                AI AUTO-EVALUATION REPORT CARD
                ================================================================ */
             <div className="space-y-6 animate-fade-in">
+              {/* GRADING FAILED banner */}
+              {evaluationResult.status === 'GRADING_FAILED' && (
+                <div className="bg-red-950/40 border border-red-500/40 rounded-2xl p-5 flex items-start gap-3">
+                  <span className="text-2xl">⚠️</span>
+                  <div>
+                    <p className="text-sm font-bold text-red-300">Automatic Grading Failed</p>
+                    <p className="text-xs text-red-200/80 mt-1">
+                      The AI could not evaluate your submission — this usually happens when the grading service is busy.
+                      Your submission was saved successfully. Please contact your educator for manual review.
+                    </p>
+                  </div>
+                </div>
+              )}
               {/* Score Header Card */}
               <div className="bg-[#121826] rounded-2xl border border-emerald-500/30 p-6 space-y-4 shadow-2xl">
                 <div className="flex items-center justify-between">
