@@ -527,6 +527,7 @@ class CourseHierarchyResponse(BaseModel):
     educator_id: int
     created_at: datetime
     modules: List[ModuleResponse] = []
+    final_exam: Optional[Any] = None
 
     class Config:
         from_attributes = True

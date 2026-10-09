@@ -137,13 +137,14 @@ async def ensure_hierarchical_curriculum_data(db):
     e_check = await db.execute(select(Exam).where(Exam.course_id == c_id))
     if not e_check.scalars().first():
         logger.info(f"Seeding dual-engine exams for Course {c_id}...")
-        m1 = (await db.execute(select(Module).where(Module.course_id == c_id).order_by(Module.order_index.asc()))).scalars().first()
-        mod1_id = m1.id if m1 else None
+        m1 = (await db.execute(select(Module).where(Module.course_id == c_id, Module.order_index == 1))).scalars().first()
+        m2 = (await db.execute(select(Module).where(Module.course_id == c_id, Module.order_index == 2))).scalars().first()
 
         exam_quiz = Exam(
             course_id=c_id,
-            module_id=mod1_id,
+            module_id=m1.id if m1 else None,
             exam_type="MODULE_QUIZ",
+            scope="MODULE_END",
             title="Module 1: BST Invariants & Traversals Quiz",
             time_limit_mins=15,
             passing_score=60.0,
@@ -152,6 +153,11 @@ async def ensure_hierarchical_curriculum_data(db):
         db.add(exam_quiz)
         await db.commit()
         await db.refresh(exam_quiz)
+
+        if m1:
+            m1.module_exam_id = exam_quiz.id
+            m1.has_module_exam = True
+            await db.commit()
 
         eq1 = ExamQuestion(
             exam_id=exam_quiz.id,
@@ -186,11 +192,65 @@ async def ensure_hierarchical_curriculum_data(db):
         db.add_all([eq1, eq2, eq3])
         await db.commit()
 
+        # Module 2 Exam
+        if m2:
+            exam_m2 = Exam(
+                course_id=c_id,
+                module_id=m2.id,
+                exam_type="MODULE_QUIZ",
+                scope="MODULE_END",
+                title="Module 2: Tree Rotations & Balance Mastery Quiz",
+                time_limit_mins=15,
+                passing_score=60.0,
+                created_by=ed_id
+            )
+            db.add(exam_m2)
+            await db.commit()
+            await db.refresh(exam_m2)
+
+            m2.module_exam_id = exam_m2.id
+            m2.has_module_exam = True
+            await db.commit()
+
+            m2_q1 = ExamQuestion(
+                exam_id=exam_m2.id,
+                question_type="MCQ",
+                question_text="What is the primary condition that triggers an AVL tree rotation?",
+                options=json.dumps(["Balance factor becomes greater than +1 or less than -1", "Node has more than two children", "Tree height exceeds 10", "Leaf node is deleted"]),
+                correct_answer="0",
+                explanation="An AVL tree strictly preserves balance factors in {-1, 0, +1}.",
+                source_ref="CS101 Module 2 Notes",
+                order_index=1
+            )
+            m2_q2 = ExamQuestion(
+                exam_id=exam_m2.id,
+                question_type="MCQ",
+                question_text="Which rotation sequence resolves a Left-Right (LR) imbalance?",
+                options=json.dumps(["Left rotation on child, then Right rotation on parent", "Single Right rotation", "Single Left rotation", "Double Right rotation"]),
+                correct_answer="0",
+                explanation="An LR imbalance requires a left rotation on the left child followed by a right rotation on the parent.",
+                source_ref="CS101 Module 2 Notes",
+                order_index=2
+            )
+            m2_q3 = ExamQuestion(
+                exam_id=exam_m2.id,
+                question_type="MCQ",
+                question_text="What is the worst-case asymptotic search complexity in a Red-Black Tree?",
+                options=json.dumps(["O(log N)", "O(N)", "O(1)", "O(N^2)"]),
+                correct_answer="0",
+                explanation="Red-black trees guarantee strict O(log N) operations by preserving black height invariants.",
+                source_ref="CS101 Module 2 Notes",
+                order_index=3
+            )
+            db.add_all([m2_q1, m2_q2, m2_q3])
+            await db.commit()
+
         # Final Certification Exam
         exam_final = Exam(
             course_id=c_id,
             module_id=None,
             exam_type="FINAL_EXAM",
+            scope="FINAL_COURSE",
             title="CS101: Comprehensive Final Certification Exam",
             time_limit_mins=30,
             passing_score=70.0,
@@ -252,6 +312,263 @@ async def ensure_hierarchical_curriculum_data(db):
         )
         db.add_all([fq1, fq2, fq3, fq4, fq5])
         await db.commit()
+
+    # Seed AI201 (Course 2) curriculum if present
+    course_2 = (await db.execute(select(Course).where(Course.code == "AI201"))).scalars().first()
+    if course_2:
+        c2_id = course_2.id
+        c2_m_check = await db.execute(select(Module).where(Module.course_id == c2_id))
+        if not c2_m_check.scalars().first():
+            logger.info(f"Seeding hierarchical modules, topics, resources, and exams for Course {c2_id} (AI201)...")
+            ai_mod1 = Module(
+                course_id=c2_id,
+                title="Module 1: Foundations of Deep Learning & Backpropagation",
+                description="Master multi-layer perceptrons, non-linear activation functions, cost surfaces, and the calculus of backpropagation.",
+                order_index=1,
+                has_module_exam=True
+            )
+            db.add(ai_mod1)
+            await db.commit()
+            await db.refresh(ai_mod1)
+
+            t1 = Topic(
+                module_id=ai_mod1.id,
+                title="Perceptrons, Multi-Layer Feedforward Networks & Activations",
+                description="Explore artificial neurons, sigmoid/ReLU activation functions, and universal approximation theorems.",
+                youtube_url="https://www.youtube.com/watch?v=aircAruvnKk",
+                youtube_video_id="aircAruvnKk",
+                order_index=1
+            )
+            t2 = Topic(
+                module_id=ai_mod1.id,
+                title="Gradient Descent & The Mathematics of Backpropagation",
+                description="Step-by-step calculus derivation of chain rule gradients propagating error through hidden weight layers.",
+                youtube_url="https://www.youtube.com/watch?v=IHZwWFHWa-w",
+                youtube_video_id="IHZwWFHWa-w",
+                order_index=2
+            )
+            res1 = ModuleResource(
+                module_id=ai_mod1.id,
+                title="AI201 Lecture 01: Neural Networks & Backprop Reference Notes",
+                file_url="/uploads/CS101_Lecture_04_Trees_and_BST.pdf",
+                file_type="pdf",
+                is_view_only=True,
+                chunk_count=3
+            )
+            db.add_all([t1, t2, res1])
+            await db.commit()
+
+            ai_exam1 = Exam(
+                course_id=c2_id,
+                module_id=ai_mod1.id,
+                exam_type="MODULE_QUIZ",
+                scope="MODULE_END",
+                title="Module 1: Neural Networks & Backprop Mastery Quiz",
+                time_limit_mins=15,
+                passing_score=60.0,
+                created_by=ed_id
+            )
+            db.add(ai_exam1)
+            await db.commit()
+            await db.refresh(ai_exam1)
+
+            ai_mod1.module_exam_id = ai_exam1.id
+            await db.commit()
+
+            ai_eqs1 = [
+                ExamQuestion(
+                    exam_id=ai_exam1.id,
+                    question_type="MCQ",
+                    question_text="Why are non-linear activation functions (like ReLU or Sigmoid) essential in deep neural networks?",
+                    options=json.dumps(["Without non-linearity, multi-layer networks collapse mathematically into a single linear transformation", "They reduce memory consumption to zero", "They eliminate the need for weights", "They guarantee 100% training accuracy"]),
+                    correct_answer="0",
+                    explanation="A composition of linear functions is just another linear function. Non-linearities enable universal approximation of arbitrary functions.",
+                    source_ref="AI201 Module 1, Lecture 1",
+                    order_index=1
+                ),
+                ExamQuestion(
+                    exam_id=ai_exam1.id,
+                    question_type="MCQ",
+                    question_text="What mathematical rule underpins the backpropagation algorithm?",
+                    options=json.dumps(["The Chain Rule of Calculus", "Bayes Theorem", "L'Hopital's Rule", "Euclidean Distance Metric"]),
+                    correct_answer="0",
+                    explanation="Backpropagation computes partial derivatives of the loss with respect to weights using the chain rule.",
+                    source_ref="AI201 Module 1, Lecture 2",
+                    order_index=2
+                ),
+                ExamQuestion(
+                    exam_id=ai_exam1.id,
+                    question_type="MCQ",
+                    question_text="What problem in deep networks does the Rectified Linear Unit (ReLU) activation primarily help mitigate?",
+                    options=json.dumps(["Vanishing Gradient Problem in positive regimes", "Exploding Memory Allocation", "Matrix Inversion Divergence", "Overfitting on small datasets"]),
+                    correct_answer="0",
+                    explanation="ReLU has a constant derivative of 1 for positive inputs, preventing gradients from vanishing exponentially.",
+                    source_ref="AI201 Module 1, Lecture 1",
+                    order_index=3
+                )
+            ]
+            db.add_all(ai_eqs1)
+            await db.commit()
+
+            ai_mod2 = Module(
+                course_id=c2_id,
+                title="Module 2: Sequence Models & Transformer Attention Mechanisms",
+                description="Explore Recurrent Neural Networks, LSTMs, Scaled Dot-Product Self-Attention, and Transformer architectures.",
+                order_index=2,
+                has_module_exam=True
+            )
+            db.add(ai_mod2)
+            await db.commit()
+            await db.refresh(ai_mod2)
+
+            t3 = Topic(
+                module_id=ai_mod2.id,
+                title="Recurrent Neural Networks, LSTMs & Vanishing Gradients",
+                description="Understand sequential data modeling, hidden state recurrence, and gating units (forget, input, output).",
+                youtube_url="https://www.youtube.com/watch?v=LHXXI4-IEns",
+                youtube_video_id="LHXXI4-IEns",
+                order_index=1
+            )
+            t4 = Topic(
+                module_id=ai_mod2.id,
+                title="Transformer Self-Attention & Query-Key-Value Mechanics",
+                description="Demystify the Attention(Q, K, V) = softmax(QK^T / sqrt(d_k))V equation and multi-head parallel attention projections.",
+                youtube_url="https://www.youtube.com/watch?v=wjZofJX0v4U",
+                youtube_video_id="wjZofJX0v4U",
+                order_index=2
+            )
+            res2 = ModuleResource(
+                module_id=ai_mod2.id,
+                title="AI201 Lecture 02: Transformer Attention Architecture Notes",
+                file_url="/uploads/CS101_Lecture_04_Trees_and_BST.pdf",
+                file_type="pdf",
+                is_view_only=True,
+                chunk_count=3
+            )
+            db.add_all([t3, t4, res2])
+            await db.commit()
+
+            ai_exam2 = Exam(
+                course_id=c2_id,
+                module_id=ai_mod2.id,
+                exam_type="MODULE_QUIZ",
+                scope="MODULE_END",
+                title="Module 2: Attention & Transformers Mastery Quiz",
+                time_limit_mins=15,
+                passing_score=60.0,
+                created_by=ed_id
+            )
+            db.add(ai_exam2)
+            await db.commit()
+            await db.refresh(ai_exam2)
+
+            ai_mod2.module_exam_id = ai_exam2.id
+            await db.commit()
+
+            ai_eqs2 = [
+                ExamQuestion(
+                    exam_id=ai_exam2.id,
+                    question_type="MCQ",
+                    question_text="In the Scaled Dot-Product Attention formula Attention(Q,K,V) = softmax(QK^T / sqrt(d_k))V, what purpose does sqrt(d_k) scaling serve?",
+                    options=json.dumps(["Prevents dot products from growing excessively large and pushing the softmax into regions with vanishingly small gradients", "Normalizes the output tensor to zero mean", "Doubles the sequence length capacity", "Eliminates need for value projection"]),
+                    correct_answer="0",
+                    explanation="For large projection dimensions d_k, dot products grow large, causing softmax gradients to become dangerously small. Dividing by sqrt(d_k) stabilizes training.",
+                    source_ref="AI201 Module 2, Attention",
+                    order_index=1
+                ),
+                ExamQuestion(
+                    exam_id=ai_exam2.id,
+                    question_type="MCQ",
+                    question_text="What is the primary computational advantage of Transformers over standard Recurrent Neural Networks (RNNs)?",
+                    options=json.dumps(["Full parallelization across sequence tokens during training", "Zero matrix multiplications", "Inherent recurrence without positional encodings", "Fixed constant parameter count for any vocabulary size"]),
+                    correct_answer="0",
+                    explanation="Self-attention processes all sequence positions simultaneously rather than sequentially step-by-step.",
+                    source_ref="AI201 Module 2, Transformers",
+                    order_index=2
+                ),
+                ExamQuestion(
+                    exam_id=ai_exam2.id,
+                    question_type="MCQ",
+                    question_text="Why do Transformers require Positional Encodings?",
+                    options=json.dumps(["Because self-attention is permutation-invariant and has no inherent sense of token order", "To reduce training loss to exactly zero", "To compress sequence length", "To encrypt inputs"]),
+                    correct_answer="0",
+                    explanation="Self-attention computes token similarity without order awareness. Positional encodings inject sequence order information.",
+                    source_ref="AI201 Module 2, Encodings",
+                    order_index=3
+                )
+            ]
+            db.add_all(ai_eqs2)
+            await db.commit()
+
+            # Final Exam for AI201
+            ai_final = Exam(
+                course_id=c2_id,
+                module_id=None,
+                exam_type="FINAL_EXAM",
+                scope="FINAL_COURSE",
+                title="AI201: Comprehensive Deep Learning & Attention Certification Exam",
+                time_limit_mins=30,
+                passing_score=70.0,
+                created_by=ed_id
+            )
+            db.add(ai_final)
+            await db.commit()
+            await db.refresh(ai_final)
+
+            ai_final_qs = [
+                ExamQuestion(
+                    exam_id=ai_final.id,
+                    question_type="MCQ",
+                    question_text="What is the role of Keys (K), Queries (Q), and Values (V) in Multi-Head Self-Attention?",
+                    options=json.dumps(["Queries match with Keys to compute relevance weights that are used to average the Values", "Queries represent outputs, Keys are loss functions, Values are gradients", "Keys and Queries are identical linear constants that filter the dataset", "Values are discarded after computing Query dot products"]),
+                    correct_answer="0",
+                    explanation="Queries query the Keys to determine an attention score distribution, which weights the linear combination of Values.",
+                    source_ref="AI201 Final Exam",
+                    order_index=1
+                ),
+                ExamQuestion(
+                    exam_id=ai_final.id,
+                    question_type="MCQ",
+                    question_text="Which optimization algorithm adapts learning rates individually for each parameter using first and second gradient moments?",
+                    options=json.dumps(["Adam (Adaptive Moment Estimation)", "Vanilla Stochastic Gradient Descent (SGD)", "Linear Regression", "Bubble Sort"]),
+                    correct_answer="0",
+                    explanation="Adam computes adaptive learning rates using exponential moving averages of gradients and squared gradients.",
+                    source_ref="AI201 Final Exam",
+                    order_index=2
+                ),
+                ExamQuestion(
+                    exam_id=ai_final.id,
+                    question_type="MCQ",
+                    question_text="What is the primary function of Layer Normalization in Transformer blocks?",
+                    options=json.dumps(["Stabilizes activations across feature dimensions, facilitating smoother optimization and gradient flow", "Reduces parameter size by 50%", "Replaces the attention mechanism", "Eliminates all negative numbers"]),
+                    correct_answer="0",
+                    explanation="LayerNorm normalizes inputs across the hidden dimension per token, stabilizing deep Transformer training.",
+                    source_ref="AI201 Final Exam",
+                    order_index=3
+                ),
+                ExamQuestion(
+                    exam_id=ai_final.id,
+                    question_type="MCQ",
+                    question_text="In an LSTM cell, which gate decides what information to discard from the cell state?",
+                    options=json.dumps(["Forget Gate", "Input Gate", "Output Gate", "Modulation Gate"]),
+                    correct_answer="0",
+                    explanation="The forget gate applies a sigmoid layer to decide which historical memories to drop from the cell state.",
+                    source_ref="AI201 Final Exam",
+                    order_index=4
+                ),
+                ExamQuestion(
+                    exam_id=ai_final.id,
+                    question_type="MCQ",
+                    question_text="Why does Cross-Entropy loss work well with Softmax output layers for multi-class classification?",
+                    options=json.dumps(["Its gradient simplifies cleanly to (p - y), avoiding saturation slowdowns when errors are large", "It only outputs integers", "It guarantees zero training time", "It eliminates backpropagation"]),
+                    correct_answer="0",
+                    explanation="The derivative of cross-entropy combined with softmax yields linear error term (predicted - ground_truth).",
+                    source_ref="AI201 Final Exam",
+                    order_index=5
+                )
+            ]
+            db.add_all(ai_final_qs)
+            await db.commit()
 
     # 3. Rubric Assignment
     a_check = await db.execute(select(Assignment))

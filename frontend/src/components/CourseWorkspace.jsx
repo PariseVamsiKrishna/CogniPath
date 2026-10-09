@@ -103,6 +103,7 @@ export default function CourseWorkspace({
   const [submittingExam, setSubmittingExam] = useState(false);
   const [generatingExamRAG, setGeneratingExamRAG] = useState(false);
   const [creatingFinalExam, setCreatingFinalExam] = useState(false);
+  const [isFinalExam, setIsFinalExam] = useState(false);
 
   // Educator Modals
   const [showExamBuilderModal, setShowExamBuilderModal] = useState(false);
@@ -202,10 +203,10 @@ export default function CourseWorkspace({
 
   // Load Exam Data when Exam is Active
   useEffect(() => {
-    if (activeContentType === 'exam' && currentModule) {
+    if (activeContentType === 'exam' && !isFinalExam && currentModule) {
       loadModuleExamData(currentModule);
     }
-  }, [activeContentType, currentModule]);
+  }, [activeContentType, currentModule, isFinalExam]);
 
   const loadModuleExamData = async (mod) => {
     try {
@@ -240,21 +241,8 @@ export default function CourseWorkspace({
   // 2. TREE NAVIGATION HANDLERS (WITH AUTO-CLEANUP RULE)
   // ---------------------------------------------------------------------------
   const handleSelectTopic = (mod, topic) => {
-    // EXAM GATE: Students must pass the module exam before accessing topics (if exam exists)
-    if (!isEducator && !localEnrolled) {
-      // Not enrolled — CourseWorkspace already shows enroll CTA, nothing to gate
-    } else if (!isEducator && mod.module_exam_id) {
-      const passKey = `cgp_exam_passed_${user?.id}_${mod.id}`;
-      const passed = localStorage.getItem(passKey) === 'true';
-      if (!passed) {
-        // Redirect to exam view instead
-        alert('⚠️ Complete the module exam first to unlock topics in this module.');
-        handleSelectExam(mod);
-        return;
-      }
-    }
-
-    // AUTO-CLEANUP RULE: Reset ephemeral supplementary video whenever topic changes
+    // Reset state & auto-cleanup secondary media
+    setIsFinalExam(false);
     setEphemeralSecondaryVideo(null);
 
     setActiveModuleId(mod.id);
@@ -265,6 +253,7 @@ export default function CourseWorkspace({
 
   const handleSelectResource = (mod, res) => {
     // AUTO-CLEANUP RULE
+    setIsFinalExam(false);
     setEphemeralSecondaryVideo(null);
 
     setActiveModuleId(mod.id);
@@ -276,12 +265,52 @@ export default function CourseWorkspace({
 
   const handleSelectExam = (mod) => {
     // AUTO-CLEANUP RULE
+    setIsFinalExam(false);
     setEphemeralSecondaryVideo(null);
 
     setActiveModuleId(mod.id);
     setActiveTopic(null);
     setActiveResource(null);
     setActiveContentType('exam');
+  };
+
+  const handleSelectFinalExam = async (fExam) => {
+    setEphemeralSecondaryVideo(null);
+    setIsFinalExam(true);
+    setActiveModuleId(null);
+    setActiveTopic(null);
+    setActiveResource(null);
+    setActiveContentType('exam');
+    setExamActive(false);
+    setSubmissionResult(null);
+    setStudentAnswers({});
+
+    try {
+      setExamLoading(true);
+      if (fExam?.questions && fExam.questions.length > 0) {
+        setModuleExam(fExam);
+        setExamTimeLeft((fExam.time_limit_mins || 30) * 60);
+      } else if (fExam?.id) {
+        const fullData = await examsAPI.get(fExam.id);
+        setModuleExam(fullData);
+        setExamTimeLeft((fullData.time_limit_mins || 30) * 60);
+      } else {
+        const list = await examsAPI.listByCourse(courseId);
+        const finalE = list.find((e) => e.exam_type === 'FINAL_EXAM');
+        if (finalE) {
+          const fullData = await examsAPI.get(finalE.id);
+          setModuleExam(fullData);
+          setExamTimeLeft((fullData.time_limit_mins || 30) * 60);
+        } else {
+          setModuleExam(null);
+        }
+      }
+    } catch (err) {
+      console.error('Error loading course final exam:', err);
+      setModuleExam(fExam || null);
+    } finally {
+      setExamLoading(false);
+    }
   };
 
   const handleGenerateExamRAG = async () => {
@@ -438,13 +467,17 @@ export default function CourseWorkspace({
       setExamActive(false);
 
       if (result.passed) {
-        // Persist exam pass so topic navigation gating works across sessions
-        const passKey = `cgp_exam_passed_${user?.id}_${currentModule?.id}`;
-        localStorage.setItem(passKey, 'true');
+        if (isFinalExam) {
+          const passKey = `cgp_final_exam_passed_${user?.id}_${courseId}`;
+          localStorage.setItem(passKey, 'true');
+        } else if (currentModule) {
+          const passKey = `cgp_exam_passed_${user?.id}_${currentModule.id}`;
+          localStorage.setItem(passKey, 'true');
+        }
 
         confetti({
-          particleCount: 85,
-          spread: 75,
+          particleCount: 100,
+          spread: 80,
           origin: { y: 0.6 }
         });
       }
@@ -671,6 +704,9 @@ export default function CourseWorkspace({
           onSelectTopic={handleSelectTopic}
           onSelectResource={handleSelectResource}
           onSelectExam={handleSelectExam}
+          finalExam={hierarchy?.final_exam}
+          onSelectFinalExam={handleSelectFinalExam}
+          isFinalExamActive={activeContentType === 'exam' && isFinalExam}
           isOpen={isTreeSidebarOpen}
           onToggleSidebar={() => setIsTreeSidebarOpen((prev) => !prev)}
           isEducator={isEducator}
@@ -687,6 +723,61 @@ export default function CourseWorkspace({
 
         {/* 2. Center Viewport: Primary Media Stage & Injected Secondary Player */}
         <main className="flex-1 min-w-0 bg-[#090d16] flex flex-col overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-6">
+          {/* EMPTY CURRICULUM STATE (0 Modules) */}
+          {(!hierarchy?.modules || hierarchy.modules.length === 0) && (
+            <div className="max-w-xl mx-auto my-auto p-8 rounded-3xl bg-[#121826] border border-[#1e2638] text-center space-y-5 shadow-2xl">
+              <div className="h-16 w-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto shadow-inner">
+                <Layers className="h-8 w-8" />
+              </div>
+              <div className="space-y-2">
+                <h3 className="text-xl font-black text-white">Course Curriculum in Preparation</h3>
+                <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                  {isEducator
+                    ? 'This course has no modules yet. Add your first module to begin organizing video lectures, protected notes, and conceptual assessments.'
+                    : 'Your educator is currently setting up the curriculum for this course. Video lessons, reading materials, and assessments will appear here once published.'}
+                </p>
+              </div>
+              {isEducator && (
+                <button
+                  onClick={() => setShowAddModuleModal(true)}
+                  className="px-6 py-3 rounded-2xl bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 text-white text-xs font-bold transition shadow-xl shadow-indigo-600/30 inline-flex items-center gap-2"
+                >
+                  <Plus className="h-4 w-4" />
+                  <span>Create First Module</span>
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* EMPTY TOPIC STATE (Modules exist, video mode active, but no topic selected) */}
+          {hierarchy?.modules?.length > 0 && activeContentType === 'video' && !activeTopic && (
+            <div className="max-w-xl mx-auto my-auto p-8 rounded-3xl bg-[#121826] border border-[#1e2638] text-center space-y-4 shadow-xl">
+              <div className="h-14 w-14 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto">
+                <Youtube className="h-7 w-7 text-indigo-400" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-black text-white">No Lecture Topic Selected</h3>
+                <p className="text-xs text-slate-400 max-w-sm mx-auto">
+                  {isEducator
+                    ? 'Add a concept topic to this module or select an existing topic from the syllabus tree on the left.'
+                    : 'Choose a video lecture from the syllabus on the left to start watching.'}
+                </p>
+              </div>
+              {isEducator && currentModule && (
+                <button
+                  onClick={() => {
+                    setTargetModuleId(currentModule.id);
+                    setShowAddTopicModal(true);
+                  }}
+                  className="px-4 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition inline-flex items-center gap-1.5"
+                >
+                  <Plus className="h-3.5 w-3.5" />
+                  <span>Add Concept Video</span>
+                </button>
+              )}
+            </div>
+          )}
+
           {/* PRIMARY CONTENT: TOPIC VIDEO */}
           {activeContentType === 'video' && activeTopic && (
             <div className="space-y-6 max-w-5xl mx-auto w-full">
@@ -895,7 +986,7 @@ export default function CourseWorkspace({
                     <div>
                       <div className="flex items-center gap-2 mb-1">
                         <span className="text-[10px] uppercase font-extrabold px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                          {moduleExam.scope || 'Module End Assessment'}
+                          {isFinalExam ? 'Comprehensive Capstone Exam' : (moduleExam.scope || 'Module End Assessment')}
                         </span>
                         <span className="text-xs font-bold text-slate-400">
                           {moduleExam.questions?.length || 0} Questions
@@ -911,14 +1002,16 @@ export default function CourseWorkspace({
                     <div className="flex items-center gap-3">
                       {isEducator ? (
                         <div className="flex items-center gap-2">
-                          <button
-                            onClick={() => setShowExamBuilderModal(true)}
-                            className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-2 shadow-md shadow-indigo-600/30"
-                          >
-                            <Sparkles className="h-4 w-4" />
-                            <span>Edit RAG Assessment</span>
-                          </button>
-                          {isEducator && (
+                          {!isFinalExam && (
+                            <button
+                              onClick={() => setShowExamBuilderModal(true)}
+                              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-2 shadow-md shadow-indigo-600/30"
+                            >
+                              <Sparkles className="h-4 w-4" />
+                              <span>Edit RAG Assessment</span>
+                            </button>
+                          )}
+                          {!hierarchy?.final_exam && (
                             <button
                               onClick={handleCreateFinalExam}
                               disabled={creatingFinalExam}
@@ -973,7 +1066,7 @@ export default function CourseWorkspace({
                           </div>
                           <div>
                             <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded bg-emerald-500/20 text-emerald-300 border border-emerald-500/40">
-                              {submissionResult.passed ? 'PASSED • MODULE MASTERED' : 'NEEDS RETRY'}
+                              {submissionResult.passed ? (isFinalExam ? 'PASSED • COURSE CERTIFIED 🏆' : 'PASSED • MODULE MASTERED') : 'NEEDS RETRY'}
                             </span>
                             <h3 className="text-xl font-black text-white mt-1">
                               Score: {submissionResult.percentage}% ({submissionResult.score} Points)

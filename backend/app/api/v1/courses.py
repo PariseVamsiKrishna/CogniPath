@@ -673,6 +673,42 @@ async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db
         for m in modules
     ]
 
+    # Fetch final course certification exam if present
+    fe_res = await db.execute(
+        select(Exam).where(Exam.course_id == course_id, Exam.exam_type == "FINAL_EXAM")
+    )
+    final_exam = fe_res.scalars().first()
+    final_exam_data = None
+    if final_exam:
+        q_res = await db.execute(
+            select(ExamQuestion).where(ExamQuestion.exam_id == final_exam.id).order_by(ExamQuestion.order_index.asc())
+        )
+        fe_questions = q_res.scalars().all()
+        final_exam_data = {
+            "id": final_exam.id,
+            "course_id": final_exam.course_id,
+            "module_id": None,
+            "exam_type": final_exam.exam_type,
+            "scope": getattr(final_exam, "scope", "FINAL_COURSE") or "FINAL_COURSE",
+            "title": final_exam.title,
+            "time_limit_mins": final_exam.time_limit_mins,
+            "passing_score": final_exam.passing_score,
+            "created_at": final_exam.created_at,
+            "questions": [
+                {
+                    "id": q.id,
+                    "question_type": q.question_type,
+                    "question_text": q.question_text,
+                    "options": json.loads(q.options) if isinstance(q.options, str) else q.options,
+                    "correct_answer": q.correct_answer,
+                    "explanation": q.explanation,
+                    "source_ref": q.source_ref,
+                    "order_index": q.order_index
+                }
+                for q in fe_questions
+            ]
+        }
+
     return CourseHierarchyResponse(
         id=course.id,
         title=course.title,
@@ -683,7 +719,8 @@ async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db
         thumbnail_url=getattr(course, "thumbnail_url", None),
         educator_id=course.educator_id,
         created_at=course.created_at,
-        modules=module_responses
+        modules=module_responses,
+        final_exam=final_exam_data
     )
 
 

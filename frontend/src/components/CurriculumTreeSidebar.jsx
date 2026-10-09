@@ -25,6 +25,9 @@ export default function CurriculumTreeSidebar({
   onSelectTopic,
   onSelectResource,
   onSelectExam,
+  finalExam = null,
+  onSelectFinalExam,
+  isFinalExamActive = false,
   isOpen = true,
   onToggleSidebar,
   isEducator = false,
@@ -32,6 +35,7 @@ export default function CurriculumTreeSidebar({
   onUploadNotes,
   onAddModule
 }) {
+  const effectiveFinalExam = finalExam || hierarchy?.final_exam;
   // Expanded module accordion states (default all true)
   const [expandedModules, setExpandedModules] = useState(() => {
     const initial = {};
@@ -86,6 +90,24 @@ export default function CurriculumTreeSidebar({
                 </button>
               );
             })}
+
+            {/* Mini Icon for Final Exam */}
+            {effectiveFinalExam && (
+              <button
+                onClick={() => {
+                  onToggleSidebar();
+                  if (onSelectFinalExam) onSelectFinalExam(effectiveFinalExam);
+                }}
+                className={`h-9 w-9 rounded-xl flex items-center justify-center text-xs font-black transition ${
+                  isFinalExamActive
+                    ? 'bg-amber-500 text-slate-900 shadow-md shadow-amber-500/30'
+                    : 'bg-[#1a1728] text-amber-400 hover:text-white hover:bg-amber-600/30 border border-amber-500/30'
+                }`}
+                title="Course Final Certification Exam"
+              >
+                🏆
+              </button>
+            )}
           </div>
         </div>
 
@@ -308,6 +330,40 @@ export default function CurriculumTreeSidebar({
               </div>
             );
           })
+        )}
+
+        {/* Course Final Certification Exam Card */}
+        {effectiveFinalExam && (
+          <div
+            onClick={() => onSelectFinalExam && onSelectFinalExam(effectiveFinalExam)}
+            className={`rounded-2xl border p-3.5 cursor-pointer transition-all duration-200 mt-3 shadow-lg ${
+              isFinalExamActive
+                ? 'border-amber-500/70 bg-gradient-to-r from-amber-500/25 via-purple-600/25 to-indigo-600/25 text-white ring-1 ring-amber-500/40 shadow-amber-500/10'
+                : 'border-amber-500/30 bg-[#14121d]/90 hover:border-amber-500/60 hover:bg-[#1c182c]'
+            }`}
+          >
+            <div className="flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2.5 min-w-0">
+                <div className="h-8 w-8 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0 shadow-inner">
+                  <Award className="h-4 w-4" />
+                </div>
+                <div className="min-w-0">
+                  <div className="flex items-center gap-1.5">
+                    <span className="text-[10px] font-extrabold uppercase text-amber-400 tracking-wider">
+                      Capstone Exam
+                    </span>
+                    <Sparkles className="h-3 w-3 text-amber-400 shrink-0" />
+                  </div>
+                  <h4 className="text-xs font-black text-white truncate">
+                    {effectiveFinalExam.title || 'Course Final Certification Exam'}
+                  </h4>
+                </div>
+              </div>
+              <span className="text-[9px] font-black uppercase px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-300 border border-amber-500/30 shrink-0">
+                Certification
+              </span>
+            </div>
+          </div>
         )}
       </div>
     </aside>
