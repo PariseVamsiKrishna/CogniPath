@@ -138,40 +138,12 @@ export default function App() {
       }
     } catch (e) {}
 
-    // Initial role-based defaults for new sessions
-    if (currentUser.email === 'student@cognipath.edu') {
-      // Alex Kumar default demo enrollments (CS101 + DBMS)
-      const demoEnrolled = available.slice(0, 2).map((c, i) => ({
-        ...c,
-        progress_percentage: i === 0 ? 68 : 45,
-        is_enrolled: true
-      }));
-      setEnrolledCourses(demoEnrolled);
-      localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify(demoEnrolled));
-      if (demoEnrolled.length > 0) {
-        setSelectedCourseId(demoEnrolled[0].id);
-      } else {
-        setSelectedCourseId(null);
-      }
-    } else if (currentUser.role === 'EDUCATOR') {
-      // Educators only have their own authored courses
-      const eduCourses = (currentUser.email === 'teacher@cognipath.edu')
-        ? available.map((c) => ({ ...c, progress_percentage: 100, is_enrolled: true }))
-        : available
-            .filter((c) => c.educator_id === currentUser.id)
-            .map((c) => ({ ...c, progress_percentage: 100, is_enrolled: true }));
-      setEnrolledCourses(eduCourses);
-      if (eduCourses.length > 0) {
-        setSelectedCourseId(eduCourses[0].id);
-      } else {
-        setSelectedCourseId(null);
-      }
-    } else {
-      // Any new student starts with 0 enrolled courses so they can pick their own!
-      setEnrolledCourses([]);
-      setSelectedCourseId(null);
+    // No auto-enrollments: users start with 0 enrolled courses unless they enroll themselves
+    setEnrolledCourses([]);
+    setSelectedCourseId(null);
+    try {
       localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify([]));
-    }
+    } catch (e) {}
   };
 
   const handleEnrollCourse = async (courseId) => {
