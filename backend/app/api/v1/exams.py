@@ -199,18 +199,58 @@ async def reorder_questions(
     updated = await get_exam_details(exam_id, db)
     return updated.questions
 
+@router.put("/{exam_id}", response_model=ExamResponse)
+async def update_exam(
+    exam_id: int,
+    req: ExamCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Educator updates exam metadata and syncs question list."""
+    exam = await _assert_exam_owner(exam_id, current_user, db)
+    exam.title = req.title
+    exam.time_limit_mins = req.time_limit_mins
+    exam.passing_score = req.passing_score
+    if req.exam_type:
+        exam.exam_type = req.exam_type
+
+    if req.questions is not None:
+        # Clear previous questions and re-insert updated questions
+        old_qs = (await db.execute(select(ExamQuestion).where(ExamQuestion.exam_id == exam_id))).scalars().all()
+        for q in old_qs:
+            await db.delete(q)
+        await db.flush()
+
+        for idx, q in enumerate(req.questions):
+            q_obj = ExamQuestion(
+                exam_id=exam.id,
+                question_type=q.question_type or "MCQ",
+                question_text=q.question_text,
+                options=json.dumps(q.options) if q.options else None,
+                correct_answer=str(q.correct_answer),
+                explanation=q.explanation,
+                source_ref=q.source_ref,
+                order_index=q.order_index or (idx + 1)
+            )
+            db.add(q_obj)
+
+    await db.commit()
+    return await get_exam_details(exam.id, db)
+
 @router.post("/ai-suggest", response_model=AISuggestionResponse)
 async def get_ai_suggestions(
     req: AISuggestionRequest,
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
-    """Generates AI question suggestions for the two-column interactive exam builder drawer."""
+    """Generates AI question suggestions grounded in course video concepts and notes."""
     suggestions = await exam_service.generate_ai_suggestions(
         course_id=req.course_id,
         module_id=req.module_id,
         topic=req.topic or "Course Curriculum",
         count=req.count,
-        difficulty=req.difficulty
+        difficulty=req.difficulty,
+        db=db
     )
     return AISuggestionResponse(
         topic=req.topic or "Course Curriculum",

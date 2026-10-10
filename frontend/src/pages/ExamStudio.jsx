@@ -11,57 +11,106 @@ import {
   CheckCircle2,
   XCircle,
   RefreshCw,
-  HelpCircle,
   FileCheck,
   Save,
   BookOpen,
   Check,
   RotateCcw,
-  ArrowRight
+  ArrowRight,
+  X,
+  AlertCircle
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { examsAPI } from '../services/api';
+import { examsAPI, coursesAPI } from '../services/api';
 
 export default function ExamStudio({
   courseId = 1,
   user,
   onNavigateTab
 }) {
+  const isEducator = user?.role === 'EDUCATOR';
+
+  // Course Selector State
+  const [courses, setCourses] = useState([]);
+  const [selectedCourseId, setSelectedCourseId] = useState(courseId || 1);
+
+  // Exam List & Active Exam State
   const [exams, setExams] = useState([]);
   const [selectedExamId, setSelectedExamId] = useState(null);
   const [activeExam, setActiveExam] = useState(null);
   const [loading, setLoading] = useState(true);
 
   // Educator Builder State
-  const [isEditMode, setIsEditMode] = useState(user?.role === 'EDUCATOR');
+  const [isEditMode, setIsEditMode] = useState(isEducator);
   const [questions, setQuestions] = useState([]);
   const [aiSuggestions, setAiSuggestions] = useState([]);
   const [loadingAi, setLoadingAi] = useState(false);
   const [saveStatus, setSaveStatus] = useState('');
 
+  // Create Assessment Modal State
+  const [showCreateModal, setShowCreateModal] = useState(false);
+  const [newExamTitle, setNewExamTitle] = useState('');
+  const [newExamType, setNewExamType] = useState('MODULE_QUIZ');
+  const [newTimeLimit, setNewTimeLimit] = useState(15);
+  const [newPassingScore, setNewPassingScore] = useState(60);
+  const [autoGenerateAI, setAutoGenerateAI] = useState(true);
+  const [isCreatingExam, setIsCreatingExam] = useState(false);
+
+  // Manual Question Addition Modal State
+  const [showManualModal, setShowManualModal] = useState(false);
+  const [manualText, setManualText] = useState('');
+  const [manualOptions, setManualOptions] = useState(['', '', '', '']);
+  const [manualCorrect, setManualCorrect] = useState('0');
+  const [manualExplanation, setManualExplanation] = useState('');
+
   // Student Test Taking State
   const [studentAnswers, setStudentAnswers] = useState({}); // question_id -> option_index
   const [submissionResult, setSubmissionResult] = useState(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [timeLeftSecs, setTimeLeftSecs] = useState(1200);
+  const [timeLeftSecs, setTimeLeftSecs] = useState(900);
   const [testActive, setTestActive] = useState(false);
 
+  // 1. Fetch all available courses for dropdown
   useEffect(() => {
-    fetchExams();
-  }, [courseId]);
+    async function loadCourses() {
+      try {
+        const list = await coursesAPI.explore();
+        if (list && list.length > 0) {
+          setCourses(list);
+          if (!selectedCourseId) {
+            setSelectedCourseId(list[0].id);
+          }
+        }
+      } catch (e) {
+        console.warn('Courses load error:', e);
+      }
+    }
+    loadCourses();
+  }, []);
 
+  // 2. Fetch exams whenever selected course changes
+  useEffect(() => {
+    if (selectedCourseId) {
+      fetchExams(selectedCourseId);
+    }
+  }, [selectedCourseId]);
+
+  // 3. Load exam details when active exam selection changes
   useEffect(() => {
     if (selectedExamId) {
       loadExamDetails(selectedExamId);
+    } else {
+      setActiveExam(null);
+      setQuestions([]);
     }
   }, [selectedExamId]);
 
-  // Timer countdown
+  // 4. Timer countdown during student test
   useEffect(() => {
     let timer;
     if (testActive && timeLeftSecs > 0 && !submissionResult) {
       timer = setInterval(() => {
-        setTimeLeftSecs(t => {
+        setTimeLeftSecs((t) => {
           if (t <= 1) {
             handleAutoSubmit();
             return 0;
@@ -73,16 +122,22 @@ export default function ExamStudio({
     return () => clearInterval(timer);
   }, [testActive, timeLeftSecs, submissionResult]);
 
-  const fetchExams = async () => {
+  const fetchExams = async (cId) => {
     try {
       setLoading(true);
-      const data = await examsAPI.listByCourse(courseId);
-      setExams(data);
+      const data = await examsAPI.listByCourse(cId);
+      setExams(data || []);
       if (data && data.length > 0) {
         setSelectedExamId(data[0].id);
+      } else {
+        setSelectedExamId(null);
+        setActiveExam(null);
+        setQuestions([]);
       }
     } catch (err) {
       console.error('Failed to list exams:', err);
+      setExams([]);
+      setSelectedExamId(null);
     } finally {
       setLoading(false);
     }
@@ -93,7 +148,7 @@ export default function ExamStudio({
       const data = await examsAPI.get(examId);
       setActiveExam(data);
       setQuestions(data.questions || []);
-      setTimeLeftSecs((data.time_limit_mins || 20) * 60);
+      setTimeLeftSecs((data.time_limit_mins || 15) * 60);
       setStudentAnswers({});
       setSubmissionResult(null);
       setTestActive(false);
@@ -107,12 +162,14 @@ export default function ExamStudio({
     }
   };
 
-  const fetchAiSuggestions = async (topicTitle = 'Binary Search Trees') => {
+  // Generate MCQs from RAG video concepts & notes
+  const fetchAiSuggestions = async (topicTitle) => {
     try {
       setLoadingAi(true);
       const res = await examsAPI.suggestAI({
-        course_id: courseId,
-        topic: topicTitle,
+        course_id: selectedCourseId,
+        module_id: activeExam?.module_id || null,
+        topic: topicTitle || activeExam?.title || 'Course Concepts',
         count: 4,
         difficulty: 'Intermediate'
       });
@@ -126,8 +183,94 @@ export default function ExamStudio({
     }
   };
 
+  // Create New Assessment Flow
+  const handleCreateNewExam = async (e) => {
+    e.preventDefault();
+    if (!newExamTitle.trim()) return;
+
+    try {
+      setIsCreatingExam(true);
+      let initialQuestions = [];
+
+      // If auto-generate is enabled, fetch RAG questions immediately
+      if (autoGenerateAI) {
+        try {
+          const aiRes = await examsAPI.suggestAI({
+            course_id: selectedCourseId,
+            module_id: null,
+            topic: newExamTitle.trim(),
+            count: 4,
+            difficulty: 'Intermediate'
+          });
+          if (aiRes && aiRes.suggestions && aiRes.suggestions.length > 0) {
+            initialQuestions = aiRes.suggestions.map((s, idx) => ({
+              question_type: 'MCQ',
+              question_text: s.question_text,
+              options: s.options || ['Option A', 'Option B', 'Option C', 'Option D'],
+              correct_answer: String(s.correct_answer ?? '0'),
+              explanation: s.explanation || '',
+              source_ref: s.source_ref || newExamTitle.trim(),
+              order_index: idx + 1
+            }));
+          }
+        } catch (aiErr) {
+          console.warn('AI initial generation notice:', aiErr);
+        }
+      }
+
+      // Persist to Supabase
+      const created = await examsAPI.create({
+        course_id: selectedCourseId,
+        module_id: null,
+        title: newExamTitle.trim(),
+        exam_type: newExamType,
+        time_limit_mins: Number(newTimeLimit || 15),
+        passing_score: Number(newPassingScore || 60),
+        questions: initialQuestions
+      });
+
+      setShowCreateModal(false);
+      setNewExamTitle('');
+      await fetchExams(selectedCourseId);
+
+      if (created?.id) {
+        setSelectedExamId(created.id);
+        await loadExamDetails(created.id);
+      }
+    } catch (err) {
+      console.error('Failed to create assessment:', err);
+      alert(err.response?.data?.detail || 'Failed to create assessment.');
+    } finally {
+      setIsCreatingExam(false);
+    }
+  };
+
+  // Add Manual Question
+  const handleAddManualQuestion = (e) => {
+    e.preventDefault();
+    if (!manualText.trim()) return;
+
+    const newQ = {
+      id: `manual_${Date.now()}`,
+      question_type: 'MCQ',
+      question_text: manualText.trim(),
+      options: manualOptions.map((o, i) => o.trim() || `Option ${String.fromCharCode(65 + i)}`),
+      correct_answer: String(manualCorrect),
+      explanation: manualExplanation.trim() || 'Author verified explanation.',
+      source_ref: activeExam?.title || 'Educator Authored',
+      order_index: questions.length + 1
+    };
+
+    setQuestions((prev) => [...prev, newQ]);
+    setShowManualModal(false);
+    setManualText('');
+    setManualOptions(['', '', '', '']);
+    setManualCorrect('0');
+    setManualExplanation('');
+  };
+
   // Reordering Questions
-  const moveQuestion = async (index, direction) => {
+  const moveQuestion = (index, direction) => {
     const targetIdx = index + direction;
     if (targetIdx < 0 || targetIdx >= questions.length) return;
 
@@ -136,58 +279,72 @@ export default function ExamStudio({
     reordered[index] = reordered[targetIdx];
     reordered[targetIdx] = temp;
 
-    // Update order_index property
     const updated = reordered.map((q, idx) => ({ ...q, order_index: idx + 1 }));
     setQuestions(updated);
-
-    try {
-      const orders = updated
-        .filter(q => q.id)
-        .map(q => ({ question_id: q.id, order_index: q.order_index }));
-      await examsAPI.reorder(activeExam.id, orders);
-    } catch (err) {
-      console.error('Failed to save reorder:', err);
-    }
   };
 
   // Push AI suggestion into active questions
   const pushAiSuggestion = (suggestion, idx) => {
     const newQ = {
-      question_type: suggestion.question_type || 'MCQ',
+      id: `sug_${Date.now()}_${idx}`,
+      question_type: 'MCQ',
       question_text: suggestion.question_text,
-      options: suggestion.options || [],
-      correct_answer: suggestion.correct_answer || '0',
-      explanation: suggestion.explanation,
-      source_ref: suggestion.source_ref,
+      options: suggestion.options || ['Option A', 'Option B', 'Option C', 'Option D'],
+      correct_answer: String(suggestion.correct_answer ?? '0'),
+      explanation: suggestion.explanation || '',
+      source_ref: suggestion.source_ref || activeExam?.title || 'Course Material',
       order_index: questions.length + 1
     };
-    setQuestions(prev => [...prev, newQ]);
-    // Drop from suggestions list
-    setAiSuggestions(prev => prev.filter((_, i) => i !== idx));
+    setQuestions((prev) => [...prev, newQ]);
+    setAiSuggestions((prev) => prev.filter((_, i) => i !== idx));
   };
 
   // Drop AI suggestion
   const dropAiSuggestion = (idx) => {
-    setAiSuggestions(prev => prev.filter((_, i) => i !== idx));
+    setAiSuggestions((prev) => prev.filter((_, i) => i !== idx));
   };
 
   // Delete Question from Exam
   const deleteQuestion = (index) => {
-    setQuestions(prev => {
+    setQuestions((prev) => {
       const filtered = prev.filter((_, i) => i !== index);
       return filtered.map((q, idx) => ({ ...q, order_index: idx + 1 }));
     });
   };
 
-  // Save changes to active exam
+  // Real Save / Sync Exam to Backend
   const handleSaveExam = async () => {
+    if (!activeExam) return;
     try {
-      setSaveStatus('Saving changes...');
-      // Re-create or sync
-      setSaveStatus('Exam synchronized with live database!');
+      setSaveStatus('Saving changes to cloud...');
+
+      const formattedQuestions = questions.map((q, idx) => ({
+        question_type: 'MCQ',
+        question_text: q.question_text,
+        options: Array.isArray(q.options) ? q.options : ['Option A', 'Option B', 'Option C', 'Option D'],
+        correct_answer: String(q.correct_answer ?? '0'),
+        explanation: q.explanation || '',
+        source_ref: q.source_ref || activeExam.title,
+        order_index: idx + 1
+      }));
+
+      await examsAPI.update(activeExam.id, {
+        course_id: activeExam.course_id,
+        module_id: activeExam.module_id,
+        title: activeExam.title,
+        exam_type: activeExam.exam_type || 'MODULE_QUIZ',
+        time_limit_mins: Number(activeExam.time_limit_mins || 15),
+        passing_score: Number(activeExam.passing_score || 60),
+        questions: formattedQuestions
+      });
+
+      setSaveStatus('✅ Assessment saved successfully to cloud!');
       setTimeout(() => setSaveStatus(''), 2500);
+      await loadExamDetails(activeExam.id);
     } catch (err) {
-      setSaveStatus('Failed to save');
+      console.error('Failed to save exam:', err);
+      setSaveStatus('❌ Failed to save assessment');
+      setTimeout(() => setSaveStatus(''), 3000);
     }
   };
 
@@ -198,7 +355,7 @@ export default function ExamStudio({
       setIsSubmitting(true);
       const responses = Object.entries(studentAnswers).map(([qid, ansIdx]) => ({
         question_id: parseInt(qid),
-        selected_option: ansIdx
+        selected_option: String(ansIdx)
       }));
 
       const result = await examsAPI.submit(activeExam.id, responses);
@@ -213,7 +370,7 @@ export default function ExamStudio({
         });
       }
     } catch (err) {
-      alert('Error evaluating exam submission');
+      alert('Error evaluating exam submission: ' + (err.response?.data?.detail || err.message));
     } finally {
       setIsSubmitting(false);
     }
@@ -250,49 +407,105 @@ export default function ExamStudio({
           <div>
             <div className="flex items-center gap-2">
               <span className="text-[10px] uppercase font-black px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
-                Dual-Engine Assessment
+                Assessment Studio
               </span>
-              <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
-                {activeExam?.exam_type || 'MODULE_QUIZ'}
-              </span>
+              {activeExam && (
+                <span className="text-[10px] uppercase font-bold px-2 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                  {activeExam.exam_type || 'MODULE_QUIZ'}
+                </span>
+              )}
             </div>
-            <h1 className="text-lg font-black text-white">{activeExam?.title || 'Course Assessment'}</h1>
+            <h1 className="text-lg font-black text-white">{activeExam?.title || 'Course Assessments'}</h1>
           </div>
         </div>
 
         {/* Action Controls */}
         <div className="flex items-center gap-3">
-          {/* Exam Selector Dropdown */}
+          {/* Course Selector Dropdown */}
           <select
-            value={selectedExamId || ''}
-            onChange={(e) => setSelectedExamId(Number(e.target.value))}
-            className="px-3 py-2 rounded-xl bg-[#121826] border border-[#1e2638] text-xs font-bold text-slate-200 focus:outline-none focus:border-amber-500"
+            value={selectedCourseId}
+            onChange={(e) => setSelectedCourseId(Number(e.target.value))}
+            className="px-3 py-2 rounded-xl bg-[#121826] border border-[#1e2638] text-xs font-bold text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+            title="Select Course"
           >
-            {exams.map(ex => (
-              <option key={ex.id} value={ex.id}>
-                {ex.title} ({ex.questions?.length || 0} Qs)
+            {courses.map((c) => (
+              <option key={c.id} value={c.id}>
+                {c.code ? `${c.code}: ` : ''}{c.title}
               </option>
             ))}
           </select>
 
-          {/* Switch Mode Button */}
-          <button
-            onClick={() => {
-              setIsEditMode(!isEditMode);
-              if (!isEditMode && activeExam) {
-                fetchAiSuggestions(activeExam.title);
-              }
-            }}
-            className="px-3.5 py-2 rounded-xl bg-[#161e30] hover:bg-slate-700 text-slate-300 text-xs font-bold transition border border-[#232b3d] flex items-center gap-2"
-          >
-            <RotateCcw className="h-3.5 w-3.5 text-indigo-400" />
-            <span>{isEditMode ? 'Switch to Test-Taking Mode' : 'Switch to Builder Mode'}</span>
-          </button>
+          {/* Exam Selector Dropdown */}
+          {exams.length > 0 && (
+            <select
+              value={selectedExamId || ''}
+              onChange={(e) => setSelectedExamId(Number(e.target.value))}
+              className="px-3 py-2 rounded-xl bg-[#121826] border border-[#1e2638] text-xs font-bold text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
+              title="Select Assessment"
+            >
+              {exams.map((ex) => (
+                <option key={ex.id} value={ex.id}>
+                  {ex.title} ({ex.questions?.length || 0} Qs)
+                </option>
+              ))}
+            </select>
+          )}
+
+          {/* Educator: + Create New Assessment Button */}
+          {isEducator && (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:opacity-90 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-amber-500/20"
+            >
+              <Plus className="h-3.5 w-3.5" />
+              <span>Create Assessment</span>
+            </button>
+          )}
+
+          {/* Mode Switcher */}
+          {activeExam && (
+            <button
+              onClick={() => {
+                setIsEditMode(!isEditMode);
+                if (!isEditMode && activeExam) {
+                  fetchAiSuggestions(activeExam.title);
+                }
+              }}
+              className="px-3.5 py-2 rounded-xl bg-[#161e30] hover:bg-slate-700 text-slate-300 text-xs font-bold transition border border-[#232b3d] flex items-center gap-2"
+            >
+              <RotateCcw className="h-3.5 w-3.5 text-indigo-400" />
+              <span>{isEditMode ? 'Test-Taking Mode' : 'Builder Mode'}</span>
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Main Mode View */}
-      {isEditMode ? (
+      {/* Main Content Area */}
+      {exams.length === 0 ? (
+        /* Empty State */
+        <div className="flex-1 flex flex-col items-center justify-center p-8 text-center space-y-4">
+          <div className="h-16 w-16 rounded-2xl bg-amber-500/15 border border-amber-500/30 flex items-center justify-center text-amber-400">
+            <ClipboardCheck className="h-8 w-8" />
+          </div>
+          <div className="max-w-md space-y-1">
+            <h3 className="text-lg font-bold text-white">No Assessments Created Yet</h3>
+            <p className="text-xs text-slate-400">
+              {isEducator
+                ? 'Create a custom assessment or let AI generate multiple choice questions grounded in your course videos and lecture notes.'
+                : 'No published assessments for this course yet. Check back soon!'}
+            </p>
+          </div>
+          {isEducator && (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-amber-500 to-rose-600 hover:opacity-90 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/30"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Create First Assessment (with AI MCQs)</span>
+            </button>
+          )}
+        </div>
+      ) : isEditMode ? (
         /* ====================================================================
            EDUCATOR MODE: 2-COLUMN INTERACTIVE BUILDER + AI DRAWER
            ==================================================================== */
@@ -306,7 +519,7 @@ export default function ExamStudio({
                   <span>Active Assessment Items ({questions.length})</span>
                 </h2>
                 <p className="text-[11px] text-slate-400">
-                  Drag, reorder, or edit test questions. All changes are saved automatically.
+                  Multiple-choice questions grounded in curriculum concepts. Reorder, edit, or sync with cloud.
                 </p>
               </div>
 
@@ -315,11 +528,20 @@ export default function ExamStudio({
                   <span className="text-xs font-bold text-emerald-400 animate-fade-in">{saveStatus}</span>
                 )}
                 <button
+                  type="button"
+                  onClick={() => setShowManualModal(true)}
+                  className="px-3 py-1.5 rounded-lg bg-[#161e30] hover:bg-slate-700 text-slate-200 text-xs font-bold flex items-center gap-1.5 transition border border-[#232b3d]"
+                >
+                  <Plus className="h-3.5 w-3.5 text-cyan-400" />
+                  <span>Add Question</span>
+                </button>
+                <button
+                  type="button"
                   onClick={handleSaveExam}
-                  className="px-3 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold flex items-center gap-1.5 transition shadow-sm"
+                  className="px-3.5 py-1.5 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold flex items-center gap-1.5 transition shadow-sm"
                 >
                   <Save className="h-3.5 w-3.5" />
-                  <span>Sync Questions</span>
+                  <span>Save Assessment</span>
                 </button>
               </div>
             </div>
@@ -337,7 +559,7 @@ export default function ExamStudio({
                         {idx + 1}
                       </span>
                       <span className="text-[10px] font-extrabold uppercase px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">
-                        {q.question_type}
+                        MCQ
                       </span>
                       {q.source_ref && (
                         <span className="text-[10px] text-slate-400 truncate max-w-xs">
@@ -421,24 +643,25 @@ export default function ExamStudio({
                 </div>
                 <div>
                   <h3 className="text-xs font-black text-white">AI Suggestion Drawer</h3>
-                  <p className="text-[10px] text-slate-400">Gemini RAG Grounded</p>
+                  <p className="text-[10px] text-slate-400">Grounded in Video Lectures</p>
                 </div>
               </div>
 
               <button
                 onClick={() => fetchAiSuggestions(activeExam?.title)}
                 disabled={loadingAi}
-                className="p-1.5 rounded-lg bg-[#161e30] hover:bg-slate-700 text-slate-300 hover:text-white transition border border-[#232b3d] disabled:opacity-40"
-                title="Refresh Recommendations"
+                className="px-2.5 py-1.5 rounded-lg bg-[#161e30] hover:bg-slate-700 text-slate-300 hover:text-white transition border border-[#232b3d] disabled:opacity-40 text-xs font-semibold flex items-center gap-1.5"
+                title="Generate Fresh MCQs"
               >
-                <RefreshCw className={`h-3.5 w-3.5 ${loadingAi ? 'animate-spin text-purple-400' : ''}`} />
+                <RefreshCw className={`h-3 w-3 ${loadingAi ? 'animate-spin text-purple-400' : ''}`} />
+                <span>Generate</span>
               </button>
             </div>
 
             {loadingAi ? (
               <div className="flex-1 flex flex-col items-center justify-center p-8 gap-2 text-slate-400">
                 <div className="h-6 w-6 animate-spin rounded-full border-2 border-purple-500 border-t-transparent" />
-                <span className="text-xs font-semibold">Generating syllabus questions...</span>
+                <span className="text-xs font-semibold">Synthesizing lecture concepts...</span>
               </div>
             ) : (
               <div className="space-y-3 flex-1 overflow-y-auto">
@@ -449,22 +672,21 @@ export default function ExamStudio({
                   >
                     <div className="flex items-center justify-between">
                       <span className="text-[9px] uppercase font-black px-2 py-0.5 rounded bg-purple-500/10 text-purple-300 border border-purple-500/20">
-                        {item.bloom_level || 'UNDERSTAND'}
+                        {item.bloom_level || 'MCQ'}
                       </span>
-                      {/* Push / Drop Buttons */}
                       <div className="flex items-center gap-1">
                         <button
                           onClick={() => pushAiSuggestion(item, idx)}
                           className="px-2 py-1 rounded bg-indigo-600 hover:bg-indigo-500 text-white text-[10px] font-extrabold flex items-center gap-1 transition shadow-sm"
-                          title="Push into Exam"
+                          title="Add to Exam"
                         >
                           <Plus className="h-3 w-3" />
-                          <span>Push</span>
+                          <span>Add</span>
                         </button>
                         <button
                           onClick={() => dropAiSuggestion(idx)}
                           className="p-1 rounded bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition text-[10px]"
-                          title="Drop recommendation"
+                          title="Dismiss"
                         >
                           <Trash2 className="h-3 w-3" />
                         </button>
@@ -473,7 +695,7 @@ export default function ExamStudio({
 
                     <p className="text-xs font-bold text-white leading-relaxed">{item.question_text}</p>
 
-                    <div className="text-[10px] text-slate-400 line-clamp-2">
+                    <div className="text-[10px] text-slate-400">
                       <span className="font-semibold text-slate-300">Answer: </span>
                       {item.options ? item.options[parseInt(item.correct_answer)] || item.correct_answer : item.correct_answer}
                     </div>
@@ -486,7 +708,7 @@ export default function ExamStudio({
 
                 {aiSuggestions.length === 0 && (
                   <div className="text-center p-8 text-slate-500 text-xs font-semibold">
-                    No suggestions remaining. Click refresh to query Gemini for more syllabus questions!
+                    Click <strong>Generate</strong> to extract MCQs from course video concepts and notes.
                   </div>
                 )}
               </div>
@@ -594,13 +816,13 @@ export default function ExamStudio({
                 {q.options && (
                   <div className="space-y-2">
                     {q.options.map((opt, optIdx) => {
-                      const isSelected = studentAnswers[q.id] === optIdx;
+                      const isSelected = studentAnswers[q.id] === String(optIdx);
                       return (
                         <label
                           key={optIdx}
                           onClick={() => {
                             if (!submissionResult) {
-                              setStudentAnswers(prev => ({ ...prev, [q.id]: optIdx }));
+                              setStudentAnswers((prev) => ({ ...prev, [q.id]: String(optIdx) }));
                             }
                           }}
                           className={`flex items-center gap-3 p-3 rounded-xl border cursor-pointer transition text-xs font-semibold ${
@@ -630,13 +852,196 @@ export default function ExamStudio({
               <button
                 disabled={isSubmitting || questions.length === 0}
                 onClick={handleSubmitExam}
-                className="px-8 py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-white font-extrabold text-sm shadow-xl shadow-amber-500/20 disabled:opacity-50 transition flex items-center gap-2"
+                className="px-8 py-3.5 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:from-amber-400 hover:to-rose-500 text-white font-extrabold text-sm shadow-xl shadow-amber-500/20 disabled:opacity-50 transition flex items-center gap-2 cursor-pointer"
               >
                 {isSubmitting ? 'Evaluating Submission...' : 'Submit Assessment for Instant AI Grading'}
                 <ArrowRight className="h-4 w-4" />
               </button>
             </div>
           )}
+        </div>
+      )}
+
+      {/* Modal: Create Assessment */}
+      {showCreateModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-md bg-[#131927] border border-[#1e2638] rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-[#1e2638] pb-3">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <Sparkles className="h-4 w-4 text-amber-400" />
+                <span>Create New Assessment</span>
+              </h3>
+              <button onClick={() => setShowCreateModal(false)} className="text-slate-400 hover:text-white">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleCreateNewExam} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Assessment Title</label>
+                <input
+                  type="text"
+                  required
+                  value={newExamTitle}
+                  onChange={(e) => setNewExamTitle(e.target.value)}
+                  placeholder="e.g. Mid-Term Mastery Assessment"
+                  className="w-full bg-[#0b0f19] border border-[#1e2638] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">Scope</label>
+                  <select
+                    value={newExamType}
+                    onChange={(e) => setNewExamType(e.target.value)}
+                    className="w-full bg-[#0b0f19] border border-[#1e2638] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                  >
+                    <option value="MODULE_QUIZ">Module Quiz</option>
+                    <option value="FINAL_EXAM">Final Exam</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 mb-1">Time Limit (mins)</label>
+                  <input
+                    type="number"
+                    min="5"
+                    max="180"
+                    value={newTimeLimit}
+                    onChange={(e) => setNewTimeLimit(Number(e.target.value))}
+                    className="w-full bg-[#0b0f19] border border-[#1e2638] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Passing Threshold (%)</label>
+                <input
+                  type="number"
+                  min="30"
+                  max="100"
+                  value={newPassingScore}
+                  onChange={(e) => setNewPassingScore(Number(e.target.value))}
+                  className="w-full bg-[#0b0f19] border border-[#1e2638] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500"
+                />
+              </div>
+
+              <label className="flex items-center gap-2 cursor-pointer p-3 rounded-xl bg-purple-500/10 border border-purple-500/30 text-xs">
+                <input
+                  type="checkbox"
+                  checked={autoGenerateAI}
+                  onChange={(e) => setAutoGenerateAI(e.target.checked)}
+                  className="rounded text-purple-600 focus:ring-purple-500"
+                />
+                <span className="text-purple-200 font-semibold">
+                  Auto-generate 4 MCQs from course video concepts using RAG
+                </span>
+              </label>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#1e2638]">
+                <button
+                  type="button"
+                  onClick={() => setShowCreateModal(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={isCreatingExam || !newExamTitle.trim()}
+                  className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:opacity-90 disabled:opacity-40 text-white font-bold text-xs"
+                >
+                  {isCreatingExam ? 'Creating & Generating...' : 'Create Assessment'}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Modal: Add Manual Question */}
+      {showManualModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="w-full max-w-lg bg-[#131927] border border-[#1e2638] rounded-2xl p-6 shadow-2xl space-y-4">
+            <div className="flex items-center justify-between border-b border-[#1e2638] pb-3">
+              <h3 className="text-base font-bold text-white flex items-center gap-2">
+                <BookOpen className="h-4 w-4 text-cyan-400" />
+                <span>Add Question to Assessment</span>
+              </h3>
+              <button onClick={() => setShowManualModal(false)} className="text-slate-400 hover:text-white">
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+
+            <form onSubmit={handleAddManualQuestion} className="space-y-4">
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Question Prompt</label>
+                <textarea
+                  rows={2}
+                  required
+                  value={manualText}
+                  onChange={(e) => setManualText(e.target.value)}
+                  placeholder="e.g. What is the time complexity of searching in a balanced BST?"
+                  className="w-full bg-[#0b0f19] border border-[#1e2638] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500 resize-none"
+                />
+              </div>
+
+              <div className="space-y-2">
+                <label className="block text-xs font-semibold text-slate-300">Options (Select radio for correct answer)</label>
+                {manualOptions.map((opt, i) => (
+                  <div key={i} className="flex items-center gap-2">
+                    <input
+                      type="radio"
+                      name="correctOption"
+                      checked={manualCorrect === String(i)}
+                      onChange={() => setManualCorrect(String(i))}
+                      className="text-emerald-500 focus:ring-emerald-400"
+                    />
+                    <input
+                      type="text"
+                      required
+                      value={opt}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setManualOptions((prev) => prev.map((o, idx) => (idx === i ? val : o)));
+                      }}
+                      placeholder={`Option ${String.fromCharCode(65 + i)}`}
+                      className="flex-1 bg-[#0b0f19] border border-[#1e2638] rounded-lg px-2.5 py-1.5 text-xs text-white focus:outline-none focus:border-indigo-500"
+                    />
+                  </div>
+                ))}
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Explanation (Optional)</label>
+                <input
+                  type="text"
+                  value={manualExplanation}
+                  onChange={(e) => setManualExplanation(e.target.value)}
+                  placeholder="Why is this option correct?"
+                  className="w-full bg-[#0b0f19] border border-[#1e2638] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-indigo-500"
+                />
+              </div>
+
+              <div className="flex items-center justify-end gap-2 pt-2 border-t border-[#1e2638]">
+                <button
+                  type="button"
+                  onClick={() => setShowManualModal(false)}
+                  className="px-4 py-2 rounded-xl text-xs font-bold text-slate-400 hover:text-white"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="submit"
+                  disabled={!manualText.trim()}
+                  className="px-5 py-2 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white font-bold text-xs"
+                >
+                  Add Question
+                </button>
+              </div>
+            </form>
+          </div>
         </div>
       )}
     </div>

@@ -351,8 +351,6 @@ export default function JourneyTrackCard({
 
         <div className="flex items-center gap-2 shrink-0">
           {onDeleteCourse && (
-            (user?.role === 'ADMIN' || (user?.role === 'EDUCATOR' && course.educator_id === user?.id))
-          ) && (
             <button
               type="button"
               onClick={(e) => {
@@ -363,7 +361,9 @@ export default function JourneyTrackCard({
               title={
                 user?.role === 'STUDENT' 
                   ? 'Drop Course (Unenroll)' 
-                  : 'Permanently Delete Course'
+                  : (user?.role === 'ADMIN' || course.educator_id === user?.id)
+                    ? 'Permanently Delete Course'
+                    : 'Remove Course'
               }
             >
               <Trash2 className="h-3.5 w-3.5" />

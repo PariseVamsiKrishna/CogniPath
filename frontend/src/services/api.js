@@ -191,6 +191,10 @@ export const examsAPI = {
     const res = await apiClient.post('/exams', examData);
     return res.data;
   },
+  update: async (examId, examData) => {
+    const res = await apiClient.put(`/exams/${examId}`, examData);
+    return res.data;
+  },
   get: async (examId) => {
     const res = await apiClient.get(`/exams/${examId}`);
     return res.data;

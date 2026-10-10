@@ -1,3 +1,4 @@
+import asyncio
 import json
 import hashlib
 import logging
@@ -26,12 +27,40 @@ class ExamService:
         course_id: int,
         module_id: Optional[int] = None,
         topic: str = "Computer Science Concepts",
-        count: int = 3,
-        difficulty: str = "Intermediate"
+        count: int = 4,
+        difficulty: str = "Intermediate",
+        db: Optional[AsyncSession] = None
     ) -> List[AISuggestionItem]:
-        """Generates dynamic candidate questions grounded in course chunks for the right-hand builder drawer."""
-        # 1. Retrieve course context chunks
+        """Generates dynamic MCQ questions grounded in course video concepts and lecture notes."""
         context_chunks: List[str] = []
+        video_summaries: List[str] = []
+        course_title = f"Course {course_id}"
+
+        # 1. Fetch DB video lectures, topics, and descriptions
+        if db:
+            try:
+                c_res = await db.execute(select(Course).where(Course.id == course_id))
+                c_obj = c_res.scalars().first()
+                if c_obj:
+                    course_title = c_obj.title
+
+                if module_id:
+                    m_res = await db.execute(select(Module).where(Module.id == module_id))
+                    modules = m_res.scalars().all()
+                else:
+                    m_res = await db.execute(select(Module).where(Module.course_id == course_id).order_by(Module.order_index.asc()))
+                    modules = m_res.scalars().all()
+
+                for m in modules:
+                    t_res = await db.execute(select(Topic).where(Topic.module_id == m.id).order_by(Topic.order_index.asc()))
+                    topics = t_res.scalars().all()
+                    for t in topics:
+                        desc = t.description or "Core theoretical foundation and application."
+                        video_summaries.append(f"Module: {m.title} | Video Lecture: {t.title}\nKey Concepts Taught: {desc}")
+            except Exception as e:
+                logger.warning(f"Error fetching course video concepts for assessment: {e}")
+
+        # 2. Retrieve vector store context chunks
         try:
             results = await chroma_service.query_similar(course_id, topic, n_results=count + 2)
             docs = results.get("documents", [[]])[0]
@@ -39,32 +68,37 @@ class ExamService:
         except Exception as e:
             logger.warning(f"Vector search notice during exam AI suggestion: {e}")
 
+        video_context_str = "\n\n".join(video_summaries) if video_summaries else f"Course: {course_title} - {topic}"
         context_str = "\n\n---\n\n".join(context_chunks) if context_chunks else f"Core topics for {topic}"
 
-        # 2. Prefer Google Gemini generation
+        # 3. Prefer Google Gemini generation
         try:
             from app.services.rag_service import rag_service
             if hasattr(rag_service, '_gemini_client') and rag_service._gemini_client and settings.GEMINI_API_KEY:
-                prompt = f"""You are a master university exam author.
-Generate {count} distinct, rigorous assessment questions for the course topic: "{topic}" (Difficulty: {difficulty}).
-Mix MCQs and Short-Answer questions. Ground questions strictly in the following course material:
+                prompt = f"""You are a master academic assessment designer and university professor.
+Generate exactly {count} rigorous, high-quality Multiple Choice Questions (MCQs) for the course "{course_title}".
+Target Difficulty: {difficulty}.
+Focus Area: {topic}.
 
-COURSE MATERIAL:
+THE COURSE CURRICULUM CONTAINS THE FOLLOWING VIDEO LECTURES AND CONCEPTS:
+{video_context_str}
+
+SUPPLEMENTARY COURSE NOTES & EXCERPTS:
 {context_str}
 
 STRICT JSON OUTPUT FORMAT:
-Return ONLY a valid JSON array of objects. Each object must have:
-- "question_type": "MCQ" or "SHORT_ANSWER"
-- "question_text": clear, unambiguous question
-- "options": array of exactly 4 strings for MCQ (null if SHORT_ANSWER)
-- "correct_answer": "0" (or 0-3 index) for MCQ, or a 1-2 sentence model answer for SHORT_ANSWER
-- "explanation": concise explanation of why the answer is correct
-- "source_ref": citation string (e.g. "{topic} Notes, Page 2")
-- "bloom_level": "REMEMBER", "UNDERSTAND", "APPLY", or "ANALYZE"
-
-No markdown formatting, no backticks. Pure JSON array only.
+Return ONLY a valid JSON array of objects without any markdown code fences, backticks, or other text.
+Each object must have EXACTLY these fields:
+- "question_type": "MCQ"
+- "question_text": clear, unambiguous question testing an essential concept or invariant taught in the lectures
+- "options": an array of exactly 4 strings ["Option A", "Option B", "Option C", "Option D"]
+- "correct_answer": "0", "1", "2", or "3" (the 0-based index of the correct option)
+- "explanation": a concise pedagogical explanation explaining why the correct option is true and why others are false
+- "source_ref": citation string referencing the relevant video lecture or module (e.g. "{course_title}, Lecture Notes")
+- "bloom_level": "APPLY", "ANALYZE", or "UNDERSTAND"
 """
-                resp = rag_service._gemini_client.models.generate_content(
+                resp = await asyncio.to_thread(
+                    rag_service._gemini_client.models.generate_content,
                     model=settings.GEMINI_MODEL_NAME,
                     contents=prompt
                 )
@@ -79,11 +113,14 @@ No markdown formatting, no backticks. Pure JSON array only.
                 if isinstance(parsed, list) and len(parsed) >= 1:
                     items = []
                     for q in parsed:
+                        opts = q.get("options")
+                        if not opts or not isinstance(opts, list) or len(opts) < 4:
+                            opts = ["Option A", "Option B", "Option C", "Option D"]
                         items.append(AISuggestionItem(
                             temp_id=f"sug_{uuid.uuid4().hex[:6]}",
-                            question_type=q.get("question_type", "MCQ"),
+                            question_type="MCQ",
                             question_text=q.get("question_text", "Conceptual Question"),
-                            options=q.get("options") if q.get("question_type") == "MCQ" else None,
+                            options=opts[:4],
                             correct_answer=str(q.get("correct_answer", "0")),
                             explanation=q.get("explanation", f"Based on {topic} principles."),
                             source_ref=q.get("source_ref", f"{topic} Core Notes"),
@@ -93,7 +130,7 @@ No markdown formatting, no backticks. Pure JSON array only.
         except Exception as e:
             logger.warning(f"AI exam suggestion fallback notice: {e}")
 
-        # 3. Dynamic Topic Fallback
+        # 4. Dynamic Topic Fallback
         return [
             AISuggestionItem(
                 temp_id=f"sug_{uuid.uuid4().hex[:6]}",
@@ -363,7 +400,8 @@ Each JSON object must have EXACTLY these fields:
 - "explanation": a concise, pedagogical explanation explaining why the correct option is true and others are false
 - "source_reference": exact snippet or lecture reference from the module material (e.g. "{module_title}, Section 2.1")
 """
-                resp = rag_service._gemini_client.models.generate_content(
+                resp = await asyncio.to_thread(
+                    rag_service._gemini_client.models.generate_content,
                     model=settings.GEMINI_MODEL_NAME,
                     contents=prompt
                 )
