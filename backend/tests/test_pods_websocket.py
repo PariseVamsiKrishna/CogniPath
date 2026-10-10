@@ -220,3 +220,38 @@ async def test_kshetra_code_reuse_ended_vs_active(sync_test_client, db_session):
         assert "student_reuse_c" in pod_manager.peer_sockets.get(str(new_active_pod.id), {})
         assert "student_reuse_c" not in pod_manager.peer_sockets.get(str(old_pod.id), {})
 
+
+from unittest.mock import patch
+from app.models.models import PodMessage
+
+def test_tutor_query_does_not_drop_socket(client, educator_token, db_session):
+    headers = {"Authorization": f"Bearer {educator_token}"}
+    p_res = client.post("/api/v1/pods/", json={"title": "Test Pod", "course_id": 1, "max_peers": 5}, headers=headers)
+    pod_id = p_res.json()["id"]
+
+    with patch("app.services.rag_service.rag_service.query_course_context") as mock_rag:
+        async def mock_query(*args, **kwargs):
+            return "Hello I am AI Tutor!"
+        mock_rag.side_effect = mock_query
+        
+        with client.websocket_connect(f"/api/v1/pods/ws/{pod_id}?client_id=client123&user_id=1&role=EDUCATOR") as websocket:
+            websocket.send_json({
+                "type": "CHAT_MESSAGE",
+                "content": "Hello @tutor, how are you?",
+                "sender_name": "Test Educator"
+            })
+            
+            resp1 = websocket.receive_json()
+            assert resp1["type"] == "CHAT_MESSAGE"
+            
+            resp2 = websocket.receive_json()
+            assert resp2["type"] == "CHAT_MESSAGE"
+            assert resp2["is_ai_tutor"] is True
+
+            websocket.send_json({"type": "PING", "timestamp": 12345})
+            resp3 = websocket.receive_json()
+            assert resp3["type"] == "PONG"
+
+    # db check
+    messages = db_session.query(PodMessage).filter(PodMessage.pod_id == pod_id).all()
+    assert len(messages) == 2

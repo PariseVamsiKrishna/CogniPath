@@ -692,27 +692,13 @@ async def pod_websocket_endpoint(
                 content = data.get("content", "")
                 sender = data.get("sender_name", user_name)
 
-                # Persist message if persistent pod
-                if parsed_pod_id:
-                    try:
-                        async with AsyncSessionLocal() as session:
-                            db_msg = PodMessage(
-                                pod_id=parsed_pod_id,
-                                sender_name=sender,
-                                content=content,
-                                is_ai_tutor=False
-                            )
-                            session.add(db_msg)
-                            await session.commit()
-                    except Exception as e:
-                        logger.warning(f"Could not persist chat message: {e}")
-
                 # Dispatch chat & handle possible @Tutor query
                 await pod_manager.handle_pod_message(
                     pod_id=room_key,
                     course_id=course_id,
                     sender_name=sender,
-                    content=content
+                    content=content,
+                    user_id=parsed_user_id
                 )
 
             elif msg_type == "KICK_PARTICIPANT":
