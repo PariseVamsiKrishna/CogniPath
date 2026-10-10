@@ -84,6 +84,7 @@ async def ensure_hierarchical_curriculum_data(db):
 
     if course_1:
         c1_id = course_1.id
+        c_id = course_1.id  # Restore c_id assignment for later use
 
         # Module 1
         m1 = (await db.execute(select(Module).where(Module.course_id == c1_id, Module.order_index == 1))).scalars().first()
@@ -692,6 +693,9 @@ async def ensure_hierarchical_curriculum_data(db):
 
 async def seed_demo_data():
     """Populates realistic demonstration data on startup if database is fresh."""
+    if settings.ENVIRONMENT in ["production", "testing"]:
+        return
+        
     async with AsyncSessionLocal() as db:
         # 1. Ensure Educator exists
         educator = (await db.execute(select(User).where(User.email == "teacher@cognipath.edu"))).scalars().first()
