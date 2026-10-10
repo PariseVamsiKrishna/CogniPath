@@ -154,10 +154,18 @@ export default function App() {
         setSelectedCourseId(null);
       }
     } else if (currentUser.role === 'EDUCATOR') {
-      // Educators have all their authored courses
-      const eduCourses = available.map(c => ({ ...c, progress_percentage: 100, is_enrolled: true }));
+      // Educators only have their own authored courses
+      const eduCourses = (currentUser.email === 'teacher@cognipath.edu')
+        ? available.map((c) => ({ ...c, progress_percentage: 100, is_enrolled: true }))
+        : available
+            .filter((c) => c.educator_id === currentUser.id)
+            .map((c) => ({ ...c, progress_percentage: 100, is_enrolled: true }));
       setEnrolledCourses(eduCourses);
-      if (eduCourses.length > 0) setSelectedCourseId(eduCourses[0].id);
+      if (eduCourses.length > 0) {
+        setSelectedCourseId(eduCourses[0].id);
+      } else {
+        setSelectedCourseId(null);
+      }
     } else {
       // Any new student starts with 0 enrolled courses so they can pick their own!
       setEnrolledCourses([]);
@@ -297,8 +305,9 @@ export default function App() {
     // Persist verified user session
     try {
       localStorage.setItem('cognipath_user', JSON.stringify(validUser));
-      if (!localStorage.getItem('cognipath_token')) {
-        localStorage.setItem('cognipath_token', 'local_jwt_' + (validUser.id || Date.now()));
+      const currToken = localStorage.getItem('cognipath_token');
+      if (currToken && (currToken.startsWith('local_') || currToken.startsWith('mock_'))) {
+        localStorage.removeItem('cognipath_token');
       }
     } catch (e) {}
 
@@ -375,6 +384,9 @@ export default function App() {
       const data = await authAPI.login(demoEmail, 'password123');
       const candidate = (data && typeof data === 'object') ? (data.user || data) : null;
       if (candidate && (candidate.email || candidate.id)) {
+        if (data.access_token) {
+          localStorage.setItem('cognipath_token', data.access_token);
+        }
         handleLoginSuccess({ ...candidate, profile_completed: true });
         return;
       }
@@ -382,7 +394,6 @@ export default function App() {
       console.warn('Backend quick login notice, using demo profile:', err?.message);
     }
 
-    localStorage.setItem('cognipath_token', 'mock_token_sih2026');
     localStorage.setItem('cognipath_user', JSON.stringify(defaultUser));
     handleLoginSuccess(defaultUser);
   };
@@ -503,7 +514,7 @@ export default function App() {
                 courseId={selectedCourseId}
                 user={user}
                 onNavigateTab={handleNavigate}
-                courses={enrolledCourses.length > 0 ? enrolledCourses : (user?.role === 'EDUCATOR' ? courses : [])}
+                courses={enrolledCourses}
                 allCourses={courses}
                 enrolledCourses={enrolledCourses}
                 onSelectCourse={setSelectedCourseId}

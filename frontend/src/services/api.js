@@ -33,7 +33,11 @@ apiClient.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('cognipath_token');
     if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+      if (token.startsWith('local_') || token.startsWith('mock_')) {
+        localStorage.removeItem('cognipath_token');
+      } else {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
     }
     return config;
   },
@@ -53,8 +57,12 @@ apiClient.interceptors.response.use(
 
 // Exports
 export const authAPI = {
-  login: async (credentials) => {
-    const res = await apiClient.post('/auth/login-json', credentials);
+  login: async (emailOrCredentials, maybePassword) => {
+    const payload =
+      typeof emailOrCredentials === 'string'
+        ? { email: emailOrCredentials, password: maybePassword }
+        : emailOrCredentials;
+    const res = await apiClient.post('/auth/login-json', payload);
     return res.data;
   },
   register: async (userData) => {
