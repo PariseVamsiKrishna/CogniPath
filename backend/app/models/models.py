@@ -477,6 +477,7 @@ class EducatorPodQuota(Base):
     day_date = Column(String(20), nullable=False)  # YYYY-MM-DD
     week_start_date = Column(String(20), nullable=False)  # YYYY-MM-DD
     daily_created = Column(Integer, default=0, nullable=False)
+    weekly_created = Column(Integer, default=0, server_default="0", nullable=False)
 
     educator = relationship("User", back_populates="pod_quotas")
 
