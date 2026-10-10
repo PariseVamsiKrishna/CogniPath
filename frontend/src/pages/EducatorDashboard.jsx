@@ -41,7 +41,14 @@ export default function EducatorDashboard({
     activeCourse &&
       (user?.role === 'ADMIN' ||
         String(activeCourse.educator_id) === String(user?.id) ||
-        (activeCourse.educator_email && user?.email && activeCourse.educator_email.toLowerCase() === user.email.toLowerCase()))
+        (activeCourse.educator_email && user?.email && activeCourse.educator_email.toLowerCase().trim() === user.email.toLowerCase().trim()) ||
+        (activeCourse.educator_name && user?.full_name && activeCourse.educator_name.toLowerCase().trim() === user.full_name.toLowerCase().trim()) ||
+        Boolean(activeCourse.id && (() => {
+          try {
+            const key = `cognipath_created_courses_${user?.id || user?.email || 'educator'}`;
+            return JSON.parse(localStorage.getItem(key) || '[]').includes(activeCourse.id);
+          } catch (e) { return false; }
+        })()))
   );
   const [overview, setOverview] = useState({
     total_students: 32,

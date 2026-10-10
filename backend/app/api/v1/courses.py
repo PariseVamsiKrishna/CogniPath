@@ -157,8 +157,16 @@ async def _check_course_ownership(course_id: int, current_user: User, db: AsyncS
     course = course_res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    if course.educator_id != current_user.id and current_user.role != "ADMIN":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to modify this course")
+
+    is_owner = (course.educator_id == current_user.id)
+    if not is_owner and course.educator_id and current_user.email:
+        ed_res = await db.execute(select(User).where(User.id == course.educator_id))
+        ed_user = ed_res.scalars().first()
+        if ed_user and ed_user.email and ed_user.email.strip().lower() == current_user.email.strip().lower():
+            is_owner = True
+
+    if not is_owner and current_user.role != "ADMIN":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the educator who created this course can modify or delete it.")
     return course
 
 
@@ -943,17 +951,7 @@ async def delete_course_permanently(
     assessments, Chroma vectors, and associated resources.
     Requires user to be the course creator (educator) or ADMIN.
     """
-    c_res = await db.execute(select(Course).where(Course.id == course_id))
-    course = c_res.scalars().first()
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
-
-    # Only creator or ADMIN can permanently delete
-    if current_user.role != "ADMIN" and course.educator_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the educator who created this course can permanently delete it."
-        )
+    course = await _check_course_ownership(course_id, current_user, db)
 
     # 0. Break circular foreign key on module_exam_id before deleting exams/modules
     await db.execute(

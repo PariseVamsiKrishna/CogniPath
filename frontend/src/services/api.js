@@ -108,6 +108,10 @@ export const coursesAPI = {
     const res = await apiClient.get('/courses/enrolled');
     return res.data;
   },
+  getMyCourses: async () => {
+    const res = await apiClient.get('/courses/my-courses');
+    return res.data;
+  },
   get: async (id) => {
     const res = await apiClient.get(`/courses/${id}`);
     return res.data;

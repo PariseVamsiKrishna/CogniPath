@@ -1,5 +1,12 @@
 import pytest
-from app.models.models import User, Course, Module, Topic
+from app.models.models import (
+    User, Course, Module, Topic, Enrollment, Exam, ExamQuestion,
+    ExamSubmission, Assignment, AssignmentSubmission, CommunityChannel,
+    CommunityMessage, LearningPod, PodMessage, PodBlacklist, StudentBadge,
+    CourseRating, TopicRating, ModuleResource, Document,
+    StudentConceptRetention, StudentActivityLog, StudentSkillMastery,
+    CurriculumAuditReport
+)
 from tests.conftest import create_access_token_for_user
 
 @pytest.mark.asyncio
@@ -192,4 +199,190 @@ async def test_health_and_readiness_endpoints(client):
     assert resp4.status_code == 200
     assert resp4.json()["status"] == "ready"
     assert resp4.json()["database"] == "connected"
+
+@pytest.mark.asyncio
+async def test_delete_course_lifecycle(client, db_session):
+    # Educator A
+    educator_a = User(
+        email="prof_del_a@cognipath.edu",
+        full_name="Prof. Delete Owner",
+        hashed_password="hashedpassword123",
+        role="EDUCATOR"
+    )
+    # Educator B
+    educator_b = User(
+        email="prof_del_b@cognipath.edu",
+        full_name="Prof. Delete Intruder",
+        hashed_password="hashedpassword123",
+        role="EDUCATOR"
+    )
+    db_session.add_all([educator_a, educator_b])
+    await db_session.commit()
+    await db_session.refresh(educator_a)
+    await db_session.refresh(educator_b)
+
+    token_a = create_access_token_for_user(educator_a.id, role="EDUCATOR")
+    token_b = create_access_token_for_user(educator_b.id, role="EDUCATOR")
+    headers_a = {"Authorization": f"Bearer {token_a}"}
+    headers_b = {"Authorization": f"Bearer {token_b}"}
+
+    # 1. Educator A creates a course with modules and topics
+    create_resp = await client.post("/api/v1/courses", json={
+        "title": "Quantum Computing 101",
+        "code": "QC101",
+        "category": "Computer Science",
+        "modules": [
+            {
+                "title": "Qubits and Superposition",
+                "topics": [
+                    {
+                        "title": "Bloch Sphere",
+                        "youtube_url": "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+                    }
+                ]
+            }
+        ]
+    }, headers=headers_a)
+    assert create_resp.status_code == 201
+    course_id = create_resp.json()["id"]
+
+    # 2. Educator B attempts to delete Educator A's course -> 403 Forbidden
+    del_resp_b = await client.delete(f"/api/v1/courses/{course_id}", headers=headers_b)
+    assert del_resp_b.status_code == 403
+
+    # 3. Nonexistent course deletion -> 404
+    del_resp_none = await client.delete("/api/v1/courses/999999", headers=headers_a)
+    assert del_resp_none.status_code == 404
+
+    # 4. Educator A deletes own course -> 200 OK
+    del_resp_a = await client.delete(f"/api/v1/courses/{course_id}", headers=headers_a)
+    assert del_resp_a.status_code == 200, del_resp_a.text
+
+    # 5. Course no longer exists
+    get_resp = await client.get(f"/api/v1/courses/{course_id}", headers=headers_a)
+    assert get_resp.status_code == 404
+
+    # 6. Course does not appear in my-courses
+    my_resp = await client.get("/api/v1/courses/my-courses", headers=headers_a)
+    assert my_resp.status_code == 200
+    assert not any(c["id"] == course_id for c in my_resp.json())
+
+@pytest.mark.asyncio
+async def test_delete_course_with_full_dependencies(client, db_session):
+    # Educator and Student
+    educator = User(
+        email="prof_dep_del@cognipath.edu",
+        full_name="Prof. Deep Dependency",
+        hashed_password="hashedpassword123",
+        role="EDUCATOR"
+    )
+    student = User(
+        email="student_dep@cognipath.edu",
+        full_name="Student Dep Test",
+        hashed_password="hashedpassword123",
+        role="STUDENT"
+    )
+    db_session.add_all([educator, student])
+    await db_session.commit()
+    await db_session.refresh(educator)
+    await db_session.refresh(student)
+
+    token_ed = create_access_token_for_user(educator.id, role="EDUCATOR")
+    headers_ed = {"Authorization": f"Bearer {token_ed}"}
+
+    # Create Course
+    course = Course(
+        title="Complex Systems Architecture",
+        code="CSA701",
+        category="Computer Science",
+        educator_id=educator.id
+    )
+    db_session.add(course)
+    await db_session.commit()
+    await db_session.refresh(course)
+
+    # 1. Module & Topic
+    module = Module(course_id=course.id, title="Module 1: Foundations", order_index=1)
+    db_session.add(module)
+    await db_session.commit()
+    await db_session.refresh(module)
+
+    topic = Topic(
+        module_id=module.id,
+        title="Topic 1: Intro",
+        youtube_url="https://youtube.com/watch?v=dQw4w9WgXcQ",
+        youtube_video_id="dQw4w9WgXcQ",
+        order_index=1
+    )
+    db_session.add(topic)
+    await db_session.commit()
+    await db_session.refresh(topic)
+
+    # 2. Topic Rating
+    topic_rating = TopicRating(topic_id=topic.id, user_id=student.id, rating=5, feedback="Great topic")
+    db_session.add(topic_rating)
+
+    # 3. Module Resource
+    resource = ModuleResource(module_id=module.id, title="Slides.pdf", file_url="/docs/slides.pdf")
+    db_session.add(resource)
+
+    # 4. Exam & circular module_exam_id
+    exam = Exam(course_id=course.id, module_id=module.id, title="Module 1 Quiz", exam_type="MODULE_QUIZ")
+    db_session.add(exam)
+    await db_session.commit()
+    await db_session.refresh(exam)
+    module.module_exam_id = exam.id
+
+    exam_q = ExamQuestion(exam_id=exam.id, question_text="What is 1+1?", correct_answer="2")
+    exam_sub = ExamSubmission(exam_id=exam.id, student_id=student.id, score=100.0, percentage=100.0, responses_json="[]")
+    db_session.add_all([exam_q, exam_sub])
+
+    # 5. Assignment & Submission
+    assignment = Assignment(module_id=module.id, title="Lab 1", description="Build something", rubric_json="[]")
+    db_session.add(assignment)
+    await db_session.commit()
+    await db_session.refresh(assignment)
+    sub = AssignmentSubmission(assignment_id=assignment.id, student_id=student.id, status="PENDING")
+    db_session.add(sub)
+
+    # 6. Community Channel & Message
+    ch = CommunityChannel(course_id=course.id, name="announcements", description="Announcements")
+    db_session.add(ch)
+    await db_session.commit()
+    await db_session.refresh(ch)
+    msg = CommunityMessage(channel_id=ch.id, user_id=educator.id, author_name="Prof", content="Welcome!")
+    db_session.add(msg)
+
+    # 7. Learning Pod, Message & Blacklist
+    pod = LearningPod(course_id=course.id, host_id=educator.id, title="Study Pod", topic="AI")
+    db_session.add(pod)
+    await db_session.commit()
+    await db_session.refresh(pod)
+    p_msg = PodMessage(pod_id=pod.id, user_id=educator.id, sender_name="Prof", content="Hello")
+    p_bl = PodBlacklist(pod_id=pod.id, user_id=student.id, kicked_by=educator.id)
+    db_session.add_all([p_msg, p_bl])
+
+    # 8. Enrollment, Document, Badge, Rating, Retention, Activity, Mastery, Audit
+    enrollment = Enrollment(course_id=course.id, user_id=student.id)
+    doc = Document(course_id=course.id, title="Doc 1", file_path="/fake/path", file_type="pdf", uploaded_by=educator.id)
+    badge = StudentBadge(course_id=course.id, student_id=student.id, badge_name="Explorer", verification_hash="hash123456789")
+    course_rating = CourseRating(course_id=course.id, user_id=student.id, rating=5.0)
+    retention = StudentConceptRetention(course_id=course.id, user_id=student.id, concept_tag="Architecture")
+    activity = StudentActivityLog(course_id=course.id, user_id=student.id, action_type="VIEW_DOC")
+    mastery = StudentSkillMastery(course_id=course.id, user_id=student.id, topic="Architecture")
+    audit = CurriculumAuditReport(course_id=course.id)
+    db_session.add_all([enrollment, doc, badge, course_rating, retention, activity, mastery, audit])
+    await db_session.commit()
+
+    # Now attempt to permanently delete the course
+    del_resp = await client.delete(f"/api/v1/courses/{course.id}", headers=headers_ed)
+    assert del_resp.status_code == 200, del_resp.text
+    data = del_resp.json()
+    assert data["status"] == "success"
+
+    # Verify course is completely gone
+    get_resp = await client.get(f"/api/v1/courses/{course.id}", headers=headers_ed)
+    assert get_resp.status_code == 404
+
+
 

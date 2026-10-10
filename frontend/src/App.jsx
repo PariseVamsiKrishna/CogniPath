@@ -234,22 +234,37 @@ export default function App() {
   };
 
   const handleDeleteCoursePermanently = async (courseId) => {
+    // 1. Call backend delete API; do not swallow error so that UI can display real failure message if any
+    await coursesAPI.deleteCourse(courseId);
+
+    // 2. Clean up creator tracking in localStorage
     try {
-      await coursesAPI.deleteCourse(courseId);
-    } catch (err) {
-      console.warn('Backend deleteCourse API call failed, removing locally:', err);
+      const keysToClean = [
+        `cognipath_created_courses_${user?.id || user?.email || 'educator'}`,
+        'cognipath_created_courses_educator'
+      ];
+      keysToClean.forEach((key) => {
+        const stored = JSON.parse(localStorage.getItem(key) || '[]');
+        const filtered = stored.filter((id) => Number(id) !== Number(courseId));
+        localStorage.setItem(key, JSON.stringify(filtered));
+      });
+    } catch (e) {}
+
+    // 3. Clean up enrollment cache in localStorage
+    if (user) {
+      try {
+        const enrKey = `cognipath_enrolled_${user.id || user.email}`;
+        const storedEnr = JSON.parse(localStorage.getItem(enrKey) || '[]');
+        const filteredEnr = storedEnr.filter((c) => (c.id || c) !== courseId);
+        localStorage.setItem(enrKey, JSON.stringify(filteredEnr));
+      } catch (e) {}
     }
 
+    // 4. Update memory state
     const updatedAll = courses.filter((c) => c.id !== courseId);
     setCourses(updatedAll);
     const updatedEnrolled = enrolledCourses.filter((c) => c.id !== courseId);
     setEnrolledCourses(updatedEnrolled);
-    if (user) {
-      localStorage.setItem(
-        `cognipath_enrolled_${user.id || user.email}`,
-        JSON.stringify(updatedEnrolled)
-      );
-    }
     if (selectedCourseId === courseId) {
       setSelectedCourseId(updatedEnrolled.length > 0 ? updatedEnrolled[0].id : null);
     }
@@ -277,7 +292,7 @@ export default function App() {
       }
       try {
         const data = await coursesAPI.list();
-        if (data && data.length > 0) {
+        if (data && Array.isArray(data)) {
           setCourses(data);
           if (activeUser) {
             await fetchEnrolledCourses(activeUser, data);
@@ -324,11 +339,11 @@ export default function App() {
     const targetTab = validUser.role === 'EDUCATOR' ? 'analytics' : 'dashboard';
     setActiveTab(targetTab);
 
-    // Fetch personal enrollments in background
+    // Refresh courses and personal enrollments for authenticated user
     try {
-      await fetchEnrolledCourses(validUser);
+      await refreshAllCourses(validUser);
     } catch (err) {
-      console.warn('Enrolled courses background fetch notice:', err);
+      console.warn('Courses background refresh notice:', err);
     }
   };
 

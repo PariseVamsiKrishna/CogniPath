@@ -204,7 +204,23 @@ export default function CoursePlayer({
           }}
           course={courseToDelete}
           isEducator={isEducator}
-          isCreator={deleteMode === 'permanent' && (user?.role === 'EDUCATOR' || user?.role === 'ADMIN') && String(courseToDelete?.educator_id) === String(user?.id)}
+          isCreator={
+            deleteMode === 'permanent' &&
+            (user?.role === 'ADMIN' ||
+              (user?.role === 'EDUCATOR' &&
+                (String(courseToDelete?.educator_id) === String(user?.id) ||
+                  (courseToDelete?.educator_email && user?.email && courseToDelete.educator_email.toLowerCase().trim() === user.email.toLowerCase().trim()) ||
+                  (courseToDelete?.educator_name && user?.full_name && courseToDelete.educator_name.toLowerCase().trim() === user.full_name.toLowerCase().trim()) ||
+                  Boolean(courseToDelete?.id && (() => {
+                    try {
+                      const key = `cognipath_created_courses_${user?.id || user?.email || 'educator'}`;
+                      return JSON.parse(localStorage.getItem(key) || '[]').includes(courseToDelete.id);
+                    } catch (e) { return false; }
+                  })())
+                )
+              )
+            )
+          }
           onConfirm={async (c) => {
             if (deleteMode === 'permanent' && onDeleteCoursePermanently) {
               await onDeleteCoursePermanently(c.id);
