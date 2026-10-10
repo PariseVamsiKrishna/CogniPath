@@ -141,4 +141,19 @@ class RAGService:
         fallback_ans = f"Here is a summary regarding '{query}': In engineering curricula, {query} relates to fundamental principles of system design, performance trade-offs, and structural invariants."
         return fallback_ans, citations, latency_ms
 
+
+    async def query_course_context(
+        self,
+        course_id: int,
+        query: str,
+        target_language: str = "en",
+    ) -> str:
+        """Return a tutor answer for a course-grounded query."""
+        answer, _citations, _latency_ms = await self.generate_response(
+            course_id=course_id,
+            query=query,
+            target_language=target_language,
+        )
+        return answer
+
 rag_service = RAGService()

@@ -142,9 +142,11 @@ class PodConnectionManager:
             self.peer_sockets[room_key] = {}
 
         # If client_id already exists in peer_sockets[room_key], close the old socket and remove it from active_connections
+        was_reconnect = False
         if client_id in self.peer_sockets.get(room_key, {}):
             old_ws = self.peer_sockets[room_key][client_id]
             if old_ws != websocket:
+                was_reconnect = True
                 self.active_connections.get(room_key, set()).discard(old_ws)
                 try:
                     await old_ws.close(code=1000, reason="Replaced by new connection")
@@ -198,17 +200,18 @@ class PodConnectionManager:
             })
 
         # Broadcast peer joined event with current participant directory
-        await self.broadcast_to_pod(room_key, {
-            "type": "PEER_JOINED",
-            "client_id": client_id,
-            "user_name": user_name,
-            "user_id": user_id,
-            "role": role,
-            "is_host": is_host,
-            "host_client_id": self.pod_hosts.get(room_key),
-            "total_peers": len(self.active_connections[room_key]),
-            "participants": list(self.pod_peers[room_key].values())
-        })
+        if not was_reconnect:
+            await self.broadcast_to_pod(room_key, {
+                "type": "PEER_JOINED",
+                "client_id": client_id,
+                "user_name": user_name,
+                "user_id": user_id,
+                "role": role,
+                "is_host": is_host,
+                "host_client_id": self.pod_hosts.get(room_key),
+                "total_peers": len(self.active_connections[room_key]),
+                "participants": list(self.pod_peers[room_key].values())
+            })
 
     def disconnect(self, pod_id: Any, websocket: WebSocket, client_id: str, user_id: int | None = None):
         room_key = str(pod_id)
@@ -440,14 +443,15 @@ class PodConnectionManager:
 
             async def _process_tutor():
                 try:
-                    tutor_answer, citations, _ = await asyncio.wait_for(
-                        rag_service.generate_response(
+                    tutor_answer = await asyncio.wait_for(
+                        rag_service.query_course_context(
                             course_id=course_id,
                             query=query_clean,
                             target_language="en"
                         ),
                         timeout=20.0
                     )
+                    citations = []
                 except Exception as e:  # noqa: BLE001
                     logger.error(f"Error generating AI Tutor response in pod: {e}")
                     tutor_answer = "I'm currently unable to process your question. Please try asking again in a moment."
