@@ -1,40 +1,78 @@
+import json
+import logging
 import os
 import re
 import shutil
-import logging
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+from datetime import datetime, timezone
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy import delete, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_, delete, update
 
-from datetime import datetime, timezone
-import json
+from app.core.cache import ttl_cache
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import get_current_user, require_roles, get_optional_current_user
+from app.core.security import get_current_user, get_optional_current_user, require_roles
 from app.models.models import (
-    Course, Enrollment, User, CommunityChannel, CommunityMessage, Module, Topic,
-    ModuleResource, StudentBadge, Exam, ExamQuestion, ExamSubmission, CourseRating, TopicRating,
-    StudentActivityLog, Document, Quiz, QuizQuestion, StudentQuizAttempt, StudentConceptRetention,
-    LearningPod, PodMessage, PodBlacklist, Assignment, AssignmentSubmission,
-    StudentSkillMastery, CurriculumAuditReport
+    Assignment,
+    AssignmentSubmission,
+    CommunityChannel,
+    CommunityMessage,
+    Course,
+    CourseRating,
+    CurriculumAuditReport,
+    Document,
+    Enrollment,
+    Exam,
+    ExamQuestion,
+    ExamSubmission,
+    LearningPod,
+    Module,
+    ModuleResource,
+    PodBlacklist,
+    PodMessage,
+    Quiz,
+    QuizQuestion,
+    StudentActivityLog,
+    StudentBadge,
+    StudentConceptRetention,
+    StudentQuizAttempt,
+    StudentSkillMastery,
+    Topic,
+    TopicRating,
+    User,
 )
 from app.schemas.schemas import (
-    CourseCreate, CourseResponse, CourseHierarchyResponse,
-    ModuleCreate, ModuleResponse, ModuleUpdate,
-    TopicCreate, TopicResponse, TopicUpdate,
-    ModuleResourceResponse, StudentBadgeResponse,
-    RAGMCQGenerateRequest, RAGMCQGenerateResponse,
-    ModuleExamCreateRequest, ExamResponse, ExamQuestionSchema,
-    TabsSummaryResponse, TabsSummaryCourse, TabsSummaryModule,
-    CourseExploreItem, CourseRatingCreate, CourseRatingResponse,
-    CourseRatingsSummary, TopicRatingCreate, TopicRatingResponse, TopicRatingSummary
+    CourseCreate,
+    CourseExploreItem,
+    CourseHierarchyResponse,
+    CourseRatingCreate,
+    CourseRatingResponse,
+    CourseRatingsSummary,
+    CourseResponse,
+    ExamResponse,
+    ModuleCreate,
+    ModuleExamCreateRequest,
+    ModuleResourceResponse,
+    ModuleResponse,
+    ModuleUpdate,
+    RAGMCQGenerateRequest,
+    RAGMCQGenerateResponse,
+    TabsSummaryCourse,
+    TabsSummaryModule,
+    TabsSummaryResponse,
+    TopicCreate,
+    TopicRatingCreate,
+    TopicRatingResponse,
+    TopicRatingSummary,
+    TopicResponse,
+    TopicUpdate,
 )
-from app.services.ingestion_service import ingestion_service
-from app.services.exam_service import exam_service
 from app.services.chroma_service import chroma_service
+from app.services.exam_service import exam_service
+from app.services.ingestion_service import ingestion_service
 
 logger = logging.getLogger("cognipath.courses")
 
@@ -61,8 +99,8 @@ async def _check_course_ownership(course_id: int, current_user: User, db: AsyncS
     course = course_res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    if course.educator_id != current_user.id and current_user.role != 'ADMIN':
-        raise HTTPException(status_code=403, detail="Not authorized to modify this course")
+    if course.educator_id != current_user.id and current_user.role != "ADMIN":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not authorized to modify this course")
     return course
 
 
@@ -99,7 +137,7 @@ async def get_course_rating_stats(course: Course, db: AsyncSession):
 
     return educator_name, avg_rating, total_count
 
-async def get_course_ratings_summary(course_id: int, user_id: Optional[int], db: AsyncSession):
+async def get_course_ratings_summary(course_id: int, user_id: int | None, db: AsyncSession):
     """Summarizes course reviews and current user rating."""
     ratings_res = await db.execute(
         select(CourseRating).where(CourseRating.course_id == course_id).order_by(CourseRating.created_at.desc())
@@ -133,8 +171,8 @@ async def get_course_ratings_summary(course_id: int, user_id: Optional[int], db:
         avg = round(sum(r.rating for r in all_ratings) / len(all_ratings), 1)
         cnt = len(all_ratings)
     else:
-        avg = 4.9
-        cnt = 12
+        avg = 0.0
+        cnt = 0
 
     return CourseRatingsSummary(
         course_id=course_id,
@@ -145,12 +183,12 @@ async def get_course_ratings_summary(course_id: int, user_id: Optional[int], db:
         reviews=reviews_out
     )
 
-@router.get("/explore", response_model=List[CourseExploreItem])
+@router.get("/explore", response_model=list[CourseExploreItem])
 async def explore_courses(
-    q: Optional[str] = None,
-    category: Optional[str] = None,
+    q: str | None = None,
+    category: str | None = None,
     sort_by: str = "rating",  # "rating" | "popular" | "newest"
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -226,8 +264,8 @@ async def explore_courses(
 
     return items
 
-@router.get("/enrolled", response_model=List[CourseResponse])
-@router.get("/my-courses", response_model=List[CourseResponse])
+@router.get("/enrolled", response_model=list[CourseResponse])
+@router.get("/my-courses", response_model=list[CourseResponse])
 async def get_enrolled_courses(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
@@ -297,10 +335,10 @@ async def get_enrolled_courses(
         ))
     return out
 
-@router.get("", response_model=List[CourseResponse])
+@router.get("", response_model=list[CourseResponse])
 async def list_courses(
     enrolled_only: bool = False,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """List courses with enriched creator name, star ratings, and student enrollment flag."""
@@ -479,7 +517,7 @@ async def rate_topic(
 @router.get("/topics/{topic_id}/ratings", response_model=TopicRatingSummary)
 async def get_topic_ratings(
     topic_id: int,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Get rating summary and current user rating for a topic."""
@@ -502,8 +540,8 @@ async def get_topic_ratings(
         avg = round(sum(r.rating for r in all_ratings) / len(all_ratings), 1)
         cnt = len(all_ratings)
     else:
-        avg = 4.9
-        cnt = 8
+        avg = 0.0
+        cnt = 0
 
     return TopicRatingSummary(
         topic_id=topic_id,
@@ -518,7 +556,11 @@ async def get_topic_ratings(
 # ==============================================================================
 
 @router.get("/{course_id}", response_model=CourseResponse)
-async def get_course(course_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def get_course(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Get single course basic details enriched with creator name and star ratings."""
     result = await db.execute(select(Course).where(Course.id == course_id))
     course = result.scalars().first()
@@ -606,7 +648,7 @@ async def rate_course(
 @router.get("/{course_id}/ratings", response_model=CourseRatingsSummary)
 async def get_course_ratings(
     course_id: int,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve full reviews and star rating distribution for a course."""
@@ -620,8 +662,17 @@ async def get_course_ratings(
 
 
 @router.get("/{course_id}/hierarchy", response_model=CourseHierarchyResponse)
-async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def get_course_hierarchy(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Get complete hierarchical syllabus: Course -> Modules -> Topics & View-Only PDF Resources."""
+    cache_key = f"hierarchy_{course_id}"
+    cached = ttl_cache.get(cache_key)
+    if cached:
+        return cached
+
     res = await db.execute(select(Course).where(Course.id == course_id))
     course = res.scalars().first()
     if not course:
@@ -883,6 +934,8 @@ async def delete_course_permanently(
 
 @router.post("/{course_id}/modules", response_model=ModuleResponse, status_code=status.HTTP_201_CREATED)
 async def create_module(
+    # Invalidate cache
+    # 
     course_id: int,
     req: ModuleCreate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -921,6 +974,8 @@ async def create_module(
 
 @router.put("/modules/{module_id}", response_model=ModuleResponse)
 async def update_module(
+    # Invalidate cache
+    # 
     module_id: int,
     req: ModuleUpdate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -931,6 +986,8 @@ async def update_module(
     module = res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     if req.title is not None:
         module.title = req.title
@@ -965,6 +1022,8 @@ async def update_module(
 
 @router.delete("/modules/{module_id}")
 async def delete_module(
+    # Invalidate cache
+    # 
     module_id: int,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
@@ -974,6 +1033,8 @@ async def delete_module(
     module = res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     await db.delete(module)
     await db.commit()
@@ -986,6 +1047,8 @@ async def delete_module(
 
 @router.post("/modules/{module_id}/topics", response_model=TopicResponse, status_code=status.HTTP_201_CREATED)
 async def create_topic(
+    # Invalidate cache
+    # 
     module_id: int,
     req: TopicCreate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -993,8 +1056,11 @@ async def create_topic(
 ):
     """Educator adds a topic concept inside a module with automated YouTube ID parsing."""
     mod_res = await db.execute(select(Module).where(Module.id == module_id))
-    if not mod_res.scalars().first():
+    module = mod_res.scalars().first()
+    if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     count_res = await db.execute(select(Topic).where(Topic.module_id == module_id))
     existing_count = len(count_res.scalars().all())
@@ -1018,6 +1084,8 @@ async def create_topic(
 
 @router.put("/topics/{topic_id}", response_model=TopicResponse)
 async def update_topic(
+    # Invalidate cache
+    # 
     topic_id: int,
     req: TopicUpdate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -1028,6 +1096,11 @@ async def update_topic(
     topic = res.scalars().first()
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
+
+    mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
+    module = mod_res.scalars().first()
+    if module:
+        await _check_course_ownership(module.course_id, current_user, db)
 
     if req.title is not None:
         topic.title = req.title
@@ -1046,6 +1119,8 @@ async def update_topic(
 
 @router.delete("/topics/{topic_id}")
 async def delete_topic(
+    # Invalidate cache
+    # 
     topic_id: int,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
@@ -1055,6 +1130,11 @@ async def delete_topic(
     topic = res.scalars().first()
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
+
+    mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
+    module = mod_res.scalars().first()
+    if module:
+        await _check_course_ownership(module.course_id, current_user, db)
 
     await db.delete(topic)
     await db.commit()
@@ -1067,6 +1147,8 @@ async def delete_topic(
 
 @router.post("/modules/{module_id}/resources", response_model=ModuleResourceResponse, status_code=status.HTTP_201_CREATED)
 async def upload_module_resource(
+    # Invalidate cache
+    # 
     module_id: int,
     title: str = Form(...),
     file: UploadFile = File(...),
@@ -1078,6 +1160,8 @@ async def upload_module_resource(
     module = mod_res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     filename = file.filename
     ext = os.path.splitext(filename)[1].lower().replace(".", "")
@@ -1123,14 +1207,31 @@ async def upload_module_resource(
 @router.get("/resources/{resource_id}/view")
 async def view_module_resource(
     resource_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """Secure endpoint streaming PDF bytes for in-browser canvas rendering with watermarks."""
     res = await db.execute(select(ModuleResource).where(ModuleResource.id == resource_id))
     resource = res.scalars().first()
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
+        
+    # Check course enrollment or ownership
+    mod_res = await db.execute(select(Module).where(Module.id == resource.module_id))
+    module = mod_res.scalars().first()
+    if module:
+        course_res = await db.execute(select(Course).where(Course.id == module.course_id))
+        course = course_res.scalars().first()
+        if course:
+            if course.educator_id != current_user.id and current_user.role != "ADMIN":
+                enr_res = await db.execute(
+                    select(Enrollment).where(
+                        Enrollment.user_id == current_user.id,
+                        Enrollment.course_id == course.id
+                    )
+                )
+                if not enr_res.scalars().first():
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enrolled in this course")
 
     file_name = os.path.basename(resource.file_url)
     disk_path = os.path.join(settings.UPLOAD_DIR, file_name)
@@ -1190,7 +1291,7 @@ async def verify_badge(
         "difficulty_level": badge.difficulty_level,
         "issued_at": badge.issued_at.isoformat(),
         "student_name": student.full_name if student else "Enrolled Student",
-        "student_email": f"{student.email[:3]}***@{student.email.split('@')[1]}" if student and "@" in student.email else "",
+        "student_email": f"{student.email[:3]}***@{student.email.split('@')[1]}" if student and '@' in student.email else "",
         "course_title": course.title if course else "COGNIPATH Verified Track",
         "course_code": course.code if course else "CP101",
         "verification_hash": badge.verification_hash,
@@ -1207,7 +1308,7 @@ async def verify_badge(
 async def generate_module_exam_rag(
     module_id: int,
     req: RAGMCQGenerateRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1219,6 +1320,8 @@ async def generate_module_exam_rag(
     module = mod_res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     course_id = req.course_id or module.course_id
 
@@ -1298,7 +1401,7 @@ async def save_module_exam(
 @router.get("/tabs-summary", response_model=TabsSummaryResponse)
 @module_router.get("/user/courses/tabs-summary", response_model=TabsSummaryResponse)
 async def get_tabs_summary(
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """

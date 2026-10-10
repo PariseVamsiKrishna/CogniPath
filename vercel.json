@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "$comment": "REQUIRED VERCEL ENVIRONMENT VARIABLES: Set VITE_API_BASE_URL (e.g. https://cognipath-api.onrender.com) and optional VITE_TURN_URL, VITE_TURN_USERNAME, VITE_TURN_CREDENTIAL in Project Settings -> Environment Variables.",
   "buildCommand": "cd frontend && npm run build",
   "outputDirectory": "frontend/dist",
   "framework": "vite",

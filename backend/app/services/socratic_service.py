@@ -2,12 +2,17 @@ import asyncio
 import time
 import json
 import logging
-from typing import Optional, Dict, Any, List
-from app.services.rag_service import rag_service
+import time
+
 from app.core.config import settings
 from app.schemas.schemas import (
-    SocraticQueryResponse, ConceptMindmap, MindmapNode, MindmapEdge, Citation
+    ConceptMindmap,
+    MindmapEdge,
+    MindmapNode,
+    SocraticQueryResponse,
 )
+from app.services.ai_helper import gemini_generate
+from app.services.rag_service import rag_service
 
 logger = logging.getLogger("cognipath.socratic")
 
@@ -60,12 +65,9 @@ Requirements for mermaid_code:
                     contents=prompt
                 )
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 if (
                     isinstance(parsed, dict)
@@ -98,7 +100,7 @@ Requirements for mermaid_code:
                             edges=edges,
                             mermaid_code=parsed["mermaid_code"]
                         )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"AI mindmap generation fallback notice for '{topic}': {e}")
 
         # 2. Topic-specific & General Dynamic Fallbacks
@@ -203,7 +205,7 @@ Requirements for mermaid_code:
         self,
         course_id: int,
         query: str,
-        student_attempt: Optional[str] = None
+        student_attempt: str | None = None
     ) -> SocraticQueryResponse:
         """Generates real-time Socratic inquiry guidance and questions using Gemini AI."""
         start_time = time.time()
@@ -247,12 +249,9 @@ Output strictly pure JSON without markdown backticks."""
                     contents=prompt
                 )
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 if isinstance(parsed, dict) and "probing_question" in parsed:
                     probing_q = str(parsed["probing_question"])
@@ -260,7 +259,7 @@ Output strictly pure JSON without markdown backticks."""
                     # Guarantee test expectations: if student attempt provided, keep VERIFICATION
                     stage = "VERIFICATION" if has_attempt else str(parsed.get("stage", "PROBING"))
                     logger.info("Successfully generated Gemini Socratic guidance for '%s' (Stage: %s)", query, stage)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"AI Socratic guidance fallback notice: {e}")
 
         # 2. Dynamic Pedagogical Fallback
@@ -272,8 +271,8 @@ Output strictly pure JSON without markdown backticks."""
                     f"What fundamental invariant or partition ensures that operations on this structure scale efficiently? What does your intuition say?"
                 )
                 guidance = (
-                    f"💡 **Socratic Guidance:** Consider how the search space is divided at each step. "
-                    f"Does each decision eliminate half the remaining candidates, or only a single element?"
+                    "💡 **Socratic Guidance:** Consider how the search space is divided at each step. "
+                    "Does each decision eliminate half the remaining candidates, or only a single element?"
                 )
             else:
                 stage = "VERIFICATION"
@@ -282,8 +281,8 @@ Output strictly pure JSON without markdown backticks."""
                     f"Now, what happens if the input is already inserted in strictly ascending sorted order? Does that invariant still hold?"
                 )
                 guidance = (
-                    f"🎯 **Refinement:** Notice how sorted inputs can eliminate branching, turning the structure into a linear chain! "
-                    f"Check the citation below from your course notes."
+                    "🎯 **Refinement:** Notice how sorted inputs can eliminate branching, turning the structure into a linear chain! "
+                    "Check the citation below from your course notes."
                 )
 
         mindmap = await self.generate_mindmap_for_topic(query)

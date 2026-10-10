@@ -1,10 +1,12 @@
 from fastapi import APIRouter, Depends
-from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.models import User
-from app.schemas.schemas import SocraticQueryRequest, SocraticQueryResponse, ConceptMindmap
+from app.schemas.schemas import (
+    ConceptMindmap,
+    SocraticQueryRequest,
+    SocraticQueryResponse,
+)
 from app.services.socratic_service import socratic_service
 
 router = APIRouter(prefix="/socratic", tags=["Socratic AI Tutor & Concept Mindmaps"])
@@ -24,4 +26,4 @@ async def socratic_query(
 @router.get("/mindmap", response_model=ConceptMindmap)
 async def get_concept_mindmap(topic: str = "Binary Search Trees"):
     """Returns visual concept mindmap nodes, edges, and Mermaid.js diagram for a topic."""
-    return socratic_service.generate_mindmap_for_topic(topic)
+    return await socratic_service.generate_mindmap_for_topic(topic)

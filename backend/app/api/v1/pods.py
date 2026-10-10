@@ -1,21 +1,40 @@
 import json
-import secrets
 import logging
-from typing import List, Optional
+import re
+import secrets
 from datetime import datetime, timedelta, timezone
-import httpx
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, status
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import HTMLResponse
+from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
-from app.core.database import get_db, AsyncSessionLocal
-from app.core.security import get_current_user
-from app.models.models import LearningPod, PodMessage, User, PodBlacklist, EducatorPodQuota
+from app.core.config import settings
+from app.core.database import AsyncSessionLocal, get_db
+from app.core.security import get_current_user, get_password_hash, verify_password
+from app.models.models import (
+    EducatorPodQuota,
+    LearningPod,
+    PodBlacklist,
+    PodMessage,
+    User,
+)
 from app.schemas.schemas import (
-    PodCreate, PodResponse, PodMessageSchema,
-    PodPasscodeVerifyRequest, PodPasscodeVerifyResponse,
-    PodEndRequest, PodEndResponse
+    PodCreate,
+    PodEndRequest,
+    PodEndResponse,
+    PodMessageSchema,
+    PodPasscodeVerifyRequest,
+    PodPasscodeVerifyResponse,
+    PodResponse,
 )
 from app.services.pod_service import pod_manager
 
@@ -23,15 +42,43 @@ logger = logging.getLogger("cognipath.pods_api")
 
 router = APIRouter(prefix="/pods", tags=["Native Learning Pods & Real-Time Collab"])
 
+def _pod_to_response(pod: LearningPod, host_name: str) -> PodResponse:
+    now = datetime.now(timezone.utc)
+    rem_sec = None
+    if pod.expires_at:
+        exp = pod.expires_at
+        if exp.tzinfo is None:
+            exp = exp.replace(tzinfo=timezone.utc)
+        rem_sec = max(0, int((exp - now).total_seconds()))
 
-@router.get("", response_model=List[PodResponse])
-async def list_pods(course_id: int, db: AsyncSession = Depends(get_db)):
+    return PodResponse(
+        id=pod.id,
+        title=pod.title,
+        course_id=pod.course_id,
+        host_id=pod.host_id,
+        host_name=host_name,
+        topic=pod.topic,
+        agenda=pod.agenda,
+        has_passcode=bool(pod.passcode_hash),
+        is_active=pod.is_active,
+        max_peers=pod.max_peers,
+        scheduled_duration_minutes=pod.scheduled_duration_minutes,
+        remaining_seconds=rem_sec,
+        status=pod.status,
+        kshetra_meeting_code=pod.kshetra_meeting_code,
+        created_at=pod.created_at
+    )
+
+
+
+@router.get("", response_model=list[PodResponse])
+async def list_pods(course_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """List all active learning pods for a specific course with host details and duration info."""
     now = datetime.now(timezone.utc)
     result = await db.execute(
         select(LearningPod).where(
             LearningPod.course_id == course_id,
-            LearningPod.is_active == True
+            LearningPod.is_active
         ).order_by(LearningPod.created_at.desc())
     )
     pods = result.scalars().all()
@@ -88,53 +135,68 @@ async def create_pod(
 
     # Enforce quota for educators
     if current_user.role == "EDUCATOR":
-        quota_res = await db.execute(
+        # Compute weekly usage by summing daily_created over all EducatorPodQuota rows with the same week_start_date
+        week_res = await db.execute(
             select(EducatorPodQuota).where(
                 EducatorPodQuota.educator_id == current_user.id,
-                EducatorPodQuota.day_date == today_str
+                EducatorPodQuota.week_start_date == week_start_str
             )
         )
-        quota = quota_res.scalars().first()
+        week_quotas = week_res.scalars().all()
+        weekly_used = sum(q.daily_created for q in week_quotas)
 
-        if not quota:
-            quota = EducatorPodQuota(
-                educator_id=current_user.id,
-                day_date=today_str,
-                week_start_date=week_start_str,
-                daily_created=0,
-                weekly_created=0
-            )
-            db.add(quota)
-            await db.commit()
-            await db.refresh(quota)
+        today_quota = next((q for q in week_quotas if q.day_date == today_str), None)
+        daily_used = today_quota.daily_created if today_quota else 0
 
         # Quota checks: 3 per day, 12 per week
-        if quota.daily_created >= 3:
+        if daily_used >= 3:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Educator quota limit exceeded: Maximum 3 active pods allowed per day."
             )
-        if quota.weekly_created >= 12:
+        if weekly_used >= 12:
             raise HTTPException(
                 status_code=status.HTTP_429_TOO_MANY_REQUESTS,
                 detail="Educator quota limit exceeded: Maximum 12 active pods allowed per week."
             )
 
-        quota.daily_created += 1
-        quota.weekly_created += 1
-        await db.commit()
-
     duration_mins = pod_in.scheduled_duration_minutes or 45
     started_at = now
     expires_at = now + timedelta(minutes=duration_mins)
 
-    # Assign or generate clean Live Kshetra meeting code
+    # Assign or generate clean Live Kshetra meeting code with active uniqueness guard
     if pod_in.kshetra_meeting_code and pod_in.kshetra_meeting_code.strip():
         kshetra_code = pod_in.kshetra_meeting_code.strip().replace(" ", "-").lower()
+        existing_active = await db.execute(
+            select(LearningPod).where(
+                LearningPod.kshetra_meeting_code == kshetra_code,
+                LearningPod.is_active
+            )
+        )
+        if existing_active.scalars().first():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"A learning pod with Kshetra meeting code '{kshetra_code}' is currently active. Please select a different code or wait for the existing pod to conclude."
+            )
     else:
-        p1 = secrets.token_hex(2)
-        p2 = secrets.token_hex(2)
-        kshetra_code = f"sih-{p1}-{p2}"
+        while True:
+            p1 = secrets.token_hex(2)
+            p2 = secrets.token_hex(2)
+            candidate_code = f"sih-{p1}-{p2}"
+            existing_active = await db.execute(
+                select(LearningPod).where(
+                    LearningPod.kshetra_meeting_code == candidate_code,
+                    LearningPod.is_active
+                )
+            )
+            if not existing_active.scalars().first():
+                kshetra_code = candidate_code
+                break
+
+    # Hash passcode with bcrypt if provided
+    passcode_hash_val = None
+    if pod_in.passcode and pod_in.passcode.strip():
+        passcode_hash_val = get_password_hash(pod_in.passcode.strip())
 
     pod = LearningPod(
         title=pod_in.title,
@@ -142,7 +204,7 @@ async def create_pod(
         host_id=current_user.id,
         topic=pod_in.topic,
         agenda=pod_in.agenda,
-        passcode_hash=pod_in.passcode.strip() if pod_in.passcode else None,
+        passcode_hash=passcode_hash_val,
         max_peers=pod_in.max_peers,
         is_active=True,
         scheduled_duration_minutes=duration_mins,
@@ -154,6 +216,27 @@ async def create_pod(
     db.add(pod)
     await db.commit()
     await db.refresh(pod)
+
+    # Increment quota only after pod is successfully committed
+    if current_user.role == "EDUCATOR":
+        quota_res = await db.execute(
+            select(EducatorPodQuota).where(
+                EducatorPodQuota.educator_id == current_user.id,
+                EducatorPodQuota.day_date == today_str
+            )
+        )
+        quota = quota_res.scalars().first()
+        if not quota:
+            quota = EducatorPodQuota(
+                educator_id=current_user.id,
+                day_date=today_str,
+                week_start_date=week_start_str,
+                daily_created=1
+            )
+            db.add(quota)
+        else:
+            quota.daily_created += 1
+        await db.commit()
 
     return PodResponse(
         id=pod.id,
@@ -187,16 +270,17 @@ async def get_educator_quota(
     today_str = now.strftime("%Y-%m-%d")
     week_start_str = (now - timedelta(days=now.weekday())).strftime("%Y-%m-%d")
 
-    quota_res = await db.execute(
+    week_res = await db.execute(
         select(EducatorPodQuota).where(
             EducatorPodQuota.educator_id == current_user.id,
-            EducatorPodQuota.day_date == today_str
+            EducatorPodQuota.week_start_date == week_start_str
         )
     )
-    quota = quota_res.scalars().first()
+    week_quotas = week_res.scalars().all()
+    weekly_used = sum(q.daily_created for q in week_quotas)
 
-    daily_used = quota.daily_created if quota else 0
-    weekly_used = quota.weekly_created if quota else 0
+    today_quota = next((q for q in week_quotas if q.day_date == today_str), None)
+    daily_used = today_quota.daily_created if today_quota else 0
 
     return {
         "daily_created": daily_used,
@@ -214,6 +298,7 @@ async def get_kshetra_embed(code: str):
     Live Kshetra Native Bridge.
     Seamlessly mounts and bridges room sessions directly within CogniPath without external dependencies.
     """
+    if not re.match(r'^[a-zA-Z0-9\-]+$', code): raise HTTPException(400)
     clean_code = code.strip().replace(" ", "-").lower()
     html_content = f"""
     <!DOCTYPE html>
@@ -304,6 +389,7 @@ async def get_kshetra_embed(code: str):
 @router.get("/kshetra-meta/{code}")
 async def get_kshetra_meta(code: str):
     """Returns direct join URL, embed URL, and meeting code for any Live Kshetra room."""
+    if not re.match(r'^[a-zA-Z0-9\-]+$', code): raise HTTPException(400)
     clean_code = code.strip().replace(" ", "-").lower()
     return {
         "meeting_code": clean_code,
@@ -348,8 +434,15 @@ async def verify_pod_passcode(
             message="Access authorized"
         )
 
-    # Verify matching passcode
-    if req.passcode.strip() == pod.passcode_hash.strip():
+    # Verify matching passcode with strict bcrypt verification
+    is_valid = False
+    if pod.passcode_hash:
+        try:
+            is_valid = verify_password(req.passcode.strip(), pod.passcode_hash)
+        except Exception:
+            is_valid = False
+
+    if is_valid:
         return PodPasscodeVerifyResponse(
             verified=True,
             is_blacklisted=False,
@@ -364,7 +457,7 @@ async def verify_pod_passcode(
 
 
 @router.get("/{pod_id}", response_model=PodResponse)
-async def get_pod(pod_id: int, db: AsyncSession = Depends(get_db)):
+async def get_pod(pod_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Get single pod details with synchronized remaining duration."""
     result = await db.execute(select(LearningPod).where(LearningPod.id == pod_id))
     pod = result.scalars().first()
@@ -406,7 +499,7 @@ async def get_pod(pod_id: int, db: AsyncSession = Depends(get_db)):
 @router.post("/{pod_id}/end", response_model=PodEndResponse)
 async def end_pod_for_everyone(
     pod_id: int,
-    req: Optional[PodEndRequest] = None,
+    req: PodEndRequest | None = None,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -416,10 +509,7 @@ async def end_pod_for_everyone(
         raise HTTPException(status_code=404, detail="Pod not found")
 
     if pod.host_id != current_user.id and current_user.role != "ADMIN":
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the pod host or an admin can end this meeting for everyone."
-        )
+        raise HTTPException(status_code=403, detail="Only the host or Admin can end this pod")
 
     reason = req.reason if req and req.reason else "Session ended by meeting host"
     result = await pod_manager.teardown_pod(
@@ -438,8 +528,8 @@ async def end_pod_for_everyone(
     )
 
 
-@router.get("/{pod_id}/messages", response_model=List[PodMessageSchema])
-async def get_pod_messages(pod_id: int, db: AsyncSession = Depends(get_db)):
+@router.get("/{pod_id}/messages", response_model=list[PodMessageSchema])
+async def get_pod_messages(pod_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Retrieve message history for a learning pod."""
     result = await db.execute(
         select(PodMessage).where(PodMessage.pod_id == pod_id).order_by(PodMessage.created_at.asc())
@@ -456,34 +546,130 @@ async def pod_websocket_endpoint(
     websocket: WebSocket,
     room_id: str,
     client_id: str = "guest",
-    user_name: str = "Peer",
-    user_id: Optional[str] = None,
-    role: str = "STUDENT",
-    is_creator: Optional[str] = None
+    token: str | None = None,
+    passcode: str | None = None
 ):
     """WebSocket endpoint for WebRTC mesh signaling, live chat with @Tutor co-pilot, and host moderation."""
+    # Always accept the websocket connection first so closing with custom close codes (4401-4410)
+    # properly transmits the application status code and reason to the client instead of HTTP 403 / 1006.
+    await websocket.accept()
+
     room_key = str(room_id).strip()
-    is_creator_bool = str(is_creator).lower() in ("true", "1", "yes")
-
-    parsed_user_id = None
-    if user_id is not None and str(user_id).strip().isdigit():
-        parsed_user_id = int(str(user_id).strip())
-
     parsed_pod_id = int(room_key) if room_key.isdigit() else None
 
-    # Check blacklist before admitting
-    if parsed_pod_id and parsed_user_id:
-        async with AsyncSessionLocal() as check_session:
-            bl_res = await check_session.execute(
-                select(PodBlacklist).where(
-                    PodBlacklist.pod_id == parsed_pod_id,
-                    PodBlacklist.user_id == parsed_user_id
-                )
-            )
-            if bl_res.scalars().first():
-                await websocket.close(code=1008, reason="Blacklisted from pod")
-                return
+    if not token:
+        await websocket.close(code=4401, reason="Missing JWT token")
+        return
 
+    # Decode JWT
+    try:
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+        token_user_id = payload.get("sub")
+        if not token_user_id:
+            raise JWTError()
+    except JWTError:
+        await websocket.close(code=4401, reason="Invalid JWT token")
+        return
+
+    # Security Note: Transmitting passcodes or tokens via WebSocket query strings
+    # can expose credentials in proxy/server access logs. A production enhancement
+    # can accept auth payloads within the first WebSocket message frame.
+    async with AsyncSessionLocal() as session:
+        # Load User
+        user_res = await session.execute(select(User).where(User.id == int(token_user_id)))
+        user = user_res.scalars().first()
+        if not user:
+            await websocket.close(code=4401, reason="User not found")
+            return
+
+        parsed_user_id = user.id
+        user_name = user.full_name or "Peer"
+        role = user.role
+
+        # Load Pod (by numeric id or by active kshetra_meeting_code)
+        if parsed_pod_id:
+            pod_res = await session.execute(select(LearningPod).where(LearningPod.id == parsed_pod_id))
+            pod_obj = pod_res.scalars().first()
+        else:
+            clean_code = room_key.lower()
+            # Prioritize currently active pod with matching meeting code
+            pod_res = await session.execute(
+                select(LearningPod)
+                .where(
+                    LearningPod.kshetra_meeting_code == clean_code,
+                    LearningPod.is_active
+                )
+                .order_by(LearningPod.id.desc())
+            )
+            pod_obj = pod_res.scalars().first()
+
+            # If no active pod matches, check ended/expired pods to provide clear 4410 status
+            if not pod_obj:
+                pod_res_any = await session.execute(
+                    select(LearningPod)
+                    .where(LearningPod.kshetra_meeting_code == clean_code)
+                    .order_by(LearningPod.id.desc())
+                )
+                pod_obj = pod_res_any.scalars().first()
+
+            if pod_obj:
+                parsed_pod_id = pod_obj.id
+                room_key = str(pod_obj.id)
+
+        if not pod_obj:
+            await websocket.close(code=4404, reason="Pod not found")
+            return
+            
+        is_expired = False
+        if pod_obj.expires_at:
+            exp_time = pod_obj.expires_at
+            if exp_time.tzinfo is None:
+                exp_time = exp_time.replace(tzinfo=timezone.utc)
+            if exp_time < datetime.now(timezone.utc):
+                is_expired = True
+
+        if not pod_obj.is_active or is_expired:
+            await websocket.close(code=4410, reason="Pod is ended or expired")
+            return
+
+        # Check Blacklist
+        bl_res = await session.execute(
+            select(PodBlacklist).where(
+                PodBlacklist.pod_id == pod_obj.id,
+                PodBlacklist.user_id == parsed_user_id
+            )
+        )
+        if bl_res.scalars().first():
+            await websocket.close(code=4403, reason="Blacklisted from pod")
+            return
+
+        # Check Capacity
+        active_conns = pod_manager.active_connections.get(room_key, set())
+        if len(active_conns) >= pod_obj.max_peers:
+            await websocket.close(code=4409, reason="Pod is full")
+            return
+
+        # Check Passcode (only if not host/admin)
+        is_creator_bool = (parsed_user_id == pod_obj.host_id or role == "ADMIN")
+        
+        if pod_obj.passcode_hash and not is_creator_bool:
+            if not passcode:
+                await websocket.close(code=4401, reason="Passcode required")
+                return
+            is_pass_valid = False
+            try:
+                is_pass_valid = verify_password(passcode.strip(), pod_obj.passcode_hash)
+            except Exception:
+                is_pass_valid = False
+
+            if not is_pass_valid:
+                await websocket.close(code=4401, reason="Invalid passcode")
+                return
+                
+        course_id = pod_obj.course_id
+        host_id = pod_obj.host_id
+
+    # Join the room
     await pod_manager.connect(
         pod_id=room_key,
         websocket=websocket,
@@ -493,16 +679,6 @@ async def pod_websocket_endpoint(
         role=role,
         is_creator=is_creator_bool
     )
-
-    course_id = 1
-    host_id = None
-    if parsed_pod_id:
-        async with AsyncSessionLocal() as session:
-            pod_res = await session.execute(select(LearningPod).where(LearningPod.id == parsed_pod_id))
-            pod_obj = pod_res.scalars().first()
-            if pod_obj:
-                course_id = pod_obj.course_id
-                host_id = pod_obj.host_id
 
     try:
         while True:
@@ -538,7 +714,9 @@ async def pod_websocket_endpoint(
                 )
 
             elif msg_type == "KICK_PARTICIPANT":
-                # Host kicks participant
+                # Only host or admin can kick participants
+                if not is_creator_bool:
+                    continue
                 target_client_id = data.get("target_client_id")
                 target_user_id = data.get("target_user_id")
                 reason = data.get("reason", "Disruptive conduct")
@@ -563,6 +741,9 @@ async def pod_websocket_endpoint(
                     })
 
             elif msg_type in ["FORCE_MUTE_PARTICIPANT", "MUTE_PARTICIPANT"]:
+                # Only host or admin can mute peers
+                if not is_creator_bool:
+                    continue
                 target_client_id = data.get("target_client_id") or data.get("targetUserId")
                 reason = data.get("reason", "Muted by host")
                 if target_client_id:
@@ -588,6 +769,8 @@ async def pod_websocket_endpoint(
                 })
 
             elif msg_type in ["GRANT_UNMUTE_PERMISSION", "UNMUTE_PARTICIPANT"]:
+                if not is_creator_bool:
+                    continue
                 target_client_id = data.get("target_client_id") or data.get("targetUserId")
                 if target_client_id:
                     await pod_manager.send_to_client(room_key, target_client_id, {
@@ -597,6 +780,8 @@ async def pod_websocket_endpoint(
                     })
 
             elif msg_type == "DENY_UNMUTE_PERMISSION":
+                if not is_creator_bool:
+                    continue
                 target_client_id = data.get("target_client_id") or data.get("targetUserId")
                 reason = data.get("reason", "Host denied unmute request")
                 if target_client_id:
@@ -606,6 +791,7 @@ async def pod_websocket_endpoint(
                     })
 
             elif msg_type == "MUTE_ALL":
+                if not is_creator_bool: continue
                 for cid, sock in list(pod_manager.peer_sockets.get(room_key, {}).items()):
                     if cid != client_id:
                         try:
@@ -639,6 +825,7 @@ async def pod_websocket_endpoint(
 
 
             elif msg_type == "DISABLE_VIDEO":
+                if not is_creator_bool: continue
                 target_client_id = data.get("target_client_id")
                 if target_client_id:
                     await pod_manager.send_to_client(room_key, target_client_id, {"type": "REMOTE_DISABLE_VIDEO"})
@@ -649,7 +836,7 @@ async def pod_websocket_endpoint(
 
             elif msg_type in ["SIGNAL_OFFER", "SIGNAL_ANSWER", "SIGNAL_ICE"]:
                 # Relay WebRTC signaling frames directly to recipient peer if specified, or broadcast
-                to_client = data.get("to_client")
+                to_client = data.get("to_client") or data.get("target_client_id") or data.get("targetUserId")
                 if to_client:
                     await pod_manager.send_to_client(room_key, to_client, data)
                 else:
@@ -673,6 +860,7 @@ async def pod_websocket_endpoint(
                             pass
 
             elif msg_type == "END_POD_FOR_ALL":
+                if not is_creator_bool: continue
                 is_auth_host = (
                     parsed_user_id and (parsed_user_id == host_id or role == "EDUCATOR")
                 ) or pod_manager.pod_hosts.get(room_key) == client_id

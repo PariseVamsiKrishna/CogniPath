@@ -1,5 +1,5 @@
 import logging
-from typing import Dict, Any, Optional
+
 import httpx
 
 from app.core.config import settings
@@ -117,7 +117,7 @@ class BhashiniService:
         text: str,
         target_lang: str = "hi",
         gender: str = "female"
-    ) -> Optional[str]:
+    ) -> str | None:
         """Synthesizes text into speech audio (base64) using Bhashini TTS."""
         if self.api_key and self.user_id:
             try:

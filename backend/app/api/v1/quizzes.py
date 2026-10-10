@@ -1,6 +1,6 @@
 import json
 from datetime import datetime, timedelta, timezone
-from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -8,12 +8,20 @@ from sqlalchemy.future import select
 from app.core.database import get_db
 from app.core.security import get_current_user
 from app.models.models import (
-    User, Course, Quiz, QuizQuestion, StudentQuizAttempt,
-    StudentConceptRetention, StudentActivityLog
+    Enrollment,
+    Quiz,
+    QuizQuestion,
+    StudentActivityLog,
+    StudentConceptRetention,
+    StudentQuizAttempt,
+    User,
 )
 from app.schemas.schemas import (
-    QuizResponse, QuizQuestionSchema, QuizSubmitRequest,
-    QuizSubmitResponse, SpacedConceptItem
+    QuizQuestionSchema,
+    QuizResponse,
+    QuizSubmitRequest,
+    QuizSubmitResponse,
+    SpacedConceptItem,
 )
 from app.services.quiz_service import quiz_service
 
@@ -28,6 +36,11 @@ async def generate_spaced_quiz(
     db: AsyncSession = Depends(get_db)
 ):
     """Generates an on-demand spaced-repetition micro-quiz for the student."""
+    enrol_res = await db.execute(select(Enrollment).where(Enrollment.user_id == current_user.id, Enrollment.course_id == course_id))
+    if not enrol_res.scalars().first():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not enrolled in this course.")
+
+    # Create or reuse a micro-quiz for the topic using AI grounded in course context
     # Reuse existing quiz for the same course+topic to avoid duplicate DB records
     existing_res = await db.execute(
         select(Quiz).where(Quiz.course_id == course_id, Quiz.topic == topic)
@@ -136,6 +149,10 @@ async def submit_quiz_attempt(
     if not quiz:
         raise HTTPException(status_code=404, detail="Quiz not found")
 
+    enrol_res = await db.execute(select(Enrollment).where(Enrollment.user_id == current_user.id, Enrollment.course_id == quiz.course_id))
+    if not enrol_res.scalars().first():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not enrolled in this course.")
+
     q_res = await db.execute(select(QuizQuestion).where(QuizQuestion.quiz_id == req.quiz_id))
     questions = q_res.scalars().all()
     if not questions:
@@ -238,13 +255,17 @@ async def submit_quiz_attempt(
         feedback=feedback
     )
 
-@router.get("/due", response_model=List[SpacedConceptItem])
+@router.get("/due", response_model=list[SpacedConceptItem])
 async def get_due_retention_items(
     course_id: int,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """List concepts due for spaced-repetition review for the current student."""
+    enrol_res = await db.execute(select(Enrollment).where(Enrollment.user_id == current_user.id, Enrollment.course_id == course_id))
+    if not enrol_res.scalars().first():
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not enrolled in this course.")
+
     now = datetime.now(timezone.utc)
     res = await db.execute(
         select(StudentConceptRetention).where(

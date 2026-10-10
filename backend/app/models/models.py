@@ -1,9 +1,21 @@
 from datetime import datetime, timezone
+
 from sqlalchemy import (
-    Column, Integer, String, Text, Boolean, Float, DateTime, ForeignKey, UniqueConstraint
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
 )
 from sqlalchemy.orm import relationship
+
 from app.core.database import Base
+
 
 def utcnow():
     return datetime.now(timezone.utc)
@@ -173,6 +185,7 @@ class StudentActivityLog(Base):
 class LearningPod(Base):
     """Native collaborative video/audio and chat pod."""
     __tablename__ = "learning_pods"
+    __table_args__ = (Index("ix_pods_course_active", "course_id", "is_active"),)
 
     id = Column(Integer, primary_key=True, index=True)
     title = Column(String(255), nullable=False)
@@ -198,6 +211,7 @@ class LearningPod(Base):
 
 class PodMessage(Base):
     __tablename__ = "pod_messages"
+    __table_args__ = (Index("ix_pod_messages_pod", "pod_id"),)
 
     id = Column(Integer, primary_key=True, index=True)
     pod_id = Column(Integer, ForeignKey("learning_pods.id"), nullable=False)
@@ -211,6 +225,9 @@ class PodMessage(Base):
 
 class CommunityChannel(Base):
     __tablename__ = "community_channels"
+    __table_args__ = (
+        UniqueConstraint('course_id', 'name', name='uq_course_channel'),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     course_id = Column(Integer, ForeignKey("courses.id"), nullable=False)
@@ -460,7 +477,6 @@ class EducatorPodQuota(Base):
     day_date = Column(String(20), nullable=False)  # YYYY-MM-DD
     week_start_date = Column(String(20), nullable=False)  # YYYY-MM-DD
     daily_created = Column(Integer, default=0, nullable=False)
-    weekly_created = Column(Integer, default=0, nullable=False)
 
     educator = relationship("User", back_populates="pod_quotas")
 

@@ -1,20 +1,28 @@
-from typing import List, Optional
+import sqlalchemy.exc
 from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import delete
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import delete
 
 from app.core.database import get_db
 from app.core.security import get_current_user
-from app.models.models import CommunityChannel, CommunityMessage, User, Course, Enrollment
+from app.models.models import (
+    CommunityChannel,
+    CommunityMessage,
+    Course,
+    Enrollment,
+    User,
+)
 from app.schemas.schemas import (
-    CommunityChannelResponse, CommunityMessageCreate, CommunityMessageResponse
+    CommunityChannelResponse,
+    CommunityMessageCreate,
+    CommunityMessageResponse,
 )
 
 router = APIRouter(prefix="/communities", tags=["Native Community Hub"])
 
-@router.get("/courses/{course_id}/channels", response_model=List[CommunityChannelResponse])
-async def list_course_channels(course_id: int, db: AsyncSession = Depends(get_db)):
+@router.get("/courses/{course_id}/channels", response_model=list[CommunityChannelResponse])
+async def list_course_channels(course_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """List all community channels available in a course."""
     result = await db.execute(
         select(CommunityChannel).where(CommunityChannel.course_id == course_id).order_by(CommunityChannel.id.asc())
@@ -32,15 +40,22 @@ async def list_course_channels(course_id: int, db: AsyncSession = Depends(get_db
             name="discussion",
             description="Open peer questions, concept discussions, and study exchange"
         )
-        db.add_all([ann_ch, disc_ch])
-        await db.commit()
-        await db.refresh(ann_ch)
-        await db.refresh(disc_ch)
-        return [ann_ch, disc_ch]
+        try:
+            db.add_all([ann_ch, disc_ch])
+            await db.commit()
+            await db.refresh(ann_ch)
+            await db.refresh(disc_ch)
+            return [ann_ch, disc_ch]
+        except sqlalchemy.exc.IntegrityError:
+            await db.rollback()
+            result = await db.execute(
+                select(CommunityChannel).where(CommunityChannel.course_id == course_id).order_by(CommunityChannel.id.asc())
+            )
+            return result.scalars().all()
     return channels
 
-@router.get("/channels/{channel_id}/messages", response_model=List[CommunityMessageResponse])
-async def list_channel_messages(channel_id: int, db: AsyncSession = Depends(get_db)):
+@router.get("/channels/{channel_id}/messages", response_model=list[CommunityMessageResponse])
+async def list_channel_messages(channel_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Retrieve message feed for a channel."""
     result = await db.execute(
         select(CommunityMessage)

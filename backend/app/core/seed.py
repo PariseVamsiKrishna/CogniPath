@@ -1,17 +1,32 @@
-import logging
-import json
 import hashlib
+import json
+import logging
 from datetime import datetime, timedelta, timezone
+
 from sqlalchemy.future import select
 
 from app.core.database import AsyncSessionLocal
 from app.core.security import get_password_hash
 from app.models.models import (
-    User, Course, Enrollment, Document, Quiz, QuizQuestion,
-    StudentQuizAttempt, StudentConceptRetention, StudentActivityLog,
-    LearningPod, CommunityChannel, CommunityMessage,
-    Module, Topic, ModuleResource, Exam, ExamQuestion,
-    Assignment, StudentBadge
+    Assignment,
+    CommunityChannel,
+    CommunityMessage,
+    Course,
+    Document,
+    Enrollment,
+    Exam,
+    ExamQuestion,
+    LearningPod,
+    Module,
+    ModuleResource,
+    Quiz,
+    QuizQuestion,
+    StudentActivityLog,
+    StudentBadge,
+    StudentConceptRetention,
+    StudentQuizAttempt,
+    Topic,
+    User,
 )
 from app.services.chroma_service import chroma_service
 

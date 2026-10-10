@@ -12,7 +12,8 @@ export default function LiveKshetraFrame({
   sharedClientId = null,
   wsHandlersRef = null,
   pendingMessagesRef = null,
-  sharedLocalStreamRef = null
+  sharedLocalStreamRef = null,
+  wsReady = false
 }) {
   return (
     <LiveKshetraNative
@@ -27,6 +28,7 @@ export default function LiveKshetraFrame({
       wsHandlersRef={wsHandlersRef}
       pendingMessagesRef={pendingMessagesRef}
       sharedLocalStreamRef={sharedLocalStreamRef}
+      wsReady={wsReady}
     />
   );
 }
