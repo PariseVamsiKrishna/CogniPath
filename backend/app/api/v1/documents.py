@@ -55,13 +55,6 @@ async def upload_document(
     # Verify course ownership
     await _check_course_access(course_id, current_user, db, write=True)
 
-    # Verify ownership: only the course's own educator (or admin) can upload
-    if current_user.role != "ADMIN" and course.educator_id != current_user.id:
-        raise HTTPException(
-            status_code=403,
-            detail="You can only upload documents to courses you created."
-        )
-
     # Validate file extension
     raw_filename = file.filename or "document.pdf"
     safe_basename = os.path.basename(raw_filename).replace(" ", "_")
