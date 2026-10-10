@@ -57,6 +57,10 @@ export const authAPI = {
   register: (userData) => apiClient.post('/auth/register', userData),
   getMe: () => apiClient.get('/auth/me'),
   updateProfile: (data) => apiClient.put('/auth/profile', data),
+  logout: () => {
+    localStorage.removeItem('cognipath_token');
+    localStorage.removeItem('cognipath_user');
+  },
 };
 
 export const coursesAPI = {
