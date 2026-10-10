@@ -2,7 +2,7 @@ import logging
 import time
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 
@@ -31,6 +31,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger("cognipath.main")
 
+from sqlalchemy import text
 from sqlalchemy.future import select
 
 from app.core.database import AsyncSessionLocal
@@ -138,5 +139,23 @@ async def root():
     }
 
 @app.get("/health")
+@app.get(f"{settings.API_V1_STR}/health")
 async def health_check():
     return {"status": "healthy", "version": settings.VERSION}
+
+
+@app.get("/health/ready")
+@app.get(f"{settings.API_V1_STR}/health/ready")
+async def readiness_check():
+    try:
+        async with AsyncSessionLocal() as session:
+            await session.execute(text("SELECT 1"))
+        return {
+            "status": "ready",
+            "database": "connected",
+            "version": settings.VERSION,
+        }
+    except Exception as e:
+        logger.error(f"Readiness check database failure: {e}")
+        raise HTTPException(status_code=503, detail="Database connection unavailable")
+

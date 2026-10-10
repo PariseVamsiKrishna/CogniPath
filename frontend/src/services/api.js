@@ -1,6 +1,6 @@
 import axios from 'axios';
 
-const rawBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
+const rawBase = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '').trim();
 const isProd = import.meta.env.PROD;
 
 if (isProd && !rawBase) {
@@ -15,13 +15,13 @@ const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000,
+  timeout: 60000,
 });
 
 // Ping health endpoint on load to wake up cold-start backend (e.g. Render free tier)
 try {
   const wakeUrl = cleanBase ? `${cleanBase}/health` : '/health';
-  axios.get(wakeUrl, { timeout: 10000 }).catch(() => {
+  axios.get(wakeUrl, { timeout: 60000 }).catch(() => {
     /* silent wake attempt */
   });
 } catch (e) {
@@ -44,10 +44,32 @@ apiClient.interceptors.request.use(
   (error) => Promise.reject(error)
 );
 
-// Response Interceptor: Handle Unauthenticated
+// Response Interceptor: Safe GET Retries for Render Cold Starts & Unauthenticated Handling
 apiClient.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const config = error.config;
+    if (config) {
+      const method = (config.method || 'get').toLowerCase();
+      const isSafeMethod = ['get', 'head', 'options'].includes(method);
+
+      // Only retry idempotent GET requests; DO NOT retry mutating requests (POST/PUT/DELETE)
+      if (isSafeMethod) {
+        config.__retryCount = config.__retryCount || 0;
+        const maxRetries = 2;
+        const isTimeoutOrNetwork = error.code === 'ECONNABORTED' || !error.response;
+        const isColdStartServerError = error.response && [502, 503, 504].includes(error.response.status);
+
+        if ((isTimeoutOrNetwork || isColdStartServerError) && config.__retryCount < maxRetries) {
+          config.__retryCount += 1;
+          const backoffMs = config.__retryCount * 1500;
+          console.warn(`[COGNIPATH API] Retrying ${config.url} (${config.__retryCount}/${maxRetries}) after ${backoffMs}ms due to: ${error.message || error.response?.status}`);
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          return apiClient(config);
+        }
+      }
+    }
+
     if (error.response && error.response.status === 401) {
       console.warn('[COGNIPATH API] 401 Unauthorized encountered');
     }

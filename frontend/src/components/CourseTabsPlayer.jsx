@@ -425,12 +425,7 @@ export default function CourseTabsPlayer({
         });
       }
 
-      const resUrl = `/api/v1/courses/resources/${resource.id}/view`;
-      const token = localStorage.getItem('cognipath_token');
-      const response = await fetch(resUrl, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
-      const blob = await response.blob();
+      const blob = await coursesAPI.viewResource(resource.id);
       const arrayBuffer = await blob.arrayBuffer();
 
       const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });

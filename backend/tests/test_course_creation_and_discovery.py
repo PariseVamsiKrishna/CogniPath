@@ -170,3 +170,26 @@ async def test_educator_my_courses_retrieval(client, db_session):
     my_courses = my_resp.json()
     assert any(c["code"] == "DS501" for c in my_courses)
     assert any(c["educator_email"] == "prof_mine@cognipath.edu" for c in my_courses)
+
+@pytest.mark.asyncio
+async def test_health_and_readiness_endpoints(client):
+    # Test root /health and /api/v1/health
+    resp1 = await client.get("/health")
+    assert resp1.status_code == 200
+    assert resp1.json()["status"] == "healthy"
+
+    resp2 = await client.get("/api/v1/health")
+    assert resp2.status_code == 200
+    assert resp2.json()["status"] == "healthy"
+
+    # Test root /health/ready and /api/v1/health/ready
+    resp3 = await client.get("/health/ready")
+    assert resp3.status_code == 200
+    assert resp3.json()["status"] == "ready"
+    assert resp3.json()["database"] == "connected"
+
+    resp4 = await client.get("/api/v1/health/ready")
+    assert resp4.status_code == 200
+    assert resp4.json()["status"] == "ready"
+    assert resp4.json()["database"] == "connected"
+
