@@ -93,12 +93,35 @@ export default function ModuleExamBuilder({
       setRagTopic(module.title || '');
       setExamTitle(existingExam?.title || `${module.title} Mastery Assessment`);
       setHasModuleExam(Boolean(existingExam || module.has_module_exam));
+      setTimeLimit(existingExam?.time_limit_mins || 15);
+      setPassingScore(existingExam?.passing_score || 70);
     } else if (isFinalExam) {
       setRagTopic('Comprehensive Course Concepts');
       setExamTitle(existingExam?.title || 'Comprehensive Final Course Examination');
       setHasModuleExam(true);
+      setTimeLimit(existingExam?.time_limit_mins || 45);
+      setPassingScore(existingExam?.passing_score || 70);
     }
-  }, [module, existingExam, isFinalExam]);
+    if (existingExam?.questions && existingExam.questions.length > 0) {
+      setStagedQuestions(existingExam.questions.map((q) => {
+        let opts = q.options;
+        if (typeof opts === 'string') {
+          try { opts = JSON.parse(opts); } catch (_) { opts = opts.split('\n').filter(Boolean); }
+        }
+        return {
+          id: q.id || `q_${Date.now()}_${Math.random()}`,
+          question_type: q.question_type || 'MCQ',
+          question_text: q.question_text,
+          options: Array.isArray(opts) ? opts : ['Option A', 'Option B', 'Option C', 'Option D'],
+          correct_answer: q.correct_answer || 'A',
+          explanation: q.explanation || '',
+          source_ref: q.source_ref || (module?.title ? `${module.title} Notes` : 'Module Notes')
+        };
+      }));
+    } else {
+      setStagedQuestions([]);
+    }
+  }, [module, existingExam, isFinalExam, isOpen]);
 
   if (!isOpen || (!module && !isFinalExam)) return null;
 

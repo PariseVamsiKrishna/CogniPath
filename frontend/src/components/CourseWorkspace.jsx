@@ -20,7 +20,9 @@ import {
   Layers,
   ChevronDown,
   Star,
-  ShieldCheck
+  ShieldCheck,
+  AlertTriangle,
+  RotateCw
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { coursesAPI, examsAPI } from '../services/api';
@@ -29,6 +31,32 @@ import SupplementaryVideoPlayer from './SupplementaryVideoPlayer';
 import CogniTutorDrawer from './CogniTutorDrawer';
 import ModuleExamBuilder from './ModuleExamBuilder';
 import CourseRatingModal from './CourseRatingModal';
+
+export function normalizeQuestionOptions(rawOptions) {
+  if (!rawOptions) return [];
+  if (Array.isArray(rawOptions)) return rawOptions.map(String);
+  if (typeof rawOptions === 'string') {
+    const trimmed = rawOptions.trim();
+    if (!trimmed) return [];
+    try {
+      const parsed = JSON.parse(trimmed);
+      if (Array.isArray(parsed)) return parsed.map(String);
+      if (typeof parsed === 'object' && parsed !== null) return Object.values(parsed).map(String);
+      return [String(parsed)];
+    } catch (_) {
+      try {
+        const cleanJson = trimmed.replace(/'/g, '"');
+        const parsed = JSON.parse(cleanJson);
+        if (Array.isArray(parsed)) return parsed.map(String);
+      } catch (_) {}
+      if (trimmed.includes('\n')) {
+        return trimmed.split('\n').map((s) => s.trim()).filter(Boolean);
+      }
+      return [trimmed];
+    }
+  }
+  return [];
+}
 
 export default function CourseWorkspace({
   courseId,
@@ -69,6 +97,8 @@ export default function CourseWorkspace({
   // Hierarchy and Course State
   const [hierarchy, setHierarchy] = useState(null);
   const [loading, setLoading] = useState(true);
+  const [hierarchyError, setHierarchyError] = useState(null);
+  const hierarchyReqIdRef = useRef(0);
   const isCourseOwner = user?.role === 'ADMIN' || (isEducator && hierarchy && String(hierarchy.educator_id) === String(user?.id));
 
   // Active Navigation Hierarchy
@@ -86,6 +116,7 @@ export default function CourseWorkspace({
 
   // Topic Completion Tracking
   const [completedTopics, setCompletedTopics] = useState({});
+  const [completingTopicId, setCompletingTopicId] = useState(null);
 
   // Protected PDF Viewer State
   const [pdfDoc, setPdfDoc] = useState(null);
@@ -93,8 +124,10 @@ export default function CourseWorkspace({
   const [totalPages, setTotalPages] = useState(1);
   const [zoomScale, setZoomScale] = useState(1.1);
   const [pdfLoading, setPdfLoading] = useState(false);
+  const [pdfError, setPdfError] = useState(null);
   const canvasRef = useRef(null);
   const renderTaskRef = useRef(null);
+  const pdfReqIdRef = useRef(0);
 
   // Module Exam Taking State
   const [moduleExam, setModuleExam] = useState(null);
@@ -103,6 +136,8 @@ export default function CourseWorkspace({
   const [studentAnswers, setStudentAnswers] = useState({});
   const studentAnswersRef = useRef({});
   const handleSubmitExamRef = useRef(null);
+  const isSubmittingExamRef = useRef(false);
+  const timerSubmittedRef = useRef(false);
   const [examTimeLeft, setExamTimeLeft] = useState(900);
   const [submissionResult, setSubmissionResult] = useState(null);
   const [submittingExam, setSubmittingExam] = useState(false);
@@ -135,6 +170,45 @@ export default function CourseWorkspace({
   const [topicUserRating, setTopicUserRating] = useState(0);
   const [topicHoverRating, setTopicHoverRating] = useState(0);
   const [ratingToast, setRatingToast] = useState('');
+
+  // URL Helper Functions
+  const getUrlParams = () => {
+    try {
+      return new URLSearchParams(window.location.search);
+    } catch (_) {
+      return new URLSearchParams();
+    }
+  };
+
+  const syncUrlState = (updates = {}) => {
+    try {
+      const params = getUrlParams();
+      if (courseId) params.set('courseId', courseId);
+      if (updates.moduleId !== undefined) {
+        if (updates.moduleId) params.set('moduleId', updates.moduleId);
+        else params.delete('moduleId');
+      }
+      if (updates.topicId !== undefined) {
+        if (updates.topicId) params.set('topicId', updates.topicId);
+        else params.delete('topicId');
+      }
+      if (updates.resourceId !== undefined) {
+        if (updates.resourceId) params.set('resourceId', updates.resourceId);
+        else params.delete('resourceId');
+      }
+      if (updates.view !== undefined) {
+        if (updates.view) params.set('view', updates.view);
+        else params.delete('view');
+      }
+      if (updates.isFinalExam !== undefined) {
+        if (updates.isFinalExam) params.set('isFinalExam', 'true');
+        else params.delete('isFinalExam');
+      }
+      const queryStr = params.toString();
+      const newUrl = queryStr ? `${window.location.pathname}?${queryStr}` : window.location.pathname;
+      window.history.replaceState({}, '', newUrl);
+    } catch (_) {}
+  };
 
   // Fetch topic rating when active topic changes
   useEffect(() => {
@@ -176,20 +250,81 @@ export default function CourseWorkspace({
   // ---------------------------------------------------------------------------
   useEffect(() => {
     if (courseId) {
-      fetchHierarchy(courseId);
+      fetchHierarchy(courseId, true);
       loadCompletedTopics(courseId);
     }
   }, [courseId]);
 
-  const loadCompletedTopics = async (cId) => {
-    try {
-      const localKey = `cgp_completed_topics_${user?.id}_${cId}`;
-      const saved = localStorage.getItem(localKey);
-      if (saved) {
-        setCompletedTopics(JSON.parse(saved));
-      }
-    } catch (e) {}
+  // Listen to browser Back / Forward buttons
+  useEffect(() => {
+    const handlePopState = () => {
+      if (hierarchy?.modules) {
+        const params = getUrlParams();
+        const qTopId = params.get('topicId') ? Number(params.get('topicId')) : null;
+        const qResId = params.get('resourceId') ? Number(params.get('resourceId')) : null;
+        const qModId = params.get('moduleId') ? Number(params.get('moduleId')) : null;
+        const qView = params.get('view');
+        const qIsFinal = params.get('isFinalExam') === 'true';
 
+        if (qIsFinal && hierarchy.final_exam) {
+          setIsFinalExam(true);
+          setActiveModuleId(null);
+          setActiveTopic(null);
+          setActiveResource(null);
+          setActiveContentType('exam');
+          return;
+        }
+
+        if (qTopId) {
+          for (const m of hierarchy.modules) {
+            const t = (m.topics || []).find((top) => top.id === qTopId);
+            if (t) {
+              setActiveModuleId(m.id);
+              setActiveTopic(t);
+              setActiveResource(null);
+              setIsFinalExam(false);
+              setActiveContentType('video');
+              return;
+            }
+          }
+        }
+
+        if (qResId) {
+          for (const m of hierarchy.modules) {
+            const r = (m.resources || []).find((res) => res.id === qResId);
+            if (r) {
+              setActiveModuleId(m.id);
+              setActiveResource(r);
+              setActiveTopic(null);
+              setIsFinalExam(false);
+              setActiveContentType('notes');
+              return;
+            }
+          }
+        }
+
+        if (qModId) {
+          const m = hierarchy.modules.find((mod) => mod.id === qModId);
+          if (m) {
+            setActiveModuleId(m.id);
+            if (qView === 'exam') {
+              setActiveTopic(null);
+              setActiveResource(null);
+              setIsFinalExam(false);
+              setActiveContentType('exam');
+              return;
+            }
+          }
+        }
+      }
+    };
+
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, [hierarchy]);
+
+  const loadCompletedTopics = async (cId) => {
+    const localKey = user?.id && cId ? `cgp_completed_topics_${user.id}_${cId}` : null;
     try {
       const data = await coursesAPI.getCompletedTopics(cId);
       if (data && Array.isArray(data.completed_topic_ids)) {
@@ -197,39 +332,222 @@ export default function CourseWorkspace({
         data.completed_topic_ids.forEach((id) => {
           map[id] = true;
         });
-        setCompletedTopics((prev) => {
-          const merged = { ...prev, ...map };
-          if (user?.id && cId) {
-            localStorage.setItem(`cgp_completed_topics_${user.id}_${cId}`, JSON.stringify(merged));
-          }
-          return merged;
-        });
-      }
-    } catch (err) {}
-  };
-
-  const fetchHierarchy = async (cId) => {
-    try {
-      setLoading(true);
-      const data = await coursesAPI.getHierarchy(cId);
-      setHierarchy(data);
-
-      if (data.modules && data.modules.length > 0) {
-        const firstMod = data.modules[0];
-        setActiveModuleId(firstMod.id);
-
-        if (firstMod.topics && firstMod.topics.length > 0) {
-          setActiveTopic(firstMod.topics[0]);
-          setActiveContentType('video');
-        } else if (firstMod.resources && firstMod.resources.length > 0) {
-          setActiveResource(firstMod.resources[0]);
-          setActiveContentType('notes');
+        setCompletedTopics(map);
+        if (localKey) {
+          localStorage.setItem(localKey, JSON.stringify(map));
         }
+        return;
       }
     } catch (err) {
-      console.error('Failed to load course workspace hierarchy:', err);
+      console.warn('Authoritative topic completion fetch failed, checking offline cache:', err);
+    }
+
+    if (localKey) {
+      try {
+        const saved = localStorage.getItem(localKey);
+        if (saved) {
+          setCompletedTopics(JSON.parse(saved));
+        }
+      } catch (_) {}
+    }
+  };
+
+  const fetchHierarchy = async (cId, preserveSelection = true, targetSelection = null) => {
+    if (!cId) return;
+    const reqId = ++hierarchyReqIdRef.current;
+    try {
+      setLoading(true);
+      setHierarchyError(null);
+      const data = await coursesAPI.getHierarchy(cId);
+      if (reqId !== hierarchyReqIdRef.current) return;
+      setHierarchy(data);
+
+      const modules = data.modules || [];
+      if (modules.length === 0) {
+        setActiveModuleId(null);
+        setActiveTopic(null);
+        setActiveResource(null);
+        return;
+      }
+
+      // 1. Explicit target selection (e.g. from educator creating content)
+      if (targetSelection) {
+        if (targetSelection.topicId) {
+          for (const m of modules) {
+            const t = (m.topics || []).find((top) => top.id === targetSelection.topicId);
+            if (t) {
+              setActiveModuleId(m.id);
+              setActiveTopic(t);
+              setActiveResource(null);
+              setIsFinalExam(false);
+              setActiveContentType('video');
+              syncUrlState({ moduleId: m.id, topicId: t.id, resourceId: null, view: 'video', isFinalExam: false });
+              return;
+            }
+          }
+        }
+        if (targetSelection.resourceId) {
+          for (const m of modules) {
+            const r = (m.resources || []).find((res) => res.id === targetSelection.resourceId);
+            if (r) {
+              setActiveModuleId(m.id);
+              setActiveResource(r);
+              setActiveTopic(null);
+              setIsFinalExam(false);
+              setActiveContentType('notes');
+              syncUrlState({ moduleId: m.id, resourceId: r.id, topicId: null, view: 'notes', isFinalExam: false });
+              return;
+            }
+          }
+        }
+        if (targetSelection.moduleId) {
+          const m = modules.find((mod) => mod.id === targetSelection.moduleId);
+          if (m) {
+            setActiveModuleId(m.id);
+            if (m.topics && m.topics.length > 0) {
+              setActiveTopic(m.topics[0]);
+              setActiveResource(null);
+              setIsFinalExam(false);
+              setActiveContentType('video');
+              syncUrlState({ moduleId: m.id, topicId: m.topics[0].id, resourceId: null, view: 'video', isFinalExam: false });
+              return;
+            }
+          }
+        }
+      }
+
+      // 2. Preserve existing selection if still valid
+      if (preserveSelection) {
+        if (isFinalExam && data.final_exam) {
+          return;
+        }
+        if (activeContentType === 'exam' && activeModuleId) {
+          const m = modules.find((mod) => mod.id === activeModuleId);
+          if (m && m.has_module_exam) {
+            return;
+          }
+        }
+        if (activeContentType === 'notes' && activeResource?.id) {
+          for (const m of modules) {
+            const r = (m.resources || []).find((res) => res.id === activeResource.id);
+            if (r) {
+              setActiveModuleId(m.id);
+              setActiveResource(r);
+              return;
+            }
+          }
+        }
+        if (activeContentType === 'video' && activeTopic?.id) {
+          for (const m of modules) {
+            const t = (m.topics || []).find((top) => top.id === activeTopic.id);
+            if (t) {
+              setActiveModuleId(m.id);
+              setActiveTopic(t);
+              return;
+            }
+          }
+        }
+      }
+
+      // 3. Restore selection from URL query parameters
+      const params = getUrlParams();
+      const qView = params.get('view');
+      const qIsFinal = params.get('isFinalExam') === 'true';
+      const qModId = params.get('moduleId') ? Number(params.get('moduleId')) : null;
+      const qTopId = params.get('topicId') ? Number(params.get('topicId')) : null;
+      const qResId = params.get('resourceId') ? Number(params.get('resourceId')) : null;
+
+      if (qIsFinal && data.final_exam) {
+        setIsFinalExam(true);
+        setActiveModuleId(null);
+        setActiveTopic(null);
+        setActiveResource(null);
+        setActiveContentType('exam');
+        syncUrlState({ moduleId: null, topicId: null, resourceId: null, view: 'exam', isFinalExam: true });
+        return;
+      }
+
+      if (qTopId) {
+        for (const m of modules) {
+          const t = (m.topics || []).find((top) => top.id === qTopId);
+          if (t) {
+            setActiveModuleId(m.id);
+            setActiveTopic(t);
+            setActiveResource(null);
+            setIsFinalExam(false);
+            setActiveContentType('video');
+            syncUrlState({ moduleId: m.id, topicId: t.id, resourceId: null, view: 'video', isFinalExam: false });
+            return;
+          }
+        }
+      }
+
+      if (qResId) {
+        for (const m of modules) {
+          const r = (m.resources || []).find((res) => res.id === qResId);
+          if (r) {
+            setActiveModuleId(m.id);
+            setActiveResource(r);
+            setActiveTopic(null);
+            setIsFinalExam(false);
+            setActiveContentType('notes');
+            syncUrlState({ moduleId: m.id, resourceId: r.id, topicId: null, view: 'notes', isFinalExam: false });
+            return;
+          }
+        }
+      }
+
+      if (qModId) {
+        const m = modules.find((mod) => mod.id === qModId);
+        if (m) {
+          setActiveModuleId(m.id);
+          if (qView === 'exam' && m.has_module_exam) {
+            setActiveTopic(null);
+            setActiveResource(null);
+            setIsFinalExam(false);
+            setActiveContentType('exam');
+            syncUrlState({ moduleId: m.id, topicId: null, resourceId: null, view: 'exam', isFinalExam: false });
+            return;
+          }
+          if (m.topics && m.topics.length > 0) {
+            setActiveTopic(m.topics[0]);
+            setActiveResource(null);
+            setIsFinalExam(false);
+            setActiveContentType('video');
+            syncUrlState({ moduleId: m.id, topicId: m.topics[0].id, resourceId: null, view: 'video', isFinalExam: false });
+            return;
+          }
+        }
+      }
+
+      // 4. Default: First module and its first content
+      const firstMod = modules[0];
+      setActiveModuleId(firstMod.id);
+      setIsFinalExam(false);
+      if (firstMod.topics && firstMod.topics.length > 0) {
+        setActiveTopic(firstMod.topics[0]);
+        setActiveResource(null);
+        setActiveContentType('video');
+        syncUrlState({ moduleId: firstMod.id, topicId: firstMod.topics[0].id, resourceId: null, view: 'video', isFinalExam: false });
+      } else if (firstMod.resources && firstMod.resources.length > 0) {
+        setActiveResource(firstMod.resources[0]);
+        setActiveTopic(null);
+        setActiveContentType('notes');
+        syncUrlState({ moduleId: firstMod.id, resourceId: firstMod.resources[0].id, topicId: null, view: 'notes', isFinalExam: false });
+      } else {
+        setActiveTopic(null);
+        setActiveResource(null);
+        setActiveContentType('video');
+      }
+    } catch (err) {
+      if (reqId === hierarchyReqIdRef.current) {
+        console.error('Failed to load course workspace hierarchy:', err);
+        setHierarchyError('Failed to load course hierarchy. Please check your network connection and try again.');
+      }
     } finally {
-      setLoading(false);
+      if (reqId === hierarchyReqIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -260,7 +578,10 @@ export default function CourseWorkspace({
     if (prevTopicItem) {
       setActiveModuleId(prevTopicItem.module.id);
       setActiveTopic(prevTopicItem.topic);
+      setActiveResource(null);
+      setIsFinalExam(false);
       setActiveContentType('video');
+      syncUrlState({ moduleId: prevTopicItem.module.id, topicId: prevTopicItem.topic.id, resourceId: null, view: 'video', isFinalExam: false });
     }
   };
 
@@ -268,9 +589,16 @@ export default function CourseWorkspace({
     if (nextTopicItem) {
       setActiveModuleId(nextTopicItem.module.id);
       setActiveTopic(nextTopicItem.topic);
+      setActiveResource(null);
+      setIsFinalExam(false);
       setActiveContentType('video');
+      syncUrlState({ moduleId: nextTopicItem.module.id, topicId: nextTopicItem.topic.id, resourceId: null, view: 'video', isFinalExam: false });
     } else if (currentModule?.has_module_exam) {
+      setActiveTopic(null);
+      setActiveResource(null);
+      setIsFinalExam(false);
       setActiveContentType('exam');
+      syncUrlState({ moduleId: currentModule.id, topicId: null, resourceId: null, view: 'exam', isFinalExam: false });
     }
   };
 
@@ -311,10 +639,9 @@ export default function CourseWorkspace({
   };
 
   // ---------------------------------------------------------------------------
-  // 2. TREE NAVIGATION HANDLERS (WITH AUTO-CLEANUP RULE)
+  // 2. TREE NAVIGATION HANDLERS (WITH AUTO-CLEANUP & URL STATE SYNC)
   // ---------------------------------------------------------------------------
   const handleSelectTopic = (mod, topic) => {
-    // Reset state & auto-cleanup secondary media
     setIsFinalExam(false);
     setEphemeralSecondaryVideo(null);
 
@@ -322,10 +649,10 @@ export default function CourseWorkspace({
     setActiveTopic(topic);
     setActiveResource(null);
     setActiveContentType('video');
+    syncUrlState({ moduleId: mod.id, topicId: topic.id, resourceId: null, view: 'video', isFinalExam: false });
   };
 
   const handleSelectResource = (mod, res) => {
-    // AUTO-CLEANUP RULE
     setIsFinalExam(false);
     setEphemeralSecondaryVideo(null);
 
@@ -333,11 +660,11 @@ export default function CourseWorkspace({
     setActiveResource(res);
     setActiveTopic(null);
     setActiveContentType('notes');
+    syncUrlState({ moduleId: mod.id, resourceId: res.id, topicId: null, view: 'notes', isFinalExam: false });
     loadPdfDoc(res);
   };
 
   const handleSelectExam = (mod) => {
-    // AUTO-CLEANUP RULE
     setIsFinalExam(false);
     setEphemeralSecondaryVideo(null);
 
@@ -345,6 +672,7 @@ export default function CourseWorkspace({
     setActiveTopic(null);
     setActiveResource(null);
     setActiveContentType('exam');
+    syncUrlState({ moduleId: mod.id, topicId: null, resourceId: null, view: 'exam', isFinalExam: false });
   };
 
   const handleSelectFinalExam = async (fExam) => {
@@ -357,6 +685,7 @@ export default function CourseWorkspace({
     setExamActive(false);
     setSubmissionResult(null);
     setStudentAnswers({});
+    syncUrlState({ moduleId: null, topicId: null, resourceId: null, view: 'exam', isFinalExam: true });
 
     try {
       setExamLoading(true);
@@ -429,7 +758,7 @@ export default function CourseWorkspace({
         passing_score: 70,
         questions: []
       });
-      await fetchHierarchy(courseId);
+      await fetchHierarchy(courseId, true);
       alert('✅ Final course exam created! Use the Exam Builder to add questions.');
     } catch (err) {
       alert('Failed to create final exam.');
@@ -443,12 +772,16 @@ export default function CourseWorkspace({
       alert('Please enroll in this course to mark topics as completed and track your milestone progress.');
       return;
     }
+    if (completingTopicId === topicId) return;
+
+    const previousCompleted = { ...completedTopics };
     const newStatus = !completedTopics[topicId];
     const updated = { ...completedTopics, [topicId]: newStatus };
     setCompletedTopics(updated);
 
-    if (user?.id && courseId) {
-      localStorage.setItem(`cgp_completed_topics_${user.id}_${courseId}`, JSON.stringify(updated));
+    const localKey = user?.id && courseId ? `cgp_completed_topics_${user.id}_${courseId}` : null;
+    if (localKey) {
+      localStorage.setItem(localKey, JSON.stringify(updated));
     }
 
     if (newStatus) {
@@ -460,10 +793,28 @@ export default function CourseWorkspace({
     }
 
     try {
-      await coursesAPI.completeTopic(topicId, { is_completed: newStatus });
+      setCompletingTopicId(topicId);
+      const res = await coursesAPI.completeTopic(topicId, { is_completed: newStatus });
+      if (res && Array.isArray(res.completed_topic_ids)) {
+        const serverMap = {};
+        res.completed_topic_ids.forEach((id) => {
+          serverMap[id] = true;
+        });
+        setCompletedTopics(serverMap);
+        if (localKey) {
+          localStorage.setItem(localKey, JSON.stringify(serverMap));
+        }
+      }
       if (onRefreshCourses) onRefreshCourses();
     } catch (err) {
-      console.warn('Backend topic completion sync failed, cached locally:', err);
+      // Rollback on failure!
+      setCompletedTopics(previousCompleted);
+      if (localKey) {
+        localStorage.setItem(localKey, JSON.stringify(previousCompleted));
+      }
+      alert('Failed to update topic completion on server. Please check your network and try again.');
+    } finally {
+      setCompletingTopicId(null);
     }
   };
 
@@ -472,8 +823,32 @@ export default function CourseWorkspace({
   // ---------------------------------------------------------------------------
   const loadPdfDoc = async (resource) => {
     if (!resource) return;
+    const currentReqId = ++pdfReqIdRef.current;
     setPdfLoading(true);
+    setPdfError(null);
     setPageNum(1);
+    setTotalPages(1);
+
+    // Cancel in-flight render task and destroy previous doc
+    if (renderTaskRef.current) {
+      try {
+        renderTaskRef.current.cancel();
+      } catch (_) {}
+      renderTaskRef.current = null;
+    }
+    if (pdfDoc) {
+      try {
+        pdfDoc.destroy();
+      } catch (_) {}
+      setPdfDoc(null);
+    }
+
+    // Clear canvas
+    if (canvasRef.current) {
+      const canvas = canvasRef.current;
+      const ctx = canvas.getContext('2d');
+      if (ctx) ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
 
     try {
       if (!window.pdfjsLib) {
@@ -491,17 +866,30 @@ export default function CourseWorkspace({
       }
 
       const blob = await coursesAPI.viewResource(resource.id);
+      if (currentReqId !== pdfReqIdRef.current) return;
+
       const arrayBuffer = await blob.arrayBuffer();
+      if (currentReqId !== pdfReqIdRef.current) return;
 
       const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
       const pdf = await loadingTask.promise;
+      if (currentReqId !== pdfReqIdRef.current) {
+        pdf.destroy();
+        return;
+      }
+
       setPdfDoc(pdf);
       setTotalPages(pdf.numPages);
       renderPdfPage(1, pdf, zoomScale);
     } catch (err) {
-      console.error('PDF rendering failed:', err);
+      if (currentReqId === pdfReqIdRef.current) {
+        console.error('PDF rendering failed:', err);
+        setPdfError('Failed to load protected lecture notes. The file may be unavailable or access was denied.');
+      }
     } finally {
-      setPdfLoading(false);
+      if (currentReqId === pdfReqIdRef.current) {
+        setPdfLoading(false);
+      }
     }
   };
 
@@ -535,16 +923,28 @@ export default function CourseWorkspace({
   };
 
   useEffect(() => {
-    if (activeContentType === 'notes' && activeResource && !pdfDoc) {
+    if (activeContentType === 'notes' && activeResource?.id) {
       loadPdfDoc(activeResource);
     }
-  }, [activeContentType, activeResource]);
+  }, [activeContentType, activeResource?.id]);
 
   useEffect(() => {
     if (pdfDoc && activeResource && activeContentType === 'notes') {
       renderPdfPage(pageNum, pdfDoc, zoomScale);
     }
   }, [pageNum, zoomScale, activeContentType]);
+
+  // Clean up PDF resources on unmount
+  useEffect(() => {
+    return () => {
+      if (renderTaskRef.current) {
+        try { renderTaskRef.current.cancel(); } catch (_) {}
+      }
+      if (pdfDoc) {
+        try { pdfDoc.destroy(); } catch (_) {}
+      }
+    };
+  }, [pdfDoc]);
 
   // ---------------------------------------------------------------------------
   // 4. STUDENT EXAM TAKING & SUBMISSION
@@ -561,8 +961,9 @@ export default function CourseWorkspace({
   };
 
   const handleSubmitExam = async () => {
-    if (!moduleExam) return;
+    if (!moduleExam || submittingExam || isSubmittingExamRef.current) return;
     try {
+      isSubmittingExamRef.current = true;
       setSubmittingExam(true);
       const answers = studentAnswersRef.current || studentAnswers;
       const responses = Object.entries(answers).map(([qid, val]) => ({
@@ -590,15 +991,21 @@ export default function CourseWorkspace({
         });
       }
     } catch (err) {
-      alert('Error evaluating exam submission.');
+      alert('Error evaluating exam submission. Please check your network and retry.');
     } finally {
       setSubmittingExam(false);
+      isSubmittingExamRef.current = false;
     }
   };
 
   useEffect(() => {
     handleSubmitExamRef.current = handleSubmitExam;
   });
+
+  // Reset timer single-fire flag when exam starts or changes
+  useEffect(() => {
+    timerSubmittedRef.current = false;
+  }, [moduleExam?.id, examActive]);
 
   // Exam Countdown Timer (runs stably without recreating interval every second)
   useEffect(() => {
@@ -608,7 +1015,8 @@ export default function CourseWorkspace({
         setExamTimeLeft((t) => {
           if (t <= 1) {
             clearInterval(timer);
-            if (handleSubmitExamRef.current) {
+            if (!timerSubmittedRef.current && handleSubmitExamRef.current) {
+              timerSubmittedRef.current = true;
               handleSubmitExamRef.current();
             }
             return 0;
@@ -633,19 +1041,19 @@ export default function CourseWorkspace({
   // ---------------------------------------------------------------------------
   const handleAddModuleAction = async (e) => {
     e.preventDefault();
-    if (!newModuleTitle.trim()) return;
+    if (!newModuleTitle.trim() || actionLoading) return;
     try {
       setActionLoading(true);
-      await coursesAPI.createModule(courseId, {
+      const res = await coursesAPI.createModule(courseId, {
         title: newModuleTitle.trim(),
         description: newModuleDesc.trim()
       });
       setNewModuleTitle('');
       setNewModuleDesc('');
       setShowAddModuleModal(false);
-      await fetchHierarchy(courseId);
+      await fetchHierarchy(courseId, true, { moduleId: res.id });
     } catch (err) {
-      alert('Failed to add module');
+      alert(err.response?.data?.detail || 'Failed to add module');
     } finally {
       setActionLoading(false);
     }
@@ -653,10 +1061,10 @@ export default function CourseWorkspace({
 
   const handleAddTopicAction = async (e) => {
     e.preventDefault();
-    if (!targetModuleId || !newTopicTitle.trim() || !newTopicUrl.trim()) return;
+    if (!targetModuleId || !newTopicTitle.trim() || !newTopicUrl.trim() || actionLoading) return;
     try {
       setActionLoading(true);
-      await coursesAPI.createTopic(targetModuleId, {
+      const res = await coursesAPI.createTopic(targetModuleId, {
         title: newTopicTitle.trim(),
         description: newTopicDesc.trim(),
         youtube_url: newTopicUrl.trim()
@@ -665,9 +1073,9 @@ export default function CourseWorkspace({
       setNewTopicDesc('');
       setNewTopicUrl('');
       setShowAddTopicModal(false);
-      await fetchHierarchy(courseId);
+      await fetchHierarchy(courseId, true, { moduleId: targetModuleId, topicId: res.id });
     } catch (err) {
-      alert('Failed to add topic.');
+      alert(err.response?.data?.detail || 'Failed to add topic. Please check the YouTube URL.');
     } finally {
       setActionLoading(false);
     }
@@ -675,19 +1083,19 @@ export default function CourseWorkspace({
 
   const handleUploadNotesAction = async (e) => {
     e.preventDefault();
-    if (!targetModuleId || !resourceTitle.trim() || !resourceFile) return;
+    if (!targetModuleId || !resourceTitle.trim() || !resourceFile || actionLoading) return;
     try {
       setActionLoading(true);
       const formData = new FormData();
       formData.append('title', resourceTitle.trim());
       formData.append('file', resourceFile);
-      await coursesAPI.uploadResource(targetModuleId, formData);
+      const res = await coursesAPI.uploadResource(targetModuleId, formData);
       setResourceTitle('');
       setResourceFile(null);
       setShowUploadModal(false);
-      await fetchHierarchy(courseId);
+      await fetchHierarchy(courseId, true, { moduleId: targetModuleId, resourceId: res.id });
     } catch (err) {
-      alert('Failed to upload notes.');
+      alert(err.response?.data?.detail || 'Failed to upload notes. Please ensure the file is a PDF.');
     } finally {
       setActionLoading(false);
     }
@@ -840,8 +1248,28 @@ export default function CourseWorkspace({
 
         {/* 2. Center Viewport: Primary Media Stage & Injected Secondary Player */}
         <main className="flex-1 min-w-0 bg-[#090d16] flex flex-col overflow-y-auto p-4 sm:p-6 lg:p-8 space-y-6">
+          {/* HIERARCHY LOAD ERROR BANNER */}
+          {hierarchyError && (
+            <div className="max-w-xl mx-auto my-auto p-8 rounded-3xl bg-red-950/20 border border-red-500/30 text-center space-y-4 shadow-xl">
+              <div className="h-14 w-14 rounded-2xl bg-red-500/10 border border-red-500/20 text-red-400 flex items-center justify-center mx-auto">
+                <AlertTriangle className="h-7 w-7" />
+              </div>
+              <div className="space-y-1">
+                <h3 className="text-base font-black text-white">Failed to Load Course Syllabus</h3>
+                <p className="text-xs text-red-300 max-w-sm mx-auto">{hierarchyError}</p>
+              </div>
+              <button
+                onClick={() => fetchHierarchy(courseId, true)}
+                className="px-4 py-2 rounded-xl bg-red-600 hover:bg-red-500 text-white text-xs font-bold transition inline-flex items-center gap-1.5"
+              >
+                <RotateCcw className="h-3.5 w-3.5" />
+                <span>Retry Loading Syllabus</span>
+              </button>
+            </div>
+          )}
+
           {/* EMPTY CURRICULUM STATE (0 Modules) */}
-          {(!hierarchy?.modules || hierarchy.modules.length === 0) && (
+          {!hierarchyError && (!hierarchy?.modules || hierarchy.modules.length === 0) && (
             <div className="max-w-xl mx-auto my-auto p-8 rounded-3xl bg-[#121826] border border-[#1e2638] text-center space-y-5 shadow-2xl">
               <div className="h-16 w-16 rounded-2xl bg-indigo-500/10 border border-indigo-500/20 text-indigo-400 flex items-center justify-center mx-auto shadow-inner">
                 <Layers className="h-8 w-8" />
@@ -900,13 +1328,30 @@ export default function CourseWorkspace({
             <div className="space-y-6 max-w-5xl mx-auto w-full">
               {/* Primary 16:9 YouTube Embed */}
               <div className="w-full aspect-video rounded-3xl overflow-hidden bg-black shadow-2xl border border-[#1e2638] relative">
-                <iframe
-                  className="w-full h-full"
-                  src={`https://www.youtube-nocookie.com/embed/${activeTopic.youtube_video_id || 'qH6clASSS54'}?autoplay=0&rel=0&modestbranding=1`}
-                  title={activeTopic.title}
-                  allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                  allowFullScreen
-                />
+                {/^[0-9A-Za-z_-]{11}$/.test(activeTopic.youtube_video_id || '') ? (
+                  <iframe
+                    key={activeTopic.youtube_video_id}
+                    className="w-full h-full"
+                    src={`https://www.youtube-nocookie.com/embed/${activeTopic.youtube_video_id}?autoplay=0&rel=0&modestbranding=1`}
+                    title={activeTopic.title || 'Topic Video Lecture'}
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    allowFullScreen
+                  />
+                ) : (
+                  <div className="w-full h-full flex flex-col items-center justify-center p-8 bg-[#0b0f19] text-center space-y-3">
+                    <div className="h-14 w-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
+                      <AlertTriangle className="h-7 w-7" />
+                    </div>
+                    <div className="space-y-1">
+                      <h4 className="text-base font-black text-white">Video Lecture Not Available</h4>
+                      <p className="text-xs text-slate-400 max-w-md">
+                        {isEducator
+                          ? 'The configured YouTube URL for this topic is invalid or missing. Please edit the topic to set a valid YouTube link.'
+                          : 'This topic does not have a valid video attached yet. Please check the lecture notes or contact your instructor.'}
+                      </p>
+                    </div>
+                  </div>
+                )}
               </div>
 
               {/* Lecture Ribbon & Completion CTA */}
@@ -1089,6 +1534,21 @@ export default function CourseWorkspace({
                     <div className="h-8 w-8 animate-spin rounded-full border-2 border-purple-500 border-t-transparent" />
                     <span className="text-xs font-semibold">Decrypting document...</span>
                   </div>
+                ) : pdfError ? (
+                  <div className="flex flex-col items-center gap-3 p-8 bg-[#121826] border border-red-500/30 rounded-2xl text-center max-w-md shadow-xl">
+                    <AlertTriangle className="h-8 w-8 text-red-400" />
+                    <div className="space-y-1">
+                      <h4 className="text-sm font-bold text-white">Failed to Load Notes</h4>
+                      <p className="text-xs text-red-300">{pdfError}</p>
+                    </div>
+                    <button
+                      onClick={() => loadPdfDoc(activeResource)}
+                      className="px-4 py-2 rounded-xl bg-purple-600 hover:bg-purple-500 text-white text-xs font-bold transition flex items-center gap-1.5"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      <span>Retry Loading Notes</span>
+                    </button>
+                  </div>
                 ) : (
                   <div className="relative shadow-2xl rounded-lg overflow-hidden border border-[#2b354d] bg-white">
                     <canvas ref={canvasRef} className="block pointer-events-none" />
@@ -1260,8 +1720,8 @@ export default function CourseWorkspace({
                   {/* Questions List */}
                   <div className="space-y-4">
                     {moduleExam.questions?.map((q, idx) => {
-                      const parsedOptions = typeof q.options === 'string' ? JSON.parse(q.options) : (q.options || []);
-                      const letters = ['A', 'B', 'C', 'D'];
+                      const parsedOptions = normalizeQuestionOptions(q.options);
+                      const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
                       const selectedVal = studentAnswers[q.id];
 
                       return (
@@ -1273,7 +1733,7 @@ export default function CourseWorkspace({
                             <span className="h-6 w-6 rounded-lg bg-indigo-500/20 text-indigo-400 border border-indigo-500/30 text-xs font-black flex items-center justify-center">
                               {idx + 1}
                             </span>
-                            {isEducator && (
+                            {isEducator && q.correct_answer && (
                               <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                                 Correct: {q.correct_answer}
                               </span>
@@ -1288,7 +1748,10 @@ export default function CourseWorkspace({
                             {parsedOptions.map((opt, oIdx) => {
                               const optLetter = letters[oIdx] || String(oIdx);
                               const isSelected = selectedVal === optLetter || selectedVal === String(oIdx);
-                              const isCorrect = String(q.correct_answer).toUpperCase() === optLetter;
+                              const isCorrect = q.correct_answer && (
+                                String(q.correct_answer).toUpperCase() === optLetter ||
+                                String(q.correct_answer) === String(oIdx)
+                              );
 
                               let borderStyle = 'border-[#1e2638] bg-[#0e131f] text-slate-300';
                               if (submissionResult) {
@@ -1303,8 +1766,7 @@ export default function CourseWorkspace({
                                   key={oIdx}
                                   onClick={() => {
                                     if (examActive && !submissionResult) {
-                                      const isLetterAns = ['A', 'B', 'C', 'D'].includes(String(q.correct_answer).toUpperCase());
-                                      handleAnswerOption(q.id, isLetterAns ? optLetter : String(oIdx));
+                                      handleAnswerOption(q.id, optLetter);
                                     }
                                   }}
                                   className={`flex items-center gap-3 p-3 rounded-xl border text-xs cursor-pointer transition ${borderStyle}`}

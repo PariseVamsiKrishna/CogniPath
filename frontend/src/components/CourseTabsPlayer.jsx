@@ -33,6 +33,7 @@ import {
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { coursesAPI, examsAPI } from '../services/api';
+import { normalizeQuestionOptions } from './CourseWorkspace';
 import CreateCourseModal from './CreateCourseModal';
 import ModuleExamBuilder from './ModuleExamBuilder';
 
@@ -957,13 +958,24 @@ export default function CourseTabsPlayer({
               <div className="space-y-6 max-w-6xl mx-auto w-full">
                 {/* 16:9 YouTube Player Canvas */}
                 <div className="w-full aspect-video rounded-2xl overflow-hidden bg-black shadow-2xl border border-[#1e2638] relative">
-                  <iframe
-                    className="w-full h-full"
-                    src={`https://www.youtube-nocookie.com/embed/${activeTopic.youtube_video_id || 'qH6clASSS54'}?autoplay=0&rel=0&modestbranding=1`}
-                    title={activeTopic.title}
-                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
-                    allowFullScreen
-                  />
+                  {/^[0-9A-Za-z_-]{11}$/.test(activeTopic.youtube_video_id || '') ? (
+                    <iframe
+                      key={activeTopic.youtube_video_id}
+                      className="w-full h-full"
+                      src={`https://www.youtube-nocookie.com/embed/${activeTopic.youtube_video_id}?autoplay=0&rel=0&modestbranding=1`}
+                      title={activeTopic.title || 'Topic Video Lecture'}
+                      allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                      allowFullScreen
+                    />
+                  ) : (
+                    <div className="w-full h-full flex flex-col items-center justify-center p-8 bg-[#0b0f19] text-center space-y-3">
+                      <div className="h-14 w-14 rounded-2xl bg-amber-500/10 border border-amber-500/20 text-amber-400 flex items-center justify-center">
+                        <AlertCircle className="h-7 w-7" />
+                      </div>
+                      <h4 className="text-base font-black text-white">Video Lecture Not Available</h4>
+                      <p className="text-xs text-slate-400">This topic does not have a valid video attached.</p>
+                    </div>
+                  )}
                 </div>
 
                 {/* Video Info Ribbon & Student Completion Actions */}
@@ -1288,8 +1300,8 @@ export default function CourseTabsPlayer({
                 {/* Questions List */}
                 <div className="space-y-4">
                   {moduleExam.questions?.map((q, idx) => {
-                    const parsedOptions = typeof q.options === 'string' ? JSON.parse(q.options) : (q.options || []);
-                    const letters = ['A', 'B', 'C', 'D'];
+                    const parsedOptions = normalizeQuestionOptions(q.options);
+                    const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H'];
                     const selectedVal = studentAnswers[q.id];
 
                     return (

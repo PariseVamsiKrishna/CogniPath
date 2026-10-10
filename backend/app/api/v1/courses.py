@@ -4,6 +4,7 @@ import os
 import re
 import shutil
 from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
@@ -81,19 +82,73 @@ logger = logging.getLogger("cognipath.courses")
 router = APIRouter(prefix="/courses", tags=["Courses & Hierarchical Content Delivery"])
 module_router = APIRouter(tags=["Module End Assessments"])
 
-def extract_youtube_video_id(url: str) -> str:
-    """Extract standard 11-character YouTube video ID from various link formats."""
+def extract_youtube_video_id(url: str | None) -> str | None:
+    """Extract standard 11-character YouTube video ID from supported YouTube link formats.
+    Returns None if the URL is invalid, unsupported, or from an unauthorized domain.
+    Never returns a hardcoded fallback.
+    """
     if not url:
-        return "qH6clASSS54"
-    patterns = [
-        r'(?:v=|\/embed\/|\/watch\?v=|\.be\/|\/v\/)([0-9A-Za-z_-]{11})',
-        r'^([0-9A-Za-z_-]{11})$'
-    ]
-    for p in patterns:
-        m = re.search(p, url.strip())
-        if m:
-            return m.group(1)
-    return "qH6clASSS54"
+        return None
+    url_str = str(url).strip()
+    if not url_str:
+        return None
+
+    # Bare 11-character video ID
+    if re.fullmatch(r"[0-9A-Za-z_-]{11}", url_str):
+        return url_str
+
+    parse_url = url_str
+    if not parse_url.startswith(("http://", "https://")):
+        parse_url = "https://" + parse_url
+
+    try:
+        parsed = urlparse(parse_url)
+    except Exception:
+        return None
+
+    hostname = (parsed.hostname or "").lower()
+    allowed_domains = {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtube-nocookie.com",
+        "www.youtube-nocookie.com",
+        "youtu.be"
+    }
+
+    if hostname not in allowed_domains:
+        return None
+
+    # Handle youtu.be/<id>
+    if hostname == "youtu.be":
+        path_parts = parsed.path.strip("/").split("/")
+        if path_parts and re.fullmatch(r"[0-9A-Za-z_-]{11}", path_parts[0]):
+            return path_parts[0]
+        return None
+
+    # Handle youtube.com/watch?v=<id>
+    if parsed.path in ("/watch", "/watch/"):
+        query_params = parse_qs(parsed.query)
+        v_list = query_params.get("v")
+        if v_list and len(v_list) > 0:
+            vid = v_list[0]
+            if re.fullmatch(r"[0-9A-Za-z_-]{11}", vid):
+                return vid
+
+    # Handle /embed/<id>, /shorts/<id>, or /v/<id>
+    path_match = re.match(r"^/(?:embed|shorts|v)/([0-9A-Za-z_-]{11})(?:/|$)", parsed.path)
+    if path_match:
+        return path_match.group(1)
+
+    return None
+
+
+def invalidate_course_hierarchy_cache(course_id: int):
+    """Invalidates all cached role variants of course hierarchy."""
+    ttl_cache.invalidate(f"hierarchy_{course_id}")
+    ttl_cache.invalidate(f"hierarchy_{course_id}_educator")
+    ttl_cache.invalidate(f"hierarchy_{course_id}_student")
 
 
 async def _check_course_ownership(course_id: int, current_user: User, db: AsyncSession):
@@ -670,15 +725,17 @@ async def get_course_hierarchy(
     db: AsyncSession = Depends(get_db)
 ):
     """Get complete hierarchical syllabus: Course -> Modules -> Topics & View-Only PDF Resources."""
-    cache_key = f"hierarchy_{course_id}"
-    cached = ttl_cache.get(cache_key)
-    if cached:
-        return cached
-
     res = await db.execute(select(Course).where(Course.id == course_id))
     course = res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+
+    is_educator = (current_user.role == "ADMIN" or (current_user.role == "EDUCATOR" and course.educator_id == current_user.id))
+    cache_role = "educator" if is_educator else "student"
+    cache_key = f"hierarchy_{course_id}_{cache_role}"
+    cached = ttl_cache.get(cache_key)
+    if cached:
+        return cached
 
     # Fetch modules ordered by order_index
     m_res = await db.execute(
@@ -753,16 +810,16 @@ async def get_course_hierarchy(
                     "question_type": q.question_type,
                     "question_text": q.question_text,
                     "options": json.loads(q.options) if isinstance(q.options, str) else q.options,
-                    "correct_answer": q.correct_answer,
-                    "explanation": q.explanation,
-                    "source_ref": q.source_ref,
+                    "correct_answer": q.correct_answer if is_educator else None,
+                    "explanation": q.explanation if is_educator else None,
+                    "source_ref": q.source_ref if is_educator else None,
                     "order_index": q.order_index
                 }
                 for q in fe_questions
             ]
         }
 
-    return CourseHierarchyResponse(
+    response = CourseHierarchyResponse(
         id=course.id,
         title=course.title,
         code=course.code,
@@ -775,6 +832,8 @@ async def get_course_hierarchy(
         modules=module_responses,
         final_exam=final_exam_data
     )
+    ttl_cache.set(cache_key, response)
+    return response
 
 
 @router.post("/{course_id}/enroll")
@@ -917,7 +976,7 @@ async def delete_course_permanently(
     # 7. Delete course itself
     await db.delete(course)
     await db.commit()
-    ttl_cache.invalidate(f"hierarchy_{course_id}")
+    invalidate_course_hierarchy_cache(course_id)
 
     # 8. Clean up Chroma vector store
     try:
@@ -958,7 +1017,7 @@ async def create_module(
     db.add(module)
     await db.commit()
     await db.refresh(module)
-    ttl_cache.invalidate(f"hierarchy_{course_id}")
+    invalidate_course_hierarchy_cache(course_id)
 
     return ModuleResponse(
         id=module.id,
@@ -1002,7 +1061,7 @@ async def update_module(
 
     await db.commit()
     await db.refresh(module)
-    ttl_cache.invalidate(f"hierarchy_{module.course_id}")
+    invalidate_course_hierarchy_cache(module.course_id)
 
     t_res = await db.execute(select(Topic).where(Topic.module_id == module.id).order_by(Topic.order_index.asc()))
     r_res = await db.execute(select(ModuleResource).where(ModuleResource.module_id == module.id))
@@ -1038,7 +1097,7 @@ async def delete_module(
 
     await db.delete(module)
     await db.commit()
-    ttl_cache.invalidate(f"hierarchy_{course_id_to_invalidate}")
+    invalidate_course_hierarchy_cache(course_id_to_invalidate)
     return {"status": "success", "message": "Module deleted successfully"}
 
 
@@ -1065,6 +1124,11 @@ async def create_topic(
     existing_count = len(count_res.scalars().all())
 
     video_id = extract_youtube_video_id(req.youtube_url)
+    if not video_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid YouTube URL. Please provide a valid YouTube watch, embed, shorts, or youtu.be link."
+        )
 
     topic = Topic(
         module_id=module_id,
@@ -1077,7 +1141,7 @@ async def create_topic(
     db.add(topic)
     await db.commit()
     await db.refresh(topic)
-    ttl_cache.invalidate(f"hierarchy_{module.course_id}")
+    invalidate_course_hierarchy_cache(module.course_id)
 
     return TopicResponse.model_validate(topic)
 
@@ -1107,13 +1171,19 @@ async def update_topic(
     if req.order_index is not None:
         topic.order_index = req.order_index
     if req.youtube_url is not None:
+        video_id = extract_youtube_video_id(req.youtube_url)
+        if not video_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid YouTube URL. Please provide a valid YouTube watch, embed, shorts, or youtu.be link."
+            )
         topic.youtube_url = req.youtube_url
-        topic.youtube_video_id = extract_youtube_video_id(req.youtube_url)
+        topic.youtube_video_id = video_id
 
     await db.commit()
     await db.refresh(topic)
     if module:
-        ttl_cache.invalidate(f"hierarchy_{module.course_id}")
+        invalidate_course_hierarchy_cache(module.course_id)
     return TopicResponse.model_validate(topic)
 
 
@@ -1138,7 +1208,7 @@ async def delete_topic(
     await db.delete(topic)
     await db.commit()
     if target_course_id:
-        ttl_cache.invalidate(f"hierarchy_{target_course_id}")
+        invalidate_course_hierarchy_cache(target_course_id)
     return {"status": "success", "message": "Topic deleted successfully"}
 
 
@@ -1199,7 +1269,7 @@ async def upload_module_resource(
     db.add(resource)
     await db.commit()
     await db.refresh(resource)
-    ttl_cache.invalidate(f"hierarchy_{module.course_id}")
+    invalidate_course_hierarchy_cache(module.course_id)
 
     return ModuleResourceResponse.model_validate(resource)
 
@@ -1394,7 +1464,7 @@ async def save_module_exam(
     module.module_exam_id = exam.id
     await db.commit()
     await db.refresh(module)
-    ttl_cache.invalidate(f"hierarchy_{module.course_id}")
+    invalidate_course_hierarchy_cache(module.course_id)
 
     # Fetch and return full exam details
     from app.api.v1.exams import get_exam_details

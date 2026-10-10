@@ -112,6 +112,8 @@ async def create_exam(
         await db.commit()
 
     ttl_cache.invalidate(f"hierarchy_{req.course_id}")
+    ttl_cache.invalidate(f"hierarchy_{req.course_id}_educator")
+    ttl_cache.invalidate(f"hierarchy_{req.course_id}_student")
     return await get_exam_details(exam.id, db, is_educator=True)
 
 @router.get("/{exam_id}", response_model=ExamResponse)
@@ -301,6 +303,8 @@ async def update_exam(
 
     await db.commit()
     ttl_cache.invalidate(f"hierarchy_{exam.course_id}")
+    ttl_cache.invalidate(f"hierarchy_{exam.course_id}_educator")
+    ttl_cache.invalidate(f"hierarchy_{exam.course_id}_student")
     return await get_exam_details(exam.id, db)
 
 @router.post("/ai-suggest", response_model=AISuggestionResponse)

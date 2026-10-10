@@ -68,8 +68,14 @@ export default function CoursePlayer({
         params.set('courseId', cId);
       } else {
         params.delete('courseId');
+        params.delete('moduleId');
+        params.delete('topicId');
+        params.delete('resourceId');
+        params.delete('view');
+        params.delete('isFinalExam');
       }
-      const newUrl = `${window.location.pathname}?${params.toString()}`;
+      const queryStr = params.toString();
+      const newUrl = queryStr ? `${window.location.pathname}?${queryStr}` : window.location.pathname;
       window.history.replaceState({}, '', newUrl);
     } catch (e) {}
   };
