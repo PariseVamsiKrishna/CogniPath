@@ -294,23 +294,6 @@ export const curriculumAuditAPI = {
   audit: (courseId) => apiClient.post(`/curriculum-audit/${courseId}`),
 };
 
-export const examsAPI = {
-  list: (courseId) => apiClient.get(`/exams/course/${courseId}`),
-  get: (id) => apiClient.get(`/exams/${id}`),
-  create: (data) => apiClient.post('/exams', data),
-  submit: (examId, answers) => apiClient.post(`/exams/${examId}/submit`, { answers }),
-};
 
-export const assignmentsAPI = {
-  list: (moduleId) => apiClient.get(`/assignments/module/${moduleId}`),
-  create: (data) => apiClient.post('/assignments', data),
-  submit: (assignmentId, file) => {
-    const formData = new FormData();
-    formData.append('file', file);
-    return apiClient.post(`/assignments/${assignmentId}/submit`, formData, {
-      headers: { 'Content-Type': 'multipart/form-data' },
-    });
-  },
-};
 
 export default apiClient;
