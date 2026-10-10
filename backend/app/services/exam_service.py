@@ -1,11 +1,10 @@
 import asyncio
 import json
 import hashlib
-import json
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import Any
+from typing import Optional, List, Any
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -28,7 +27,6 @@ from app.schemas.schemas import (
     ExamSubmitResponse,
     RAGMCQItem,
 )
-from app.services.ai_helper import gemini_generate
 from app.services.chroma_service import chroma_service
 
 logger = logging.getLogger("cognipath.exams")

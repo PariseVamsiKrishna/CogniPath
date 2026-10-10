@@ -41,30 +41,6 @@ async def _assert_exam_owner(exam_id: int, current_user: User, db: AsyncSession)
     if current_user.role == "ADMIN":
         return exam
 
-async def _check_course_ownership_or_enrolment(course_id: int, user: User, db: AsyncSession, write: bool = False) -> Course:
-    c_res = await db.execute(select(Course).where(Course.id == course_id))
-    course = c_res.scalars().first()
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
-
-    if user.role == "ADMIN":
-        return course
-
-    if write:
-        if user.role != "EDUCATOR" or course.educator_id != user.id:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You do not own this course.")
-        return course
-
-    # Read access
-    if user.role == "EDUCATOR" and course.educator_id == user.id:
-        return course
-
-    enrol_res = await db.execute(
-        select(Enrollment).where(Enrollment.course_id == course_id, Enrollment.user_id == user.id)
-    )
-    if not enrol_res.scalars().first():
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="You are not enrolled in this course.")
-    return course
     course_res = await db.execute(select(Course).where(Course.id == exam.course_id))
     course = course_res.scalars().first()
     if not course or course.educator_id != current_user.id:
@@ -213,7 +189,7 @@ async def add_question(
     db: AsyncSession = Depends(get_db)
 ):
     """Add a question (manual or pushed from AI suggestion drawer)."""
-    await _assert_exam_owner(exam_id, current_user, db)
+    exam = await _assert_exam_owner(exam_id, current_user, db)
 
     await _check_course_ownership_or_enrolment(exam.course_id, current_user, db, write=True)
 

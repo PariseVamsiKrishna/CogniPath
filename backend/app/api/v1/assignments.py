@@ -2,8 +2,6 @@ import json
 import logging
 import os
 import uuid
-import shutil
-from typing import List, Optional
 from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status

@@ -7,6 +7,7 @@ from sqlalchemy.future import select
 
 from app.core.database import AsyncSessionLocal
 from app.core.security import get_password_hash
+from app.core.config import settings
 from app.models.models import (
     Assignment,
     CommunityChannel,

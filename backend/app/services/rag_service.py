@@ -1,7 +1,6 @@
 import asyncio
 import time
 import logging
-import time
 
 from openai import AsyncOpenAI
 
@@ -13,7 +12,6 @@ except ImportError:
 
 from app.core.config import settings
 from app.schemas.schemas import Citation
-from app.services.ai_helper import gemini_generate
 from app.services.chroma_service import chroma_service
 
 logger = logging.getLogger("cognipath.rag")

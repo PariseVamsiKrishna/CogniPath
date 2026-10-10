@@ -2,7 +2,6 @@ import asyncio
 import time
 import json
 import logging
-import time
 
 from app.core.config import settings
 from app.schemas.schemas import (
@@ -11,7 +10,6 @@ from app.schemas.schemas import (
     MindmapNode,
     SocraticQueryResponse,
 )
-from app.services.ai_helper import gemini_generate
 from app.services.rag_service import rag_service
 
 logger = logging.getLogger("cognipath.socratic")
