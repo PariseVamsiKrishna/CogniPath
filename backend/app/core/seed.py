@@ -51,151 +51,171 @@ async def ensure_curriculum_vectors(course_dsa_id: int = 1, course_ai_id: int = 
         logger.warning(f"Vector store indexing notice: {e}")
 
 async def ensure_hierarchical_curriculum_data(db):
-    """Populates modules, topics, resources, exams, assignments, and badges if missing."""
+    """
+    Self-healing curriculum populator.
+    Ensures that CS101 and AI201 have complete modules, YouTube video topics,
+    PDF resources, module exams with questions, and final course certification exams.
+    Works seamlessly on local SQLite and Supabase PostgreSQL.
+    """
+    educator = (await db.execute(select(User).where(User.role == "EDUCATOR"))).scalars().first()
+    ed_id = educator.id if educator else 1
+
+    # =========================================================================
+    # 1. CS101 (Data Structures & Algorithms)
+    # =========================================================================
     course_1 = (await db.execute(select(Course).where(Course.code == "CS101"))).scalars().first()
     if not course_1:
         course_1 = (await db.execute(select(Course).order_by(Course.id.asc()))).scalars().first()
-    if not course_1:
-        logger.warning("No course found in database to attach hierarchical curriculum data to.")
-        return
-    c_id = course_1.id
 
-    educator = (await db.execute(select(User).where(User.role == "EDUCATOR"))).scalars().first()
-    ed_id = educator.id if educator else (course_1.educator_id or 1)
+    if course_1:
+        c1_id = course_1.id
 
-    # 1. Modules & Topics
-    m_check = await db.execute(select(Module).where(Module.course_id == c_id))
-    if not m_check.scalars().first():
-        logger.info(f"Seeding hierarchical modules and topics for Course {c_id}...")
-        mod1 = Module(
-            course_id=c_id,
-            title="Module 1: Foundations of Binary Search Trees",
-            description="Master binary search tree invariants, left-root-right structure, and recursion algorithms.",
-            order_index=1
-        )
-        db.add(mod1)
-        await db.commit()
-        await db.refresh(mod1)
+        # Module 1
+        m1 = (await db.execute(select(Module).where(Module.course_id == c1_id, Module.order_index == 1))).scalars().first()
+        if not m1:
+            m1 = Module(
+                course_id=c1_id,
+                title="Module 1: Foundations of Binary Search Trees",
+                description="Master binary search tree invariants, left-root-right structure, and recursion algorithms.",
+                order_index=1,
+                has_module_exam=True
+            )
+            db.add(m1)
+            await db.commit()
+            await db.refresh(m1)
 
-        t1 = Topic(
-            module_id=mod1.id,
-            title="BST Invariants, Properties & Architecture",
-            description="Deep dive into node pointers, parent-child invariants, and key insertion mechanics.",
-            youtube_url="https://www.youtube.com/watch?v=qH6clASSS54",
-            youtube_video_id="qH6clASSS54",
-            order_index=1
-        )
-        t2 = Topic(
-            module_id=mod1.id,
-            title="In-Order, Pre-Order & Post-Order Traversals",
-            description="Explore depth-first traversal algorithms and mathematical non-decreasing sorting proofs.",
-            youtube_url="https://www.youtube.com/watch?v=WLvU5EQVZqY",
-            youtube_video_id="WLvU5EQVZqY",
-            order_index=2
-        )
-        res1 = ModuleResource(
-            module_id=mod1.id,
-            title="CS101 Lecture 04: Trees & BST Reference Notes",
-            file_url="/uploads/CS101_Lecture_04_Trees_and_BST.pdf",
-            file_type="pdf",
-            is_view_only=True,
-            chunk_count=3
-        )
-        db.add_all([t1, t2, res1])
-        await db.commit()
+        # Topics for Module 1
+        m1_topics = (await db.execute(select(Topic).where(Topic.module_id == m1.id))).scalars().all()
+        if not m1_topics:
+            t1 = Topic(
+                module_id=m1.id,
+                title="BST Invariants, Properties & Architecture",
+                description="Deep dive into node pointers, parent-child invariants, and key insertion mechanics.",
+                youtube_url="https://www.youtube.com/watch?v=qH6clASSS54",
+                youtube_video_id="qH6clASSS54",
+                order_index=1
+            )
+            t2 = Topic(
+                module_id=m1.id,
+                title="In-Order, Pre-Order & Post-Order Traversals",
+                description="Explore depth-first traversal algorithms and mathematical non-decreasing sorting proofs.",
+                youtube_url="https://www.youtube.com/watch?v=WLvU5EQVZqY",
+                youtube_video_id="WLvU5EQVZqY",
+                order_index=2
+            )
+            db.add_all([t1, t2])
+            await db.commit()
 
-        mod2 = Module(
-            course_id=c_id,
-            title="Module 2: Self-Balancing Trees & Rotations",
-            description="AVL balance factors, single/double rotations, and asymptotic complexity boundaries.",
-            order_index=2
-        )
-        db.add(mod2)
-        await db.commit()
-        await db.refresh(mod2)
+        # Resource for Module 1
+        m1_res = (await db.execute(select(ModuleResource).where(ModuleResource.module_id == m1.id))).scalars().all()
+        if not m1_res:
+            res1 = ModuleResource(
+                module_id=m1.id,
+                title="CS101 Lecture 04: Trees & BST Reference Notes",
+                file_url="/uploads/CS101_Lecture_04_Trees_and_BST.pdf",
+                file_type="pdf",
+                is_view_only=True,
+                chunk_count=3
+            )
+            db.add(res1)
+            await db.commit()
 
-        t3 = Topic(
-            module_id=mod2.id,
-            title="AVL Trees & Single/Double Tree Rotations",
-            description="Calculate balance factors and execute clockwise/counter-clockwise pivot rotations.",
-            youtube_url="https://www.youtube.com/watch?v=jDM6_TnYIuE",
-            youtube_video_id="jDM6_TnYIuE",
-            order_index=1
-        )
-        t4 = Topic(
-            module_id=mod2.id,
-            title="Red-Black Trees & Asymptotic Analysis",
-            description="Explore black-height preservation, node recoloring, and strict O(log N) worst-case performance.",
-            youtube_url="https://www.youtube.com/watch?v=qvZGUFHWChY",
-            youtube_video_id="qvZGUFHWChY",
-            order_index=2
-        )
-        db.add_all([t3, t4])
-        await db.commit()
+        # Exam for Module 1
+        exam1 = (await db.execute(select(Exam).where(Exam.course_id == c1_id, Exam.module_id == m1.id))).scalars().first()
+        if not exam1:
+            exam1 = Exam(
+                course_id=c1_id,
+                module_id=m1.id,
+                exam_type="MODULE_QUIZ",
+                scope="MODULE_END",
+                title="Module 1: BST Invariants & Traversals Quiz",
+                time_limit_mins=15,
+                passing_score=60.0,
+                created_by=ed_id
+            )
+            db.add(exam1)
+            await db.commit()
+            await db.refresh(exam1)
 
-    # 2. Dual-Engine Exams
-    e_check = await db.execute(select(Exam).where(Exam.course_id == c_id))
-    if not e_check.scalars().first():
-        logger.info(f"Seeding dual-engine exams for Course {c_id}...")
-        m1 = (await db.execute(select(Module).where(Module.course_id == c_id, Module.order_index == 1))).scalars().first()
-        m2 = (await db.execute(select(Module).where(Module.course_id == c_id, Module.order_index == 2))).scalars().first()
-
-        exam_quiz = Exam(
-            course_id=c_id,
-            module_id=m1.id if m1 else None,
-            exam_type="MODULE_QUIZ",
-            scope="MODULE_END",
-            title="Module 1: BST Invariants & Traversals Quiz",
-            time_limit_mins=15,
-            passing_score=60.0,
-            created_by=ed_id
-        )
-        db.add(exam_quiz)
-        await db.commit()
-        await db.refresh(exam_quiz)
-
-        if m1:
-            m1.module_exam_id = exam_quiz.id
+        if m1.module_exam_id != exam1.id or not m1.has_module_exam:
+            m1.module_exam_id = exam1.id
             m1.has_module_exam = True
             await db.commit()
 
-        eq1 = ExamQuestion(
-            exam_id=exam_quiz.id,
-            question_type="MCQ",
-            question_text="Which traversal order of a Binary Search Tree produces strictly ascending sorted values?",
-            options=json.dumps(["In-order traversal (Left, Root, Right)", "Pre-order traversal (Root, Left, Right)", "Post-order traversal (Left, Right, Root)", "Breadth-First Level Order"]),
-            correct_answer="0",
-            explanation="In-order traversal processes left child, current node, and right child, producing non-decreasing sorted keys.",
-            source_ref="CS101 Lecture 04, Slide 12",
-            order_index=1
-        )
-        eq2 = ExamQuestion(
-            exam_id=exam_quiz.id,
-            question_type="MCQ",
-            question_text="What is the worst-case lookup time complexity of an unbalanced degenerate Binary Search Tree?",
-            options=json.dumps(["O(log N)", "O(N)", "O(1)", "O(N log N)"]),
-            correct_answer="1",
-            explanation="When keys are inserted in sorted order, the BST degenerates into a linear singly linked list with O(N) operations.",
-            source_ref="CS101 Lecture 04, Slide 18",
-            order_index=2
-        )
-        eq3 = ExamQuestion(
-            exam_id=exam_quiz.id,
-            question_type="MCQ",
-            question_text="In a valid Binary Search Tree, where are keys strictly smaller than the current node located?",
-            options=json.dumps(["Left subtree", "Right subtree", "Any leaf node", "Direct ancestor"]),
-            correct_answer="0",
-            explanation="The BST property states that all keys in the left subtree must be less than the node's key.",
-            source_ref="CS101 Lecture 04, Slide 5",
-            order_index=3
-        )
-        db.add_all([eq1, eq2, eq3])
-        await db.commit()
+        e1_qs = (await db.execute(select(ExamQuestion).where(ExamQuestion.exam_id == exam1.id))).scalars().all()
+        if not e1_qs:
+            eq1 = ExamQuestion(
+                exam_id=exam1.id,
+                question_type="MCQ",
+                question_text="Which traversal order of a Binary Search Tree produces strictly ascending sorted values?",
+                options=json.dumps(["In-order traversal (Left, Root, Right)", "Pre-order traversal (Root, Left, Right)", "Post-order traversal (Left, Right, Root)", "Breadth-First Level Order"]),
+                correct_answer="0",
+                explanation="In-order traversal processes left child, current node, and right child, producing non-decreasing sorted keys.",
+                source_ref="CS101 Lecture 04, Slide 12",
+                order_index=1
+            )
+            eq2 = ExamQuestion(
+                exam_id=exam1.id,
+                question_type="MCQ",
+                question_text="What is the worst-case lookup time complexity of an unbalanced degenerate Binary Search Tree?",
+                options=json.dumps(["O(log N)", "O(N)", "O(1)", "O(N log N)"]),
+                correct_answer="1",
+                explanation="When keys are inserted in sorted order, the BST degenerates into a linear singly linked list with O(N) operations.",
+                source_ref="CS101 Lecture 04, Slide 18",
+                order_index=2
+            )
+            eq3 = ExamQuestion(
+                exam_id=exam1.id,
+                question_type="MCQ",
+                question_text="In a valid Binary Search Tree, where are keys strictly smaller than the current node located?",
+                options=json.dumps(["Left subtree", "Right subtree", "Any leaf node", "Direct ancestor"]),
+                correct_answer="0",
+                explanation="The BST property states that all keys in the left subtree must be less than the node's key.",
+                source_ref="CS101 Lecture 04, Slide 5",
+                order_index=3
+            )
+            db.add_all([eq1, eq2, eq3])
+            await db.commit()
 
-        # Module 2 Exam
-        if m2:
-            exam_m2 = Exam(
-                course_id=c_id,
+        # Module 2
+        m2 = (await db.execute(select(Module).where(Module.course_id == c1_id, Module.order_index == 2))).scalars().first()
+        if not m2:
+            m2 = Module(
+                course_id=c1_id,
+                title="Module 2: Self-Balancing Trees & Rotations",
+                description="AVL balance factors, single/double rotations, and asymptotic complexity boundaries.",
+                order_index=2,
+                has_module_exam=True
+            )
+            db.add(m2)
+            await db.commit()
+            await db.refresh(m2)
+
+        m2_topics = (await db.execute(select(Topic).where(Topic.module_id == m2.id))).scalars().all()
+        if not m2_topics:
+            t3 = Topic(
+                module_id=m2.id,
+                title="AVL Trees & Single/Double Tree Rotations",
+                description="Calculate balance factors and execute clockwise/counter-clockwise pivot rotations.",
+                youtube_url="https://www.youtube.com/watch?v=jDM6_TnYIuE",
+                youtube_video_id="jDM6_TnYIuE",
+                order_index=1
+            )
+            t4 = Topic(
+                module_id=m2.id,
+                title="Red-Black Trees & Asymptotic Analysis",
+                description="Explore black-height preservation, node recoloring, and strict O(log N) worst-case performance.",
+                youtube_url="https://www.youtube.com/watch?v=qvZGUFHWChY",
+                youtube_video_id="qvZGUFHWChY",
+                order_index=2
+            )
+            db.add_all([t3, t4])
+            await db.commit()
+
+        exam2 = (await db.execute(select(Exam).where(Exam.course_id == c1_id, Exam.module_id == m2.id))).scalars().first()
+        if not exam2:
+            exam2 = Exam(
+                course_id=c1_id,
                 module_id=m2.id,
                 exam_type="MODULE_QUIZ",
                 scope="MODULE_END",
@@ -204,16 +224,19 @@ async def ensure_hierarchical_curriculum_data(db):
                 passing_score=60.0,
                 created_by=ed_id
             )
-            db.add(exam_m2)
+            db.add(exam2)
             await db.commit()
-            await db.refresh(exam_m2)
+            await db.refresh(exam2)
 
-            m2.module_exam_id = exam_m2.id
+        if m2.module_exam_id != exam2.id or not m2.has_module_exam:
+            m2.module_exam_id = exam2.id
             m2.has_module_exam = True
             await db.commit()
 
+        e2_qs = (await db.execute(select(ExamQuestion).where(ExamQuestion.exam_id == exam2.id))).scalars().all()
+        if not e2_qs:
             m2_q1 = ExamQuestion(
-                exam_id=exam_m2.id,
+                exam_id=exam2.id,
                 question_type="MCQ",
                 question_text="What is the primary condition that triggers an AVL tree rotation?",
                 options=json.dumps(["Balance factor becomes greater than +1 or less than -1", "Node has more than two children", "Tree height exceeds 10", "Leaf node is deleted"]),
@@ -223,7 +246,7 @@ async def ensure_hierarchical_curriculum_data(db):
                 order_index=1
             )
             m2_q2 = ExamQuestion(
-                exam_id=exam_m2.id,
+                exam_id=exam2.id,
                 question_type="MCQ",
                 question_text="Which rotation sequence resolves a Left-Right (LR) imbalance?",
                 options=json.dumps(["Left rotation on child, then Right rotation on parent", "Single Right rotation", "Single Left rotation", "Double Right rotation"]),
@@ -233,7 +256,7 @@ async def ensure_hierarchical_curriculum_data(db):
                 order_index=2
             )
             m2_q3 = ExamQuestion(
-                exam_id=exam_m2.id,
+                exam_id=exam2.id,
                 question_type="MCQ",
                 question_text="What is the worst-case asymptotic search complexity in a Red-Black Tree?",
                 options=json.dumps(["O(log N)", "O(N)", "O(1)", "O(N^2)"]),
@@ -245,94 +268,103 @@ async def ensure_hierarchical_curriculum_data(db):
             db.add_all([m2_q1, m2_q2, m2_q3])
             await db.commit()
 
-        # Final Certification Exam
-        exam_final = Exam(
-            course_id=c_id,
-            module_id=None,
-            exam_type="FINAL_EXAM",
-            scope="FINAL_COURSE",
-            title="CS101: Comprehensive Final Certification Exam",
-            time_limit_mins=30,
-            passing_score=70.0,
-            created_by=ed_id
-        )
-        db.add(exam_final)
-        await db.commit()
-        await db.refresh(exam_final)
+        # Final Certification Exam for CS101
+        exam_final = (await db.execute(select(Exam).where(Exam.course_id == c1_id, Exam.exam_type == "FINAL_EXAM"))).scalars().first()
+        if not exam_final:
+            exam_final = Exam(
+                course_id=c1_id,
+                module_id=None,
+                exam_type="FINAL_EXAM",
+                scope="FINAL_COURSE",
+                title="CS101: Comprehensive Final Certification Exam",
+                time_limit_mins=30,
+                passing_score=70.0,
+                created_by=ed_id
+            )
+            db.add(exam_final)
+            await db.commit()
+            await db.refresh(exam_final)
 
-        fq1 = ExamQuestion(
-            exam_id=exam_final.id,
-            question_type="MCQ",
-            question_text="What tree rotation is performed to rebalance an AVL node with a Left-Left (LL) insertion imbalance?",
-            options=json.dumps(["Single Right (Clockwise) Rotation", "Single Left (Counter-Clockwise) Rotation", "Left-Right Double Rotation", "Right-Left Double Rotation"]),
-            correct_answer="0",
-            explanation="A single right rotation about the imbalanced node brings the left child up as root and restores balance.",
-            source_ref="CS101 Module 2, AVL Rotations",
-            order_index=1
-        )
-        fq2 = ExamQuestion(
-            exam_id=exam_final.id,
-            question_type="MCQ",
-            question_text="What is the maximum allowed balance factor |height(left) - height(right)| in an AVL tree?",
-            options=json.dumps(["1", "0", "2", "3"]),
-            correct_answer="0",
-            explanation="An AVL tree strictly preserves balance factors in the range {-1, 0, +1}.",
-            source_ref="CS101 Module 2, Balance Invariants",
-            order_index=2
-        )
-        fq3 = ExamQuestion(
-            exam_id=exam_final.id,
-            question_type="MCQ",
-            question_text="In-order traversal of a binary tree visits nodes in which recursive order?",
-            options=json.dumps(["Left Subtree -> Root -> Right Subtree", "Root -> Left Subtree -> Right Subtree", "Right Subtree -> Root -> Left Subtree", "Root -> Right Subtree -> Left Subtree"]),
-            correct_answer="0",
-            explanation="In-order visits Left, Root, then Right.",
-            source_ref="CS101 Traversal Fundamentals",
-            order_index=3
-        )
-        fq4 = ExamQuestion(
-            exam_id=exam_final.id,
-            question_type="MCQ",
-            question_text="Why do self-balancing trees (AVL / Red-Black) outperform basic BSTs in production systems?",
-            options=json.dumps(["They guarantee O(log N) worst-case lookup by dynamically controlling tree height", "They allocate zero memory on heap", "They store keys in contiguous cache lines", "They execute faster hashing algorithms"]),
-            correct_answer="0",
-            explanation="Dynamic balancing prevents tree skewing, ensuring strict logarithmic height bounds.",
-            source_ref="CS101 Asymptotic Complexity Analysis",
-            order_index=4
-        )
-        fq5 = ExamQuestion(
-            exam_id=exam_final.id,
-            question_type="MCQ",
-            question_text="Which data structure provides the optimal helper buffer for Breadth-First Level-Order traversal?",
-            options=json.dumps(["FIFO Queue", "LIFO Stack", "Max-Heap Priority Queue", "Hash Map"]),
-            correct_answer="0",
-            explanation="A First-In-First-Out (FIFO) queue guarantees nodes are explored level by level.",
-            source_ref="CS101 BFS Algorithms",
-            order_index=5
-        )
-        db.add_all([fq1, fq2, fq3, fq4, fq5])
-        await db.commit()
+        ef_qs = (await db.execute(select(ExamQuestion).where(ExamQuestion.exam_id == exam_final.id))).scalars().all()
+        if not ef_qs:
+            fq1 = ExamQuestion(
+                exam_id=exam_final.id,
+                question_type="MCQ",
+                question_text="What tree rotation is performed to rebalance an AVL node with a Left-Left (LL) insertion imbalance?",
+                options=json.dumps(["Single Right (Clockwise) Rotation", "Single Left (Counter-Clockwise) Rotation", "Left-Right Double Rotation", "Right-Left Double Rotation"]),
+                correct_answer="0",
+                explanation="A single right rotation about the imbalanced node brings the left child up as root and restores balance.",
+                source_ref="CS101 Module 2, AVL Rotations",
+                order_index=1
+            )
+            fq2 = ExamQuestion(
+                exam_id=exam_final.id,
+                question_type="MCQ",
+                question_text="What is the maximum allowed balance factor |height(left) - height(right)| in an AVL tree?",
+                options=json.dumps(["1", "0", "2", "3"]),
+                correct_answer="0",
+                explanation="An AVL tree strictly preserves balance factors in the range {-1, 0, +1}.",
+                source_ref="CS101 Module 2, Balance Invariants",
+                order_index=2
+            )
+            fq3 = ExamQuestion(
+                exam_id=exam_final.id,
+                question_type="MCQ",
+                question_text="In-order traversal of a binary tree visits nodes in which recursive order?",
+                options=json.dumps(["Left Subtree -> Root -> Right Subtree", "Root -> Left Subtree -> Right Subtree", "Right Subtree -> Root -> Left Subtree", "Root -> Right Subtree -> Left Subtree"]),
+                correct_answer="0",
+                explanation="In-order visits Left, Root, then Right.",
+                source_ref="CS101 Traversal Fundamentals",
+                order_index=3
+            )
+            fq4 = ExamQuestion(
+                exam_id=exam_final.id,
+                question_type="MCQ",
+                question_text="Why do self-balancing trees (AVL / Red-Black) outperform basic BSTs in production systems?",
+                options=json.dumps(["They guarantee O(log N) worst-case lookup by dynamically controlling tree height", "They allocate zero memory on heap", "They store keys in contiguous cache lines", "They execute faster hashing algorithms"]),
+                correct_answer="0",
+                explanation="Dynamic balancing prevents tree skewing, ensuring strict logarithmic height bounds.",
+                source_ref="CS101 Asymptotic Complexity Analysis",
+                order_index=4
+            )
+            fq5 = ExamQuestion(
+                exam_id=exam_final.id,
+                question_type="MCQ",
+                question_text="Which data structure provides the optimal helper buffer for Breadth-First Level-Order traversal?",
+                options=json.dumps(["FIFO Queue", "LIFO Stack", "Max-Heap Priority Queue", "Hash Map"]),
+                correct_answer="0",
+                explanation="A First-In-First-Out (FIFO) queue guarantees nodes are explored level by level.",
+                source_ref="CS101 BFS Algorithms",
+                order_index=5
+            )
+            db.add_all([fq1, fq2, fq3, fq4, fq5])
+            await db.commit()
 
-    # Seed AI201 (Course 2) curriculum if present
+    # =========================================================================
+    # 2. AI201 (Deep Learning & Neural Networks)
+    # =========================================================================
     course_2 = (await db.execute(select(Course).where(Course.code == "AI201"))).scalars().first()
     if course_2:
         c2_id = course_2.id
-        c2_m_check = await db.execute(select(Module).where(Module.course_id == c2_id))
-        if not c2_m_check.scalars().first():
-            logger.info(f"Seeding hierarchical modules, topics, resources, and exams for Course {c2_id} (AI201)...")
-            ai_mod1 = Module(
+
+        # Module 1
+        ai_m1 = (await db.execute(select(Module).where(Module.course_id == c2_id, Module.order_index == 1))).scalars().first()
+        if not ai_m1:
+            ai_m1 = Module(
                 course_id=c2_id,
                 title="Module 1: Foundations of Deep Learning & Backpropagation",
                 description="Master multi-layer perceptrons, non-linear activation functions, cost surfaces, and the calculus of backpropagation.",
                 order_index=1,
                 has_module_exam=True
             )
-            db.add(ai_mod1)
+            db.add(ai_m1)
             await db.commit()
-            await db.refresh(ai_mod1)
+            await db.refresh(ai_m1)
 
+        ai_m1_topics = (await db.execute(select(Topic).where(Topic.module_id == ai_m1.id))).scalars().all()
+        if not ai_m1_topics:
             t1 = Topic(
-                module_id=ai_mod1.id,
+                module_id=ai_m1.id,
                 title="Perceptrons, Multi-Layer Feedforward Networks & Activations",
                 description="Explore artificial neurons, sigmoid/ReLU activation functions, and universal approximation theorems.",
                 youtube_url="https://www.youtube.com/watch?v=aircAruvnKk",
@@ -340,27 +372,34 @@ async def ensure_hierarchical_curriculum_data(db):
                 order_index=1
             )
             t2 = Topic(
-                module_id=ai_mod1.id,
+                module_id=ai_m1.id,
                 title="Gradient Descent & The Mathematics of Backpropagation",
                 description="Step-by-step calculus derivation of chain rule gradients propagating error through hidden weight layers.",
                 youtube_url="https://www.youtube.com/watch?v=IHZwWFHWa-w",
                 youtube_video_id="IHZwWFHWa-w",
                 order_index=2
             )
+            db.add_all([t1, t2])
+            await db.commit()
+
+        ai_m1_res = (await db.execute(select(ModuleResource).where(ModuleResource.module_id == ai_m1.id))).scalars().all()
+        if not ai_m1_res:
             res1 = ModuleResource(
-                module_id=ai_mod1.id,
+                module_id=ai_m1.id,
                 title="AI201 Lecture 01: Neural Networks & Backprop Reference Notes",
                 file_url="/uploads/CS101_Lecture_04_Trees_and_BST.pdf",
                 file_type="pdf",
                 is_view_only=True,
                 chunk_count=3
             )
-            db.add_all([t1, t2, res1])
+            db.add(res1)
             await db.commit()
 
+        ai_exam1 = (await db.execute(select(Exam).where(Exam.course_id == c2_id, Exam.module_id == ai_m1.id))).scalars().first()
+        if not ai_exam1:
             ai_exam1 = Exam(
                 course_id=c2_id,
-                module_id=ai_mod1.id,
+                module_id=ai_m1.id,
                 exam_type="MODULE_QUIZ",
                 scope="MODULE_END",
                 title="Module 1: Neural Networks & Backprop Mastery Quiz",
@@ -372,9 +411,13 @@ async def ensure_hierarchical_curriculum_data(db):
             await db.commit()
             await db.refresh(ai_exam1)
 
-            ai_mod1.module_exam_id = ai_exam1.id
+        if ai_m1.module_exam_id != ai_exam1.id or not ai_m1.has_module_exam:
+            ai_m1.module_exam_id = ai_exam1.id
+            ai_m1.has_module_exam = True
             await db.commit()
 
+        ai_e1_qs = (await db.execute(select(ExamQuestion).where(ExamQuestion.exam_id == ai_exam1.id))).scalars().all()
+        if not ai_e1_qs:
             ai_eqs1 = [
                 ExamQuestion(
                     exam_id=ai_exam1.id,
@@ -410,19 +453,24 @@ async def ensure_hierarchical_curriculum_data(db):
             db.add_all(ai_eqs1)
             await db.commit()
 
-            ai_mod2 = Module(
+        # Module 2
+        ai_m2 = (await db.execute(select(Module).where(Module.course_id == c2_id, Module.order_index == 2))).scalars().first()
+        if not ai_m2:
+            ai_m2 = Module(
                 course_id=c2_id,
                 title="Module 2: Sequence Models & Transformer Attention Mechanisms",
                 description="Explore Recurrent Neural Networks, LSTMs, Scaled Dot-Product Self-Attention, and Transformer architectures.",
                 order_index=2,
                 has_module_exam=True
             )
-            db.add(ai_mod2)
+            db.add(ai_m2)
             await db.commit()
-            await db.refresh(ai_mod2)
+            await db.refresh(ai_m2)
 
+        ai_m2_topics = (await db.execute(select(Topic).where(Topic.module_id == ai_m2.id))).scalars().all()
+        if not ai_m2_topics:
             t3 = Topic(
-                module_id=ai_mod2.id,
+                module_id=ai_m2.id,
                 title="Recurrent Neural Networks, LSTMs & Vanishing Gradients",
                 description="Understand sequential data modeling, hidden state recurrence, and gating units (forget, input, output).",
                 youtube_url="https://www.youtube.com/watch?v=LHXXI4-IEns",
@@ -430,27 +478,34 @@ async def ensure_hierarchical_curriculum_data(db):
                 order_index=1
             )
             t4 = Topic(
-                module_id=ai_mod2.id,
+                module_id=ai_m2.id,
                 title="Transformer Self-Attention & Query-Key-Value Mechanics",
                 description="Demystify the Attention(Q, K, V) = softmax(QK^T / sqrt(d_k))V equation and multi-head parallel attention projections.",
                 youtube_url="https://www.youtube.com/watch?v=wjZofJX0v4U",
                 youtube_video_id="wjZofJX0v4U",
                 order_index=2
             )
+            db.add_all([t3, t4])
+            await db.commit()
+
+        ai_m2_res = (await db.execute(select(ModuleResource).where(ModuleResource.module_id == ai_m2.id))).scalars().all()
+        if not ai_m2_res:
             res2 = ModuleResource(
-                module_id=ai_mod2.id,
+                module_id=ai_m2.id,
                 title="AI201 Lecture 02: Transformer Attention Architecture Notes",
                 file_url="/uploads/CS101_Lecture_04_Trees_and_BST.pdf",
                 file_type="pdf",
                 is_view_only=True,
                 chunk_count=3
             )
-            db.add_all([t3, t4, res2])
+            db.add(res2)
             await db.commit()
 
+        ai_exam2 = (await db.execute(select(Exam).where(Exam.course_id == c2_id, Exam.module_id == ai_m2.id))).scalars().first()
+        if not ai_exam2:
             ai_exam2 = Exam(
                 course_id=c2_id,
-                module_id=ai_mod2.id,
+                module_id=ai_m2.id,
                 exam_type="MODULE_QUIZ",
                 scope="MODULE_END",
                 title="Module 2: Attention & Transformers Mastery Quiz",
@@ -462,9 +517,13 @@ async def ensure_hierarchical_curriculum_data(db):
             await db.commit()
             await db.refresh(ai_exam2)
 
-            ai_mod2.module_exam_id = ai_exam2.id
+        if ai_m2.module_exam_id != ai_exam2.id or not ai_m2.has_module_exam:
+            ai_m2.module_exam_id = ai_exam2.id
+            ai_m2.has_module_exam = True
             await db.commit()
 
+        ai_e2_qs = (await db.execute(select(ExamQuestion).where(ExamQuestion.exam_id == ai_exam2.id))).scalars().all()
+        if not ai_e2_qs:
             ai_eqs2 = [
                 ExamQuestion(
                     exam_id=ai_exam2.id,
@@ -500,7 +559,9 @@ async def ensure_hierarchical_curriculum_data(db):
             db.add_all(ai_eqs2)
             await db.commit()
 
-            # Final Exam for AI201
+        # Final Exam for AI201
+        ai_final = (await db.execute(select(Exam).where(Exam.course_id == c2_id, Exam.exam_type == "FINAL_EXAM"))).scalars().first()
+        if not ai_final:
             ai_final = Exam(
                 course_id=c2_id,
                 module_id=None,
@@ -515,6 +576,8 @@ async def ensure_hierarchical_curriculum_data(db):
             await db.commit()
             await db.refresh(ai_final)
 
+        ai_ef_qs = (await db.execute(select(ExamQuestion).where(ExamQuestion.exam_id == ai_final.id))).scalars().all()
+        if not ai_ef_qs:
             ai_final_qs = [
                 ExamQuestion(
                     exam_id=ai_final.id,

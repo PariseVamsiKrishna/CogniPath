@@ -96,7 +96,7 @@ class RAGService:
                 system_prompt = SYSTEM_TUTOR_PROMPT.format(context_text=context_text)
                 prompt_content = f"{system_prompt}\n\nStudent Question: {query}\nTarget Response Language: {target_language}"
 
-                models_to_try = [settings.GEMINI_MODEL_NAME, "gemini-2.0-flash", "gemini-1.5-flash"]
+                models_to_try = [settings.GEMINI_MODEL_NAME, "gemini-3.8-flash", "gemini-flash-latest"]
                 for m in models_to_try:
                     try:
                         resp = await asyncio.to_thread(
