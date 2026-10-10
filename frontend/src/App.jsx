@@ -44,9 +44,35 @@ export default function App() {
   const [loginRole, setLoginRole] = useState('STUDENT');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
+  const refreshAllCourses = async (currentUser = user) => {
+    let freshList = null;
+    try {
+      freshList = await coursesAPI.list();
+      if (freshList && freshList.length > 0) {
+        setCourses(freshList);
+      }
+    } catch (err) {
+      console.warn('coursesAPI.list notice:', err);
+    }
+
+    if (currentUser) {
+      await fetchEnrolledCourses(currentUser, freshList || courses);
+    }
+  };
+
   const handleCourseCreated = async (newCourse) => {
     setShowCreateCourseModal(false);
-    await fetchCourses();
+    if (newCourse?.id) {
+      try {
+        const key = `cognipath_created_courses_${user?.id || user?.email || 'educator'}`;
+        const existing = JSON.parse(localStorage.getItem(key) || '[]');
+        if (!existing.includes(newCourse.id)) {
+          existing.push(newCourse.id);
+          localStorage.setItem(key, JSON.stringify(existing));
+        }
+      } catch (e) {}
+    }
+    await refreshAllCourses(user);
     if (newCourse?.id) {
       setSelectedCourseId(newCourse.id);
     }
@@ -475,7 +501,7 @@ export default function App() {
                 onEnrollCourse={handleEnrollCourse}
                 onUnenrollCourse={handleUnenrollCourse}
                 onDeleteCoursePermanently={handleDeleteCoursePermanently}
-                onRefreshCourses={() => fetchEnrolledCourses(user)}
+                onRefreshCourses={() => refreshAllCourses(user)}
                 onOpenExploreCatalog={() => setShowCatalogModal(true)}
               />
             )}
@@ -490,7 +516,7 @@ export default function App() {
                 allCourses={courses}
                 enrolledCourses={enrolledCourses}
                 onSelectCourse={setSelectedCourseId}
-                onRefreshCourses={() => fetchEnrolledCourses(user)}
+                onRefreshCourses={() => refreshAllCourses(user)}
                 onEnrollCourse={handleEnrollCourse}
                 onUnenrollCourse={handleUnenrollCourse}
                 onDeleteCoursePermanently={handleDeleteCoursePermanently}
@@ -555,7 +581,7 @@ export default function App() {
                 onNavigateTab={handleNavigate}
                 onOpenCreateCourse={() => setShowCreateCourseModal(true)}
                 onDeleteCoursePermanently={handleDeleteCoursePermanently}
-                onRefreshCourses={() => fetchEnrolledCourses(user)}
+                onRefreshCourses={() => refreshAllCourses(user)}
                 user={user}
               />
             )}

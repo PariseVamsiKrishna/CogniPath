@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Search,
@@ -13,16 +13,21 @@ import {
   TrendingUp,
   Clock,
   Play,
-  Filter
+  Filter,
+  AlertCircle
 } from 'lucide-react';
 import { coursesAPI } from '../services/api';
 
 const CATEGORIES = [
   'All',
   'Computer Science',
-  'Database Systems',
-  'Web Development',
-  'Artificial Intelligence'
+  'Artificial Intelligence',
+  'Data Structures & Algorithms',
+  'Cloud Architecture & DevOps',
+  'Web & Mobile Development',
+  'Cybersecurity & Networks',
+  'Mathematics & Physics',
+  'Database Systems'
 ];
 
 export default function CourseCatalogModal({
@@ -39,7 +44,9 @@ export default function CourseCatalogModal({
   const [selectedCategory, setSelectedCategory] = useState('All');
   const [sortBy, setSortBy] = useState('rating'); // 'rating' | 'popular' | 'newest'
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
   const [enrollingCourseId, setEnrollingCourseId] = useState(null);
+  const fetchReqIdRef = useRef(0);
 
   useEffect(() => {
     if (isOpen) {
@@ -48,13 +55,17 @@ export default function CourseCatalogModal({
   }, [isOpen, searchQuery, selectedCategory, sortBy, enrolledCourses]);
 
   const fetchCourses = async () => {
+    const reqId = ++fetchReqIdRef.current;
     setLoading(true);
+    setError('');
     try {
       const data = await coursesAPI.explore({
         q: searchQuery.trim() || undefined,
         category: selectedCategory !== 'All' ? selectedCategory : undefined,
         sort_by: sortBy
       });
+      if (reqId !== fetchReqIdRef.current) return;
+
       const enrolledIds = new Set((enrolledCourses || []).map((c) => Number(c.id)));
       const isCourseHidden = (c) => {
         if (c.is_enrolled) return true;
@@ -66,9 +77,14 @@ export default function CourseCatalogModal({
       setHiddenCount((data || []).filter(isCourseHidden).length);
       setCourses((data || []).filter((c) => !isCourseHidden(c)));
     } catch (err) {
-      console.error('Failed to explore courses:', err);
+      if (reqId === fetchReqIdRef.current) {
+        console.error('Failed to explore courses:', err);
+        setError('Unable to load courses from the server. Please check your network connection.');
+      }
     } finally {
-      setLoading(false);
+      if (reqId === fetchReqIdRef.current) {
+        setLoading(false);
+      }
     }
   };
 
@@ -335,6 +351,22 @@ export default function CourseCatalogModal({
                   </div>
                 </div>
               ))}
+            </div>
+          ) : error ? (
+            <div className="py-16 text-center space-y-4">
+              <div className="h-12 w-12 rounded-full bg-rose-500/10 text-rose-400 border border-rose-500/20 flex items-center justify-center mx-auto">
+                <AlertCircle className="h-6 w-6" />
+              </div>
+              <div>
+                <h3 className="text-base font-bold text-white">Catalog Sync Notice</h3>
+                <p className="text-xs text-rose-300 mt-1 max-w-sm mx-auto">{error}</p>
+              </div>
+              <button
+                onClick={fetchCourses}
+                className="px-5 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow-lg shadow-indigo-600/30"
+              >
+                Retry Catalog
+              </button>
             </div>
           ) : (
             <div className="py-16 text-center space-y-4">

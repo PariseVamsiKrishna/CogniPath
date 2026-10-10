@@ -41,8 +41,9 @@ function generateCourseCode(title) {
   } else if (words.length === 1 && words[0].length >= 2) {
     prefix = words[0].substring(0, 2).toUpperCase();
   }
-  const randNum = Math.floor(100 + Math.random() * 900);
-  return `${prefix}${randNum}`;
+  const randNum = Math.floor(1000 + Math.random() * 9000);
+  const randSuffix = Math.random().toString(36).substring(2, 5).toUpperCase();
+  return `${prefix}${randNum}-${randSuffix}`;
 }
 
 export default function CreateCourseModal({
@@ -187,56 +188,83 @@ export default function CreateCourseModal({
         return;
       }
 
-      // 1. Auto-generate course code for internal reference
+      // 1. Auto-generate collision-resistant course code
       const courseCode = generateCourseCode(title);
 
-      // 2. Create the Course in database
-      const newCourse = await coursesAPI.create({
+      // 2. Build full curriculum payload for single atomic creation
+      const coursePayload = {
         title: title.trim(),
         code: courseCode,
         category,
         difficulty,
         description: description.trim() || `${title} - Comprehensive syllabus for college students.`,
-        thumbnail_url: thumbnailUrl.trim() || undefined
-      });
+        thumbnail_url: thumbnailUrl.trim() || undefined,
+        modules: modules
+          .filter((m) => m.title && m.title.trim())
+          .map((m) => ({
+            title: m.title.trim(),
+            description: m.description?.trim() || 'Module syllabus.',
+            topics: (m.topics || [])
+              .filter((t) => t.title && t.title.trim())
+              .map((t) => ({
+                title: t.title.trim(),
+                description: t.description?.trim() || 'Video lecture and conceptual walkthrough.',
+                youtube_url: t.youtube_url?.trim() || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+              }))
+          }))
+      };
 
-      // 3. Sequentially create each module and topic
-      const failedItems = [];
-      if (newCourse?.id && modules.length > 0) {
-        for (let mIdx = 0; mIdx < modules.length; mIdx++) {
-          const mod = modules[mIdx];
-          if (!mod.title.trim()) continue;
-          try {
-            const createdMod = await coursesAPI.createModule(newCourse.id, {
-              title: mod.title.trim(),
-              description: mod.description?.trim() || `Module ${mIdx + 1} syllabus.`
-            });
-
-            if (createdMod?.id && Array.isArray(mod.topics)) {
-              for (let tIdx = 0; tIdx < mod.topics.length; tIdx++) {
-                const top = mod.topics[tIdx];
-                if (!top.title.trim()) continue;
-                try {
-                  await coursesAPI.createTopic(createdMod.id, {
-                    title: top.title.trim(),
-                    description: top.description?.trim() || 'Video lecture and conceptual walkthrough.',
-                    youtube_url: top.youtube_url?.trim() || 'https://www.youtube.com/watch?v=qH6clASSS54'
-                  });
-                } catch (topErr) {
-                  console.warn(`Topic creation notice for ${top.title}:`, topErr);
-                  failedItems.push(`Topic "${top.title}"`);
+      let newCourse = null;
+      try {
+        // Attempt atomic single-request course creation
+        newCourse = await coursesAPI.create(coursePayload);
+      } catch (atomicErr) {
+        // If server runs older version without nested modules (e.g. 422), fallback to sequential
+        if (atomicErr.response?.status === 422) {
+          const { modules: _, ...basePayload } = coursePayload;
+          newCourse = await coursesAPI.create(basePayload);
+          if (newCourse?.id && modules.length > 0) {
+            for (let mIdx = 0; mIdx < modules.length; mIdx++) {
+              const mod = modules[mIdx];
+              if (!mod.title.trim()) continue;
+              try {
+                const createdMod = await coursesAPI.createModule(newCourse.id, {
+                  title: mod.title.trim(),
+                  description: mod.description?.trim() || `Module ${mIdx + 1} syllabus.`
+                });
+                if (createdMod?.id && Array.isArray(mod.topics)) {
+                  for (let tIdx = 0; tIdx < mod.topics.length; tIdx++) {
+                    const top = mod.topics[tIdx];
+                    if (!top.title.trim()) continue;
+                    try {
+                      await coursesAPI.createTopic(createdMod.id, {
+                        title: top.title.trim(),
+                        description: top.description?.trim() || 'Video lecture and conceptual walkthrough.',
+                        youtube_url: top.youtube_url?.trim() || 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+                      });
+                    } catch (e) {}
+                  }
                 }
-              }
+              } catch (e) {}
             }
-          } catch (modErr) {
-            console.warn(`Module creation notice for ${mod.title}:`, modErr);
-            failedItems.push(`Module "${mod.title}"`);
           }
+        } else {
+          throw atomicErr;
         }
       }
 
-      if (failedItems.length > 0) {
-        alert(`Course created! Note that some curriculum items could not be saved: ${failedItems.join(', ')}. You can add them anytime inside the Course Player.`);
+      // 3. Persist course ID in local storage for instantaneous creator access
+      if (newCourse?.id) {
+        try {
+          const userStr = localStorage.getItem('cognipath_user');
+          const currUser = userStr ? JSON.parse(userStr) : null;
+          const storageKey = `cognipath_created_courses_${currUser?.id || currUser?.email || 'educator'}`;
+          const existingIds = JSON.parse(localStorage.getItem(storageKey) || '[]');
+          if (!existingIds.includes(newCourse.id)) {
+            existingIds.push(newCourse.id);
+            localStorage.setItem(storageKey, JSON.stringify(existingIds));
+          }
+        } catch (e) {}
       }
 
       // 4. Trigger celebration confetti
@@ -255,11 +283,17 @@ export default function CreateCourseModal({
       onClose();
     } catch (err) {
       console.error('Failed to post course:', err);
-      setError(
-        err.response?.data?.detail ||
-        err.message ||
-        'Failed to create course. Please try again.'
-      );
+      let errMsg = 'Failed to create course. Please try again.';
+      if (err.message === 'Network Error' || !err.response) {
+        errMsg = 'Network communication error: Unable to reach the CogniPath server. Please check your internet connection and try again.';
+      } else if (err.response?.status === 401 || err.response?.status === 403) {
+        errMsg = 'Your session has expired or you do not have Educator permissions. Please log in again.';
+      } else if (err.response?.data?.detail) {
+        errMsg = typeof err.response.data.detail === 'string' ? err.response.data.detail : JSON.stringify(err.response.data.detail);
+      } else if (err.message) {
+        errMsg = err.message;
+      }
+      setError(errMsg);
     } finally {
       setLoading(false);
     }

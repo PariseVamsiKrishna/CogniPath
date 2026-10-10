@@ -38,7 +38,10 @@ export default function EducatorDashboard({
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const activeCourse = courses.find((c) => c.id === courseId) || courses[0];
   const isCreator = Boolean(
-    activeCourse && (user?.role === 'ADMIN' || activeCourse.educator_id === user?.id)
+    activeCourse &&
+      (user?.role === 'ADMIN' ||
+        String(activeCourse.educator_id) === String(user?.id) ||
+        (activeCourse.educator_email && user?.email && activeCourse.educator_email.toLowerCase() === user.email.toLowerCase()))
   );
   const [overview, setOverview] = useState({
     total_students: 32,

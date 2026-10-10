@@ -57,6 +57,17 @@ class Token(BaseModel):
 # ==========================================
 # Course & Document Schemas
 # ==========================================
+class TopicCreateNested(BaseModel):
+    title: str
+    description: str | None = None
+    youtube_url: str
+
+class ModuleCreateNested(BaseModel):
+    title: str
+    description: str | None = None
+    has_module_exam: bool | None = False
+    topics: list[TopicCreateNested] = []
+
 class CourseCreate(BaseModel):
     title: str
     code: str
@@ -64,6 +75,7 @@ class CourseCreate(BaseModel):
     category: str | None = "Computer Science"
     difficulty: str | None = "Intermediate"
     thumbnail_url: str | None = None
+    modules: list[ModuleCreateNested] = []
 
 class CourseResponse(BaseModel):
     id: int
@@ -75,6 +87,7 @@ class CourseResponse(BaseModel):
     thumbnail_url: str | None = None
     educator_id: int
     educator_name: str | None = "Prof. Rajesh Ramanujan"
+    educator_email: str | None = None
     average_rating: float | None = 4.9
     total_ratings: int | None = 0
     progress_percentage: float | None = 0.0
@@ -95,6 +108,7 @@ class CourseExploreItem(BaseModel):
     thumbnail_url: str | None = None
     educator_id: int
     educator_name: str
+    educator_email: str | None = None
     average_rating: float = 4.9
     total_ratings: int = 0
     modules_count: int = 0

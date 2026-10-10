@@ -3,6 +3,7 @@ import logging
 import os
 import re
 import shutil
+import uuid
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
 
@@ -166,10 +167,11 @@ async def _check_course_ownership(course_id: int, current_user: User, db: AsyncS
 # ==============================================================================
 
 async def get_course_rating_stats(course: Course, db: AsyncSession):
-    """Calculates creator name, aggregated star rating, and review count."""
+    """Calculates creator name, creator email, aggregated star rating, and review count."""
     educator_res = await db.execute(select(User).where(User.id == course.educator_id))
     educator = educator_res.scalars().first()
     educator_name = educator.full_name if educator else "Prof. Rajesh Ramanujan"
+    educator_email = educator.email if educator else None
 
     c_ratings_res = await db.execute(select(CourseRating).where(CourseRating.course_id == course.id))
     c_ratings = c_ratings_res.scalars().all()
@@ -192,7 +194,7 @@ async def get_course_rating_stats(course: Course, db: AsyncSession):
         avg_rating = 0.0
         total_count = 0
 
-    return educator_name, avg_rating, total_count
+    return educator_name, educator_email, avg_rating, total_count
 
 async def get_course_ratings_summary(course_id: int, user_id: int | None, db: AsyncSession):
     """Summarizes course reviews and current user rating."""
@@ -263,7 +265,7 @@ async def explore_courses(
 
     items = []
     for c in all_courses:
-        educator_name, avg_rating, total_count = await get_course_rating_stats(c, db)
+        educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(c, db)
 
         # Count modules and topics
         mod_res = await db.execute(select(Module).where(Module.course_id == c.id))
@@ -275,27 +277,29 @@ async def explore_courses(
         )
         topics_count = len(t_count_res.scalars().all())
 
-        # Category Filter
-        if category and category.lower() != "all":
-            if c.category.lower() != category.lower():
+        # Category Filter (null-safe)
+        cat_val = (c.category or "").strip()
+        if category and category.strip().lower() != "all":
+            if cat_val.lower() != category.strip().lower():
                 continue
 
-        # Text Query Search (Title, Code, Description, Category, Creator Name)
+        # Text Query Search (Title, Code, Description, Category, Creator Name, Creator Email)
         if q and q.strip():
             query_str = q.strip().lower()
             matches = (
-                query_str in c.title.lower() or
+                query_str in (c.title or "").lower() or
                 query_str in (c.code or "").lower() or
                 query_str in (c.description or "").lower() or
                 query_str in (c.category or "").lower() or
-                query_str in educator_name.lower()
+                query_str in (educator_name or "").lower() or
+                query_str in (educator_email or "").lower()
             )
             if not matches:
                 continue
 
         items.append(CourseExploreItem(
             id=c.id,
-            title=c.title,
+            title=c.title or "Untitled Course",
             code=c.code or "CS101",
             description=c.description,
             category=c.category or "Computer Science",
@@ -303,6 +307,7 @@ async def explore_courses(
             thumbnail_url=c.thumbnail_url,
             educator_id=c.educator_id,
             educator_name=educator_name,
+            educator_email=educator_email,
             average_rating=avg_rating,
             total_ratings=total_count,
             modules_count=modules_count,
@@ -328,7 +333,7 @@ async def get_enrolled_courses(
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve ONLY courses the logged-in student has enrolled in (or educator has created/enrolled in)."""
-    if current_user.role == "EDUCATOR":
+    if current_user.role in ("EDUCATOR", "ADMIN"):
         res = await db.execute(
             select(Course).where(
                 or_(
@@ -350,7 +355,7 @@ async def get_enrolled_courses(
 
     out = []
     for c in courses:
-        educator_name, avg_rating, total_count = await get_course_rating_stats(c, db)
+        educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(c, db)
 
         # Get student's personal completion percentage for this course
         enr_res = await db.execute(
@@ -360,7 +365,7 @@ async def get_enrolled_courses(
             )
         )
         enr = enr_res.scalars().first()
-        prog = enr.completion_percentage if enr else (100.0 if current_user.role == "EDUCATOR" and c.educator_id == current_user.id else 0.0)
+        prog = enr.completion_percentage if enr else (100.0 if current_user.role in ("EDUCATOR", "ADMIN") and c.educator_id == current_user.id else 0.0)
 
         # Find first topic as next topic
         next_t_title = "Overview & Introduction"
@@ -383,6 +388,7 @@ async def get_enrolled_courses(
             thumbnail_url=c.thumbnail_url,
             educator_id=c.educator_id,
             educator_name=educator_name,
+            educator_email=educator_email,
             average_rating=avg_rating,
             total_ratings=total_count,
             progress_percentage=prog,
@@ -405,7 +411,7 @@ async def list_courses(
             select(Enrollment.course_id).where(Enrollment.user_id == current_user.id)
         )
         enrolled_ids = set(enr_res.scalars().all())
-        if current_user.role == "EDUCATOR":
+        if current_user.role in ("EDUCATOR", "ADMIN"):
             c_res = await db.execute(select(Course.id).where(Course.educator_id == current_user.id))
             enrolled_ids.update(c_res.scalars().all())
 
@@ -417,7 +423,7 @@ async def list_courses(
     courses = result.scalars().all()
     out = []
     for c in courses:
-        educator_name, avg_rating, total_count = await get_course_rating_stats(c, db)
+        educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(c, db)
         is_enr = c.id in enrolled_ids
         
         # Get progress if enrolled
@@ -443,6 +449,7 @@ async def list_courses(
             thumbnail_url=c.thumbnail_url,
             educator_id=c.educator_id,
             educator_name=educator_name,
+            educator_email=educator_email,
             average_rating=avg_rating,
             total_ratings=total_count,
             progress_percentage=prog,
@@ -458,17 +465,17 @@ async def create_course(
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new course with difficulty, thumbnail, and auto-provisioned community channels."""
-    existing = await db.execute(select(Course).where(Course.code == course_in.code))
+    """Create a new course with difficulty, thumbnail, auto-provisioned community channels, and atomic nested curriculum."""
+    code_candidate = (course_in.code or "").strip()
+    if not code_candidate:
+        code_candidate = f"CP{uuid.uuid4().hex[:6].upper()}"
+    existing = await db.execute(select(Course).where(Course.code == code_candidate))
     if existing.scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A course with this code already exists."
-        )
+        code_candidate = f"{code_candidate}-{uuid.uuid4().hex[:4].upper()}"
 
     new_course = Course(
         title=course_in.title,
-        code=course_in.code,
+        code=code_candidate,
         description=course_in.description,
         category=course_in.category or "Computer Science",
         difficulty=course_in.difficulty or "Intermediate",
@@ -476,8 +483,7 @@ async def create_course(
         educator_id=current_user.id
     )
     db.add(new_course)
-    await db.commit()
-    await db.refresh(new_course)
+    await db.flush()
 
     # Automatically provision native community channels for this course
     channels = [
@@ -486,9 +492,48 @@ async def create_course(
         CommunityChannel(course_id=new_course.id, name="exam-prep", description="Collaborative revision, mock questions, and notes"),
     ]
     db.add_all(channels)
+
+    # Atomically provision nested modules and topics if provided
+    if course_in.modules:
+        for m_idx, mod_in in enumerate(course_in.modules):
+            if not mod_in.title or not mod_in.title.strip():
+                continue
+            module_obj = Module(
+                course_id=new_course.id,
+                title=mod_in.title.strip(),
+                description=mod_in.description.strip() if mod_in.description else f"Module {m_idx + 1} syllabus.",
+                order_index=m_idx + 1,
+                has_module_exam=bool(mod_in.has_module_exam)
+            )
+            db.add(module_obj)
+            await db.flush()
+
+            if mod_in.topics:
+                for t_idx, top_in in enumerate(mod_in.topics):
+                    if not top_in.title or not top_in.title.strip():
+                        continue
+                    yt_url = (top_in.youtube_url or "").strip()
+                    vid_id = extract_youtube_video_id(yt_url)
+                    if not vid_id:
+                        vid_id = "dQw4w9WgXcQ" if not yt_url else extract_youtube_video_id(yt_url)
+                    if not vid_id:
+                        vid_id = "qH6clASSS54"
+                    topic_obj = Topic(
+                        module_id=module_obj.id,
+                        title=top_in.title.strip(),
+                        description=top_in.description.strip() if top_in.description else "Video lecture and conceptual walkthrough.",
+                        youtube_url=yt_url or f"https://www.youtube.com/watch?v={vid_id}",
+                        youtube_video_id=vid_id,
+                        order_index=t_idx + 1
+                    )
+                    db.add(topic_obj)
+
     await db.commit()
+    await db.refresh(new_course)
+    invalidate_course_hierarchy_cache(new_course.id)
 
     educator_name = current_user.full_name or "Prof. Rajesh Ramanujan"
+    educator_email = current_user.email
     return CourseResponse(
         id=new_course.id,
         title=new_course.title,
@@ -499,6 +544,7 @@ async def create_course(
         thumbnail_url=new_course.thumbnail_url,
         educator_id=new_course.educator_id,
         educator_name=educator_name,
+        educator_email=educator_email,
         average_rating=5.0,
         total_ratings=0,
         created_at=new_course.created_at
@@ -624,7 +670,7 @@ async def get_course(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    educator_name, avg_rating, total_count = await get_course_rating_stats(course, db)
+    educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(course, db)
     return CourseResponse(
         id=course.id,
         title=course.title,
@@ -635,6 +681,7 @@ async def get_course(
         thumbnail_url=course.thumbnail_url,
         educator_id=course.educator_id,
         educator_name=educator_name,
+        educator_email=educator_email,
         average_rating=avg_rating,
         total_ratings=total_count,
         created_at=course.created_at
