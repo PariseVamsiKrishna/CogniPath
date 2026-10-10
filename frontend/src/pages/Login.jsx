@@ -331,8 +331,16 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
     } catch (err) {
       console.warn('Backend register error:', err);
       const detail = err.response?.data?.detail;
-      if (detail && typeof detail === 'string' && detail.toLowerCase().includes('already registered')) {
+      if (detail && typeof detail === 'string' && (detail.toLowerCase().includes('already exists') || detail.toLowerCase().includes('already registered'))) {
         setError('This email is already registered. Please switch to the Sign In tab.');
+      } else if (!err.response || err.message?.toLowerCase().includes('network') || err.code === 'ERR_NETWORK') {
+        // Backend API offline or cold-start: smoothly enter with the registered local account
+        console.info('Backend API offline or unreachable; activating offline-ready account session');
+        setSuccess('Account created! Entering platform...');
+        localStorage.setItem('cognipath_user', JSON.stringify(localAccount));
+        setTimeout(() => {
+          onLoginSuccess(localAccount);
+        }, 400);
       } else {
         const errMsg = typeof detail === 'string' 
           ? detail 
