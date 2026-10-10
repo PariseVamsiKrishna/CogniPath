@@ -63,6 +63,8 @@ from app.schemas.schemas import (
     TabsSummaryCourse,
     TabsSummaryModule,
     TabsSummaryResponse,
+    TopicCompleteRequest,
+    TopicCompleteResponse,
     TopicCreate,
     TopicRatingCreate,
     TopicRatingResponse,
@@ -915,6 +917,7 @@ async def delete_course_permanently(
     # 7. Delete course itself
     await db.delete(course)
     await db.commit()
+    ttl_cache.invalidate(f"hierarchy_{course_id}")
 
     # 8. Clean up Chroma vector store
     try:
@@ -934,8 +937,6 @@ async def delete_course_permanently(
 
 @router.post("/{course_id}/modules", response_model=ModuleResponse, status_code=status.HTTP_201_CREATED)
 async def create_module(
-    # Invalidate cache
-    # 
     course_id: int,
     req: ModuleCreate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -957,6 +958,7 @@ async def create_module(
     db.add(module)
     await db.commit()
     await db.refresh(module)
+    ttl_cache.invalidate(f"hierarchy_{course_id}")
 
     return ModuleResponse(
         id=module.id,
@@ -974,8 +976,6 @@ async def create_module(
 
 @router.put("/modules/{module_id}", response_model=ModuleResponse)
 async def update_module(
-    # Invalidate cache
-    # 
     module_id: int,
     req: ModuleUpdate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -1002,6 +1002,7 @@ async def update_module(
 
     await db.commit()
     await db.refresh(module)
+    ttl_cache.invalidate(f"hierarchy_{module.course_id}")
 
     t_res = await db.execute(select(Topic).where(Topic.module_id == module.id).order_by(Topic.order_index.asc()))
     r_res = await db.execute(select(ModuleResource).where(ModuleResource.module_id == module.id))
@@ -1022,8 +1023,6 @@ async def update_module(
 
 @router.delete("/modules/{module_id}")
 async def delete_module(
-    # Invalidate cache
-    # 
     module_id: int,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
@@ -1035,9 +1034,11 @@ async def delete_module(
         raise HTTPException(status_code=404, detail="Module not found")
 
     await _check_course_ownership(module.course_id, current_user, db)
+    course_id_to_invalidate = module.course_id
 
     await db.delete(module)
     await db.commit()
+    ttl_cache.invalidate(f"hierarchy_{course_id_to_invalidate}")
     return {"status": "success", "message": "Module deleted successfully"}
 
 
@@ -1047,8 +1048,6 @@ async def delete_module(
 
 @router.post("/modules/{module_id}/topics", response_model=TopicResponse, status_code=status.HTTP_201_CREATED)
 async def create_topic(
-    # Invalidate cache
-    # 
     module_id: int,
     req: TopicCreate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -1078,14 +1077,13 @@ async def create_topic(
     db.add(topic)
     await db.commit()
     await db.refresh(topic)
+    ttl_cache.invalidate(f"hierarchy_{module.course_id}")
 
     return TopicResponse.model_validate(topic)
 
 
 @router.put("/topics/{topic_id}", response_model=TopicResponse)
 async def update_topic(
-    # Invalidate cache
-    # 
     topic_id: int,
     req: TopicUpdate,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
@@ -1114,13 +1112,13 @@ async def update_topic(
 
     await db.commit()
     await db.refresh(topic)
+    if module:
+        ttl_cache.invalidate(f"hierarchy_{module.course_id}")
     return TopicResponse.model_validate(topic)
 
 
 @router.delete("/topics/{topic_id}")
 async def delete_topic(
-    # Invalidate cache
-    # 
     topic_id: int,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
@@ -1135,9 +1133,12 @@ async def delete_topic(
     module = mod_res.scalars().first()
     if module:
         await _check_course_ownership(module.course_id, current_user, db)
+    target_course_id = module.course_id if module else None
 
     await db.delete(topic)
     await db.commit()
+    if target_course_id:
+        ttl_cache.invalidate(f"hierarchy_{target_course_id}")
     return {"status": "success", "message": "Topic deleted successfully"}
 
 
@@ -1147,8 +1148,6 @@ async def delete_topic(
 
 @router.post("/modules/{module_id}/resources", response_model=ModuleResourceResponse, status_code=status.HTTP_201_CREATED)
 async def upload_module_resource(
-    # Invalidate cache
-    # 
     module_id: int,
     title: str = Form(...),
     file: UploadFile = File(...),
@@ -1200,6 +1199,7 @@ async def upload_module_resource(
     db.add(resource)
     await db.commit()
     await db.refresh(resource)
+    ttl_cache.invalidate(f"hierarchy_{module.course_id}")
 
     return ModuleResourceResponse.model_validate(resource)
 
@@ -1359,6 +1359,8 @@ async def save_module_exam(
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
+    await _check_course_ownership(module.course_id, current_user, db)
+
     exam = Exam(
         course_id=module.course_id,
         module_id=module.id,
@@ -1392,6 +1394,7 @@ async def save_module_exam(
     module.module_exam_id = exam.id
     await db.commit()
     await db.refresh(module)
+    ttl_cache.invalidate(f"hierarchy_{module.course_id}")
 
     # Fetch and return full exam details
     from app.api.v1.exams import get_exam_details
@@ -1446,4 +1449,177 @@ async def get_tabs_summary(
         ))
 
     return TabsSummaryResponse(courses=tabs_courses)
+
+
+# ==============================================================================
+# TOPIC COMPLETION & PROGRESS TRACKING ENDPOINTS
+# ==============================================================================
+
+@router.post("/topics/{topic_id}/complete", response_model=TopicCompleteResponse)
+@module_router.post("/topics/{topic_id}/complete", response_model=TopicCompleteResponse)
+async def complete_topic(
+    topic_id: int,
+    req: TopicCompleteRequest = TopicCompleteRequest(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Marks a topic as completed (or uncompleted) for the current student, updates course completion %."""
+    top_res = await db.execute(select(Topic).where(Topic.id == topic_id))
+    topic = top_res.scalars().first()
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
+    module = mod_res.scalars().first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Parent module not found")
+
+    course_id = module.course_id
+
+    # Ensure enrollment exists for progress tracking
+    enr_res = await db.execute(
+        select(Enrollment).where(
+            Enrollment.user_id == current_user.id,
+            Enrollment.course_id == course_id
+        )
+    )
+    enrollment = enr_res.scalars().first()
+    if not enrollment:
+        enrollment = Enrollment(user_id=current_user.id, course_id=course_id, completion_percentage=0.0)
+        db.add(enrollment)
+        await db.flush()
+
+    # Query existing activity logs for this topic
+    log_res = await db.execute(
+        select(StudentActivityLog).where(
+            StudentActivityLog.user_id == current_user.id,
+            StudentActivityLog.course_id == course_id,
+            StudentActivityLog.action_type == "TOPIC_COMPLETE"
+        )
+    )
+    existing_logs = log_res.scalars().all()
+
+    target_log = None
+    for l in existing_logs:
+        if l.query_text == str(topic_id):
+            target_log = l
+            break
+        if l.metadata_info:
+            try:
+                meta = json.loads(l.metadata_info)
+                if meta.get("topic_id") == topic_id:
+                    target_log = l
+                    break
+            except Exception:
+                pass
+
+    if not req.is_completed:
+        if target_log:
+            await db.delete(target_log)
+            await db.flush()
+    else:
+        if not target_log:
+            new_log = StudentActivityLog(
+                user_id=current_user.id,
+                course_id=course_id,
+                action_type="TOPIC_COMPLETE",
+                activity_type="PROGRESS",
+                query_text=str(topic_id),
+                metadata_info=json.dumps({"topic_id": topic_id, "title": topic.title})
+            )
+            db.add(new_log)
+            await db.flush()
+
+    # Calculate overall completion percentage for the course
+    course_mods_res = await db.execute(select(Module.id).where(Module.course_id == course_id))
+    course_mod_ids = course_mods_res.scalars().all()
+
+    course_topics_res = await db.execute(select(Topic.id).where(Topic.module_id.in_(course_mod_ids)))
+    course_topic_ids = set(course_topics_res.scalars().all())
+    total_topics_count = len(course_topic_ids)
+
+    # Re-fetch active completed topic logs
+    active_logs_res = await db.execute(
+        select(StudentActivityLog).where(
+            StudentActivityLog.user_id == current_user.id,
+            StudentActivityLog.course_id == course_id,
+            StudentActivityLog.action_type == "TOPIC_COMPLETE"
+        )
+    )
+    active_logs = active_logs_res.scalars().all()
+
+    completed_topic_ids = []
+    for l in active_logs:
+        try:
+            tid = int(l.query_text) if l.query_text and l.query_text.isdigit() else None
+            if not tid and l.metadata_info:
+                meta = json.loads(l.metadata_info)
+                tid = meta.get("topic_id")
+            if tid and tid in course_topic_ids and tid not in completed_topic_ids:
+                completed_topic_ids.append(tid)
+        except Exception:
+            pass
+
+    completion_pct = round((len(completed_topic_ids) / max(1, total_topics_count)) * 100.0, 1)
+    enrollment.completion_percentage = completion_pct
+    await db.commit()
+
+    return TopicCompleteResponse(
+        status="success",
+        topic_id=topic_id,
+        is_completed=req.is_completed,
+        completion_percentage=completion_pct,
+        completed_topic_ids=completed_topic_ids
+    )
+
+
+@router.get("/{course_id}/completed-topics")
+async def get_completed_topics(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Returns all completed topic IDs for the current user and their completion %."""
+    course_mods_res = await db.execute(select(Module.id).where(Module.course_id == course_id))
+    course_mod_ids = course_mods_res.scalars().all()
+
+    course_topics_res = await db.execute(select(Topic.id).where(Topic.module_id.in_(course_mod_ids)))
+    course_topic_ids = set(course_topics_res.scalars().all())
+
+    logs_res = await db.execute(
+        select(StudentActivityLog).where(
+            StudentActivityLog.user_id == current_user.id,
+            StudentActivityLog.course_id == course_id,
+            StudentActivityLog.action_type == "TOPIC_COMPLETE"
+        )
+    )
+    logs = logs_res.scalars().all()
+
+    completed_topic_ids = []
+    for l in logs:
+        try:
+            tid = int(l.query_text) if l.query_text and l.query_text.isdigit() else None
+            if not tid and l.metadata_info:
+                meta = json.loads(l.metadata_info)
+                tid = meta.get("topic_id")
+            if tid and tid in course_topic_ids and tid not in completed_topic_ids:
+                completed_topic_ids.append(tid)
+        except Exception:
+            pass
+
+    enr_res = await db.execute(
+        select(Enrollment).where(
+            Enrollment.user_id == current_user.id,
+            Enrollment.course_id == course_id
+        )
+    )
+    enrollment = enr_res.scalars().first()
+    completion_pct = enrollment.completion_percentage if enrollment else round((len(completed_topic_ids) / max(1, len(course_topic_ids))) * 100.0, 1)
+
+    return {
+        "course_id": course_id,
+        "completed_topic_ids": completed_topic_ids,
+        "completion_percentage": completion_pct
+    }
+
 

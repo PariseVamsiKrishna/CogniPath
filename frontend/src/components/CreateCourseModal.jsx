@@ -180,6 +180,13 @@ export default function CreateCourseModal({
       setLoading(true);
       setError('');
 
+      const token = localStorage.getItem('cognipath_token');
+      if (!token) {
+        setError('Authentication session not found. Please log in before creating a course.');
+        setLoading(false);
+        return;
+      }
+
       // 1. Auto-generate course code for internal reference
       const courseCode = generateCourseCode(title);
 
@@ -194,6 +201,7 @@ export default function CreateCourseModal({
       });
 
       // 3. Sequentially create each module and topic
+      const failedItems = [];
       if (newCourse?.id && modules.length > 0) {
         for (let mIdx = 0; mIdx < modules.length; mIdx++) {
           const mod = modules[mIdx];
@@ -216,13 +224,19 @@ export default function CreateCourseModal({
                   });
                 } catch (topErr) {
                   console.warn(`Topic creation notice for ${top.title}:`, topErr);
+                  failedItems.push(`Topic "${top.title}"`);
                 }
               }
             }
           } catch (modErr) {
             console.warn(`Module creation notice for ${mod.title}:`, modErr);
+            failedItems.push(`Module "${mod.title}"`);
           }
         }
+      }
+
+      if (failedItems.length > 0) {
+        alert(`Course created! Note that some curriculum items could not be saved: ${failedItems.join(', ')}. You can add them anytime inside the Course Player.`);
       }
 
       // 4. Trigger celebration confetti

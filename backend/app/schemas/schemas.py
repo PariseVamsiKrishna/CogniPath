@@ -637,7 +637,7 @@ class ExamReorderRequest(BaseModel):
 
 class ExamSubmitItem(BaseModel):
     question_id: int
-    selected_option: int | None = None
+    selected_option: Any | None = None
     short_answer: str | None = None
 
 class ExamSubmitRequest(BaseModel):
@@ -758,4 +758,17 @@ class PodPasscodeVerifyResponse(BaseModel):
     verified: bool
     is_blacklisted: bool
     message: str
+
+
+class TopicCompleteRequest(BaseModel):
+    is_completed: bool = True
+
+
+class TopicCompleteResponse(BaseModel):
+    status: str
+    topic_id: int
+    is_completed: bool
+    completion_percentage: float
+    completed_topic_ids: list[int]
+
 

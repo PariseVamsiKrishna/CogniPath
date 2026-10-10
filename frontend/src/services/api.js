@@ -175,6 +175,20 @@ export const coursesAPI = {
   verifyBadge: async (hash) => {
     const res = await apiClient.get(`/courses/badges/verify/${hash}`);
     return res.data;
+  },
+  completeTopic: async (topicId, data = { is_completed: true }) => {
+    const res = await apiClient.post(`/courses/topics/${topicId}/complete`, data);
+    return res.data;
+  },
+  getCompletedTopics: async (courseId) => {
+    const res = await apiClient.get(`/courses/${courseId}/completed-topics`);
+    return res.data;
+  },
+  viewResource: async (resourceId) => {
+    const res = await apiClient.get(`/courses/resources/${resourceId}/view`, {
+      responseType: 'blob'
+    });
+    return res.data;
   }
 };
 
@@ -255,7 +269,19 @@ export const documentsAPI = {
 };
 
 export const tutorAPI = {
-  ask: (data) => apiClient.post('/tutor/ask', data),
+  ask: (data) => apiClient.post('/tutor/query', data),
+  query: async (data) => {
+    const res = await apiClient.post('/tutor/query', data);
+    return res.data;
+  },
+  suggestVideo: async (data) => {
+    const res = await apiClient.post('/tutor/suggest-video', data);
+    return res.data;
+  },
+  getLanguages: async () => {
+    const res = await apiClient.get('/tutor/languages');
+    return res.data;
+  }
 };
 
 export const quizzesAPI = {

@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from app.core.cache import ttl_cache
 from app.core.database import get_db
 from app.core.security import get_current_user, require_roles
 from app.models.models import (
@@ -110,6 +111,7 @@ async def create_exam(
             db.add(q_obj)
         await db.commit()
 
+    ttl_cache.invalidate(f"hierarchy_{req.course_id}")
     return await get_exam_details(exam.id, db, is_educator=True)
 
 @router.get("/{exam_id}", response_model=ExamResponse)
@@ -298,6 +300,7 @@ async def update_exam(
             db.add(q_obj)
 
     await db.commit()
+    ttl_cache.invalidate(f"hierarchy_{exam.course_id}")
     return await get_exam_details(exam.id, db)
 
 @router.post("/ai-suggest", response_model=AISuggestionResponse)

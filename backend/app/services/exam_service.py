@@ -183,6 +183,51 @@ Each object must have EXACTLY these fields:
             )
         ]
 
+def check_mcq_answer(selected: Any, correct: Any, options_raw: Any) -> bool:
+    """Robust MCQ answer checker that normalizes between 0-based indices, letters (A-E), and option text."""
+    if selected is None or correct is None:
+        return False
+    sel_str = str(selected).strip().lower()
+    cor_str = str(correct).strip().lower()
+    if sel_str == cor_str:
+        return True
+
+    letter_to_idx = {"a": "0", "b": "1", "c": "2", "d": "3", "e": "4"}
+    idx_to_letter = {"0": "a", "1": "b", "2": "c", "3": "d", "4": "e"}
+
+    # Direct letter <-> index cross-mapping
+    if letter_to_idx.get(sel_str) == cor_str or idx_to_letter.get(sel_str) == cor_str:
+        return True
+    if letter_to_idx.get(cor_str) == sel_str or idx_to_letter.get(cor_str) == sel_str:
+        return True
+
+    # Option text matching if options exist
+    if options_raw:
+        try:
+            opts = json.loads(options_raw) if isinstance(options_raw, str) else options_raw
+            if isinstance(opts, list):
+                if sel_str.isdigit():
+                    s_idx = int(sel_str)
+                    if 0 <= s_idx < len(opts) and str(opts[s_idx]).strip().lower() == cor_str:
+                        return True
+                if cor_str.isdigit():
+                    c_idx = int(cor_str)
+                    if 0 <= c_idx < len(opts) and str(opts[c_idx]).strip().lower() == sel_str:
+                        return True
+                if sel_str in letter_to_idx:
+                    s_idx = int(letter_to_idx[sel_str])
+                    if 0 <= s_idx < len(opts) and str(opts[s_idx]).strip().lower() == cor_str:
+                        return True
+                if cor_str in letter_to_idx:
+                    c_idx = int(letter_to_idx[cor_str])
+                    if 0 <= c_idx < len(opts) and str(opts[c_idx]).strip().lower() == sel_str:
+                        return True
+        except Exception:
+            pass
+
+    return False
+
+
     async def evaluate_submission(
         self,
         exam_id: int,
@@ -219,8 +264,7 @@ Each object must have EXACTLY these fields:
             is_correct = False
             if q.question_type == "MCQ":
                 if resp.selected_option is not None:
-                    # Compare string representations of option index
-                    is_correct = str(resp.selected_option).strip() == str(q.correct_answer).strip()
+                    is_correct = check_mcq_answer(resp.selected_option, q.correct_answer, q.options)
             else:
                 # Short Answer heuristic check
                 ans_text = (resp.short_answer or "").strip().lower()

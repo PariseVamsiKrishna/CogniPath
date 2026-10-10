@@ -19,7 +19,8 @@ import {
   UploadCloud,
   Layers,
   ChevronDown,
-  Star
+  Star,
+  ShieldCheck
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
 import { coursesAPI, examsAPI } from '../services/api';
@@ -93,18 +94,25 @@ export default function CourseWorkspace({
   const [zoomScale, setZoomScale] = useState(1.1);
   const [pdfLoading, setPdfLoading] = useState(false);
   const canvasRef = useRef(null);
+  const renderTaskRef = useRef(null);
 
   // Module Exam Taking State
   const [moduleExam, setModuleExam] = useState(null);
   const [examLoading, setExamLoading] = useState(false);
   const [examActive, setExamActive] = useState(false);
   const [studentAnswers, setStudentAnswers] = useState({});
+  const studentAnswersRef = useRef({});
+  const handleSubmitExamRef = useRef(null);
   const [examTimeLeft, setExamTimeLeft] = useState(900);
   const [submissionResult, setSubmissionResult] = useState(null);
   const [submittingExam, setSubmittingExam] = useState(false);
   const [generatingExamRAG, setGeneratingExamRAG] = useState(false);
   const [creatingFinalExam, setCreatingFinalExam] = useState(false);
   const [isFinalExam, setIsFinalExam] = useState(false);
+
+  useEffect(() => {
+    studentAnswersRef.current = studentAnswers;
+  }, [studentAnswers]);
 
   // Educator Modals
   const [showExamBuilderModal, setShowExamBuilderModal] = useState(false);
@@ -169,8 +177,36 @@ export default function CourseWorkspace({
   useEffect(() => {
     if (courseId) {
       fetchHierarchy(courseId);
+      loadCompletedTopics(courseId);
     }
   }, [courseId]);
+
+  const loadCompletedTopics = async (cId) => {
+    try {
+      const localKey = `cgp_completed_topics_${user?.id}_${cId}`;
+      const saved = localStorage.getItem(localKey);
+      if (saved) {
+        setCompletedTopics(JSON.parse(saved));
+      }
+    } catch (e) {}
+
+    try {
+      const data = await coursesAPI.getCompletedTopics(cId);
+      if (data && Array.isArray(data.completed_topic_ids)) {
+        const map = {};
+        data.completed_topic_ids.forEach((id) => {
+          map[id] = true;
+        });
+        setCompletedTopics((prev) => {
+          const merged = { ...prev, ...map };
+          if (user?.id && cId) {
+            localStorage.setItem(`cgp_completed_topics_${user.id}_${cId}`, JSON.stringify(merged));
+          }
+          return merged;
+        });
+      }
+    } catch (err) {}
+  };
 
   const fetchHierarchy = async (cId) => {
     try {
@@ -201,6 +237,42 @@ export default function CourseWorkspace({
     if (!hierarchy?.modules || !activeModuleId) return null;
     return hierarchy.modules.find((m) => m.id === activeModuleId) || hierarchy.modules[0];
   }, [hierarchy, activeModuleId]);
+
+  const flattenedTopics = useMemo(() => {
+    if (!hierarchy?.modules) return [];
+    const list = [];
+    hierarchy.modules.forEach((mod) => {
+      (mod.topics || []).forEach((top) => {
+        list.push({ topic: top, module: mod });
+      });
+    });
+    return list;
+  }, [hierarchy]);
+
+  const currentTopicIndex = useMemo(() => {
+    return flattenedTopics.findIndex((item) => item.topic.id === activeTopic?.id);
+  }, [flattenedTopics, activeTopic]);
+
+  const prevTopicItem = currentTopicIndex > 0 ? flattenedTopics[currentTopicIndex - 1] : null;
+  const nextTopicItem = currentTopicIndex >= 0 && currentTopicIndex < flattenedTopics.length - 1 ? flattenedTopics[currentTopicIndex + 1] : null;
+
+  const handlePrevTopic = () => {
+    if (prevTopicItem) {
+      setActiveModuleId(prevTopicItem.module.id);
+      setActiveTopic(prevTopicItem.topic);
+      setActiveContentType('video');
+    }
+  };
+
+  const handleNextTopic = () => {
+    if (nextTopicItem) {
+      setActiveModuleId(nextTopicItem.module.id);
+      setActiveTopic(nextTopicItem.topic);
+      setActiveContentType('video');
+    } else if (currentModule?.has_module_exam) {
+      setActiveContentType('exam');
+    }
+  };
 
   // Load Exam Data when Exam is Active
   useEffect(() => {
@@ -357,6 +429,7 @@ export default function CourseWorkspace({
         passing_score: 70,
         questions: []
       });
+      await fetchHierarchy(courseId);
       alert('✅ Final course exam created! Use the Exam Builder to add questions.');
     } catch (err) {
       alert('Failed to create final exam.');
@@ -365,22 +438,33 @@ export default function CourseWorkspace({
     }
   };
 
-  const toggleTopicCompleted = (topicId) => {
+  const toggleTopicCompleted = async (topicId) => {
     if (!isEducator && !localEnrolled) {
       alert('Please enroll in this course to mark topics as completed and track your milestone progress.');
       return;
     }
-    setCompletedTopics((prev) => {
-      const updated = { ...prev, [topicId]: !prev[topicId] };
-      if (updated[topicId]) {
-        confetti({
-          particleCount: 50,
-          spread: 60,
-          origin: { y: 0.75 }
-        });
-      }
-      return updated;
-    });
+    const newStatus = !completedTopics[topicId];
+    const updated = { ...completedTopics, [topicId]: newStatus };
+    setCompletedTopics(updated);
+
+    if (user?.id && courseId) {
+      localStorage.setItem(`cgp_completed_topics_${user.id}_${courseId}`, JSON.stringify(updated));
+    }
+
+    if (newStatus) {
+      confetti({
+        particleCount: 50,
+        spread: 60,
+        origin: { y: 0.75 }
+      });
+    }
+
+    try {
+      await coursesAPI.completeTopic(topicId, { is_completed: newStatus });
+      if (onRefreshCourses) onRefreshCourses();
+    } catch (err) {
+      console.warn('Backend topic completion sync failed, cached locally:', err);
+    }
   };
 
   // ---------------------------------------------------------------------------
@@ -406,12 +490,7 @@ export default function CourseWorkspace({
         });
       }
 
-      const resUrl = `/api/v1/courses/resources/${resource.id}/view`;
-      const token = localStorage.getItem('cognipath_token');
-      const response = await fetch(resUrl, {
-        headers: token ? { Authorization: `Bearer ${token}` } : {}
-      });
-      const blob = await response.blob();
+      const blob = await coursesAPI.viewResource(resource.id);
       const arrayBuffer = await blob.arrayBuffer();
 
       const loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
@@ -429,6 +508,11 @@ export default function CourseWorkspace({
   const renderPdfPage = async (pageNumber, pdfInstance = pdfDoc, scale = zoomScale) => {
     if (!pdfInstance || !canvasRef.current) return;
     try {
+      if (renderTaskRef.current) {
+        try {
+          renderTaskRef.current.cancel();
+        } catch (_) {}
+      }
       const page = await pdfInstance.getPage(pageNumber);
       const viewport = page.getViewport({ scale });
       const canvas = canvasRef.current;
@@ -440,11 +524,21 @@ export default function CourseWorkspace({
         canvasContext: context,
         viewport: viewport
       };
-      await page.render(renderContext).promise;
+      const renderTask = page.render(renderContext);
+      renderTaskRef.current = renderTask;
+      await renderTask.promise;
     } catch (err) {
-      console.error('Page render error:', err);
+      if (err?.name !== 'RenderingCancelledException') {
+        console.error('Page render error:', err);
+      }
     }
   };
+
+  useEffect(() => {
+    if (activeContentType === 'notes' && activeResource && !pdfDoc) {
+      loadPdfDoc(activeResource);
+    }
+  }, [activeContentType, activeResource]);
 
   useEffect(() => {
     if (pdfDoc && activeResource && activeContentType === 'notes') {
@@ -456,17 +550,22 @@ export default function CourseWorkspace({
   // 4. STUDENT EXAM TAKING & SUBMISSION
   // ---------------------------------------------------------------------------
   const handleAnswerOption = (questionId, optionVal) => {
-    setStudentAnswers((prev) => ({
-      ...prev,
-      [questionId]: optionVal
-    }));
+    setStudentAnswers((prev) => {
+      const next = {
+        ...prev,
+        [questionId]: optionVal
+      };
+      studentAnswersRef.current = next;
+      return next;
+    });
   };
 
   const handleSubmitExam = async () => {
     if (!moduleExam) return;
     try {
       setSubmittingExam(true);
-      const responses = Object.entries(studentAnswers).map(([qid, val]) => ({
+      const answers = studentAnswersRef.current || studentAnswers;
+      const responses = Object.entries(answers).map(([qid, val]) => ({
         question_id: parseInt(qid),
         selected_option: val
       }));
@@ -497,22 +596,31 @@ export default function CourseWorkspace({
     }
   };
 
-  // Exam Countdown Timer
+  useEffect(() => {
+    handleSubmitExamRef.current = handleSubmitExam;
+  });
+
+  // Exam Countdown Timer (runs stably without recreating interval every second)
   useEffect(() => {
     let timer;
-    if (examActive && examTimeLeft > 0 && !submissionResult) {
+    if (examActive && !submissionResult) {
       timer = setInterval(() => {
         setExamTimeLeft((t) => {
           if (t <= 1) {
-            handleSubmitExam();
+            clearInterval(timer);
+            if (handleSubmitExamRef.current) {
+              handleSubmitExamRef.current();
+            }
             return 0;
           }
           return t - 1;
         });
       }, 1000);
     }
-    return () => clearInterval(timer);
-  }, [examActive, examTimeLeft, submissionResult]);
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [examActive, submissionResult]);
 
   const formatExamTimer = (secs) => {
     const m = Math.floor(secs / 60);
@@ -812,7 +920,27 @@ export default function CourseWorkspace({
                     <h2 className="text-xl font-black text-white">{activeTopic.title}</h2>
                   </div>
 
-                  <div className="flex items-center gap-3">
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <button
+                      onClick={handlePrevTopic}
+                      disabled={!prevTopicItem}
+                      className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition bg-[#1a2338] hover:bg-slate-700 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={prevTopicItem ? `Previous: ${prevTopicItem.topic.title}` : 'No previous topic'}
+                    >
+                      <ChevronLeft className="h-4 w-4" />
+                      <span>Previous</span>
+                    </button>
+
+                    <button
+                      onClick={handleNextTopic}
+                      disabled={!nextTopicItem && !currentModule?.has_module_exam}
+                      className="px-3 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition bg-[#1a2338] hover:bg-slate-700 text-slate-200 disabled:opacity-40 disabled:cursor-not-allowed"
+                      title={nextTopicItem ? `Next: ${nextTopicItem.topic.title}` : (currentModule?.has_module_exam ? 'Take Module Exam' : 'End of course')}
+                    >
+                      <span>Next</span>
+                      <ChevronRight className="h-4 w-4" />
+                    </button>
+
                     <button
                       onClick={() => toggleTopicCompleted(activeTopic.id)}
                       className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-2 transition shadow-md ${
@@ -1011,15 +1139,13 @@ export default function CourseWorkspace({
                     <div className="flex items-center gap-3">
                       {isEducator && isCourseOwner ? (
                         <div className="flex items-center gap-2">
-                          {!isFinalExam && (
-                            <button
-                              onClick={() => setShowExamBuilderModal(true)}
-                              className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-2 shadow-md shadow-indigo-600/30"
-                            >
-                              <Sparkles className="h-4 w-4" />
-                              <span>Edit RAG Assessment</span>
-                            </button>
-                          )}
+                          <button
+                            onClick={() => setShowExamBuilderModal(true)}
+                            className="px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition flex items-center gap-2 shadow-md shadow-indigo-600/30"
+                          >
+                            <Sparkles className="h-4 w-4" />
+                            <span>{isFinalExam ? 'Edit Final Exam Questions' : 'Edit RAG Assessment'}</span>
+                          </button>
                           {!hierarchy?.final_exam && (
                             <button
                               onClick={handleCreateFinalExam}
@@ -1096,6 +1222,38 @@ export default function CourseWorkspace({
                           <span>Retake Exam</span>
                         </button>
                       </div>
+
+                      {submissionResult.unlocked_badge && (
+                        <div className="mt-4 p-4 rounded-2xl bg-[#0e1726] border border-amber-500/40 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                          <div className="flex items-center gap-3">
+                            <div className="h-10 w-10 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30 flex items-center justify-center shrink-0">
+                              <ShieldCheck className="h-5 w-5" />
+                            </div>
+                            <div>
+                              <div className="flex items-center gap-2">
+                                <span className="text-xs font-black text-amber-300">
+                                  {submissionResult.unlocked_badge.badge_name}
+                                </span>
+                                <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                                  {submissionResult.unlocked_badge.difficulty_level}
+                                </span>
+                              </div>
+                              <p className="text-[11px] text-slate-400 font-mono mt-0.5 truncate max-w-sm">
+                                Hash: {submissionResult.unlocked_badge.verification_hash}
+                              </p>
+                            </div>
+                          </div>
+                          <a
+                            href={`/api/v1/courses/badges/verify/${submissionResult.unlocked_badge.verification_hash}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/20 text-amber-300 border border-amber-500/30 text-xs font-bold transition flex items-center gap-1.5 shrink-0 self-start sm:self-auto"
+                          >
+                            <ShieldCheck className="h-3.5 w-3.5" />
+                            <span>Verify Credential</span>
+                          </a>
+                        </div>
+                      )}
                     </div>
                   )}
 
@@ -1220,8 +1378,9 @@ export default function CourseWorkspace({
       <ModuleExamBuilder
         isOpen={showExamBuilderModal}
         onClose={() => setShowExamBuilderModal(false)}
-        module={currentModule}
+        module={isFinalExam ? null : currentModule}
         courseId={courseId}
+        isFinalExam={isFinalExam}
         existingExam={moduleExam}
         onExamSaved={(saved) => {
           setModuleExam(saved);

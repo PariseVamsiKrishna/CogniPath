@@ -21,7 +21,7 @@ import {
   Check
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
-import { coursesAPI } from '../services/api';
+import { coursesAPI, examsAPI } from '../services/api';
 
 const DIFFICULTY_LEVELS = [
   { id: 'Beginner', label: 'Beginner', color: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/30' },
@@ -35,11 +35,12 @@ export default function ModuleExamBuilder({
   module,
   courseId,
   existingExam = null,
-  onExamSaved
+  onExamSaved,
+  isFinalExam = false
 }) {
   // 1. Educator Toggle: Add End-of-Module Exam (Default: OFF unless existing exam attached)
   const [hasModuleExam, setHasModuleExam] = useState(() => {
-    return Boolean(existingExam || module?.has_module_exam);
+    return Boolean(existingExam || module?.has_module_exam || isFinalExam);
   });
 
   // 2. Mode Selection: AI RAG Generation vs Manual Construction
@@ -47,9 +48,9 @@ export default function ModuleExamBuilder({
 
   // Exam Metadata Config
   const [examTitle, setExamTitle] = useState(
-    existingExam?.title || (module?.title ? `${module.title} Mastery Assessment` : 'Module End Exam')
+    existingExam?.title || (isFinalExam ? 'Comprehensive Final Course Examination' : (module?.title ? `${module.title} Mastery Assessment` : 'Module End Exam'))
   );
-  const [timeLimit, setTimeLimit] = useState(existingExam?.time_limit_mins || 15);
+  const [timeLimit, setTimeLimit] = useState(existingExam?.time_limit_mins || (isFinalExam ? 45 : 15));
   const [passingScore, setPassingScore] = useState(existingExam?.passing_score || 70);
 
   // RAG Generation Parameters
@@ -92,31 +93,60 @@ export default function ModuleExamBuilder({
       setRagTopic(module.title || '');
       setExamTitle(existingExam?.title || `${module.title} Mastery Assessment`);
       setHasModuleExam(Boolean(existingExam || module.has_module_exam));
+    } else if (isFinalExam) {
+      setRagTopic('Comprehensive Course Concepts');
+      setExamTitle(existingExam?.title || 'Comprehensive Final Course Examination');
+      setHasModuleExam(true);
     }
-  }, [module, existingExam]);
+  }, [module, existingExam, isFinalExam]);
 
-  if (!isOpen || !module) return null;
+  if (!isOpen || (!module && !isFinalExam)) return null;
 
   // Handler: Generate Questions using RAG Pipeline
   const handleGenerateRAG = async () => {
     try {
       setIsGenerating(true);
       setGenError('');
-      const data = await coursesAPI.generateExamRAG(module.id, {
-        course_id: courseId,
-        topic: ragTopic.trim() || module.title,
-        count: Number(ragCount),
-        difficulty: ragDifficulty
-      });
-
-      if (data && data.questions) {
-        setSuggestions(data.questions);
-        setSourcesUsed(data.sources_used || []);
-        confetti({
-          particleCount: 35,
-          spread: 45,
-          origin: { y: 0.7 }
+      if (isFinalExam) {
+        const data = await examsAPI.suggestAI({
+          course_id: courseId,
+          topic: ragTopic.trim() || 'Comprehensive Curriculum',
+          count: Number(ragCount),
+          difficulty: ragDifficulty
         });
+        if (data && data.suggestions) {
+          setSuggestions(data.suggestions.map((s, idx) => ({
+            question_id: s.temp_id || `s_${idx}`,
+            question_text: s.question_text,
+            options: s.options || [],
+            correct_option: s.correct_answer || 'A',
+            explanation: s.explanation || '',
+            source_reference: s.source_ref || 'Course Curriculum'
+          })));
+          setSourcesUsed(['Course Curriculum & Knowledge Base']);
+          confetti({
+            particleCount: 35,
+            spread: 45,
+            origin: { y: 0.7 }
+          });
+        }
+      } else {
+        const data = await coursesAPI.generateExamRAG(module.id, {
+          course_id: courseId,
+          topic: ragTopic.trim() || module.title,
+          count: Number(ragCount),
+          difficulty: ragDifficulty
+        });
+
+        if (data && data.questions) {
+          setSuggestions(data.questions);
+          setSourcesUsed(data.sources_used || []);
+          confetti({
+            particleCount: 35,
+            spread: 45,
+            origin: { y: 0.7 }
+          });
+        }
       }
     } catch (err) {
       console.error('RAG Generation error:', err);
@@ -192,11 +222,15 @@ export default function ModuleExamBuilder({
 
     try {
       setSaving(true);
+      const defaultTitle = isFinalExam ? 'Comprehensive Final Course Examination' : `${module?.title || 'Module'} Mastery Assessment`;
       const payload = {
-        title: examTitle.trim() || `${module.title} Mastery Assessment`,
-        time_limit_mins: Number(timeLimit) || 15,
+        title: examTitle.trim() || defaultTitle,
+        time_limit_mins: Number(timeLimit) || (isFinalExam ? 45 : 15),
         passing_score: Number(passingScore) || 70,
-        scope: 'MODULE_END',
+        scope: isFinalExam ? 'FINAL' : 'MODULE_END',
+        exam_type: isFinalExam ? 'FINAL_EXAM' : 'MODULE_QUIZ',
+        course_id: courseId,
+        module_id: isFinalExam ? null : module?.id,
         questions: stagedQuestions.map((q, idx) => ({
           question_type: 'MCQ',
           question_text: q.question_text,
@@ -208,7 +242,17 @@ export default function ModuleExamBuilder({
         }))
       };
 
-      const saved = await coursesAPI.createModuleExam(module.id, payload);
+      let saved;
+      if (isFinalExam) {
+        if (existingExam?.id) {
+          saved = await examsAPI.update(existingExam.id, payload);
+        } else {
+          saved = await examsAPI.create(payload);
+        }
+      } else {
+        saved = await coursesAPI.createModuleExam(module.id, payload);
+      }
+
       confetti({
         particleCount: 80,
         spread: 60,
@@ -216,12 +260,12 @@ export default function ModuleExamBuilder({
       });
 
       if (onExamSaved) {
-        onExamSaved(saved, module.id);
+        onExamSaved(saved, isFinalExam ? null : module?.id);
       }
       onClose();
     } catch (err) {
-      console.error('Failed to save module exam:', err);
-      alert(err.response?.data?.detail || 'Failed to save module exam.');
+      console.error('Failed to save exam:', err);
+      alert(err.response?.data?.detail || 'Failed to save exam.');
     } finally {
       setSaving(false);
     }
@@ -238,13 +282,15 @@ export default function ModuleExamBuilder({
             </div>
             <div>
               <div className="flex items-center gap-2">
-                <h3 className="text-base font-black text-white">Module-End Assessment Studio</h3>
+                <h3 className="text-base font-black text-white">
+                  {isFinalExam ? 'Course Final Examination Studio' : 'Module-End Assessment Studio'}
+                </h3>
                 <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-indigo-500/10 text-indigo-400 border border-indigo-500/20 uppercase tracking-wider">
-                  Module {module.order_index}
+                  {isFinalExam ? 'FINAL EXAM' : `Module ${module?.order_index || 1}`}
                 </span>
               </div>
               <p className="text-xs text-slate-400">
-                {module.title} • Grounded RAG Generation & Assessment Assembly
+                {isFinalExam ? 'Comprehensive Course Certification' : module?.title} • Grounded RAG Generation & Assessment Assembly
               </p>
             </div>
           </div>

@@ -30,21 +30,17 @@ export default function CoursePlayer({
   const [courseToDelete, setCourseToDelete] = useState(null);
   const [deleteMode, setDeleteMode] = useState('unenroll'); // 'unenroll' | 'permanent'
 
-  // Active focused course ID: strictly gate to enrolled courses for students
+  // Active focused course ID (supports preview mode for unenrolled learners)
   const [focusedCourseId, setFocusedCourseId] = useState(() => {
     // Read from URL query param if present
     try {
       const params = new URLSearchParams(window.location.search);
       const qCourseId = params.get('courseId');
       if (qCourseId && !isNaN(Number(qCourseId))) {
-        const numId = Number(qCourseId);
-        if (isEducator || courses.some((c) => c.id === numId)) {
-          return numId;
-        }
+        return Number(qCourseId);
       }
     } catch (e) {}
-    // Only focus if educator or course is in enrolled courses
-    if (courseId && (isEducator || courses.some((c) => c.id === Number(courseId)))) {
+    if (courseId && !isNaN(Number(courseId))) {
       return Number(courseId);
     }
     return null;
@@ -54,20 +50,15 @@ export default function CoursePlayer({
   const [showCatalogModal, setShowCatalogModal] = useState(false);
   const [ratingCourse, setRatingCourse] = useState(null);
 
-  // Sync prop changes if parent explicitly changes courseId or courses list updates
+  // Sync prop changes if parent explicitly changes courseId
   useEffect(() => {
     if (courseId) {
       const numId = Number(courseId);
-      if (isEducator || courses.some((c) => c.id === numId)) {
-        if (numId !== focusedCourseId) {
-          setFocusedCourseId(numId);
-        }
+      if (numId !== focusedCourseId) {
+        setFocusedCourseId(numId);
       }
-    } else if (!isEducator && courses.length === 0 && focusedCourseId) {
-      // Student with 0 enrolled courses must never be stuck inside a course workspace
-      setFocusedCourseId(null);
     }
-  }, [courseId, courses, isEducator, focusedCourseId]);
+  }, [courseId, focusedCourseId]);
 
   // URL Query Param sync
   const updateURL = (cId) => {
