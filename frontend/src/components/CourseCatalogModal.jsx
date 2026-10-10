@@ -30,7 +30,8 @@ export default function CourseCatalogModal({
   onClose,
   onSelectCourse,
   user,
-  onOpenRateModal
+  onOpenRateModal,
+  enrolledCourses = []
 }) {
   const [courses, setCourses] = useState([]);
   const [hiddenCount, setHiddenCount] = useState(0);
@@ -44,7 +45,7 @@ export default function CourseCatalogModal({
     if (isOpen) {
       fetchCourses();
     }
-  }, [isOpen, searchQuery, selectedCategory, sortBy]);
+  }, [isOpen, searchQuery, selectedCategory, sortBy, enrolledCourses]);
 
   const fetchCourses = async () => {
     setLoading(true);
@@ -54,8 +55,16 @@ export default function CourseCatalogModal({
         category: selectedCategory !== 'All' ? selectedCategory : undefined,
         sort_by: sortBy
       });
-      setHiddenCount((data || []).filter(c => c.is_enrolled).length);
-      setCourses((data || []).filter(c => !c.is_enrolled));
+      const enrolledIds = new Set((enrolledCourses || []).map((c) => Number(c.id)));
+      const isCourseHidden = (c) => {
+        if (c.is_enrolled) return true;
+        if (enrolledIds.has(Number(c.id))) return true;
+        if (user?.role === 'EDUCATOR' && String(c.educator_id) === String(user?.id)) return true;
+        return false;
+      };
+
+      setHiddenCount((data || []).filter(isCourseHidden).length);
+      setCourses((data || []).filter((c) => !isCourseHidden(c)));
     } catch (err) {
       console.error('Failed to explore courses:', err);
     } finally {

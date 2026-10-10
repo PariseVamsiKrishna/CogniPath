@@ -24,15 +24,28 @@ import confetti from 'canvas-confetti';
 import { examsAPI, coursesAPI } from '../services/api';
 
 export default function ExamStudio({
-  courseId = 1,
+  courseId = null,
   user,
-  onNavigateTab
+  onNavigateTab,
+  onOpenCreateCourse
 }) {
   const isEducator = user?.role === 'EDUCATOR';
 
   // Course Selector State
   const [courses, setCourses] = useState([]);
-  const [selectedCourseId, setSelectedCourseId] = useState(courseId || 1);
+  const [selectedCourseId, setSelectedCourseId] = useState(courseId || null);
+  const [createExamCourseId, setCreateExamCourseId] = useState(null);
+
+  // Derived course ownership groupings
+  const authoredCourses = courses.filter(
+    (c) => user?.role === 'ADMIN' || (user?.role === 'EDUCATOR' && String(c.educator_id) === String(user?.id))
+  );
+  const otherCourses = courses.filter(
+    (c) => user?.role !== 'ADMIN' && String(c.educator_id) !== String(user?.id)
+  );
+
+  const selectedCourse = courses.find((c) => c.id === selectedCourseId);
+  const isSelectedCourseOwner = user?.role === 'ADMIN' || (isEducator && selectedCourse && String(selectedCourse.educator_id) === String(user?.id));
 
   // Exam List & Active Exam State
   const [exams, setExams] = useState([]);
@@ -77,8 +90,19 @@ export default function ExamStudio({
         const list = await coursesAPI.explore();
         if (list && list.length > 0) {
           setCourses(list);
-          if (!selectedCourseId) {
-            setSelectedCourseId(list[0].id);
+          if (courseId && list.some((c) => c.id === Number(courseId))) {
+            setSelectedCourseId(Number(courseId));
+          } else if (isEducator) {
+            const myCourse = list.find((c) => String(c.educator_id) === String(user?.id));
+            if (myCourse) {
+              setSelectedCourseId(myCourse.id);
+            } else if (!selectedCourseId || !list.some((c) => c.id === selectedCourseId)) {
+              setSelectedCourseId(list[0].id);
+            }
+          } else {
+            if (!selectedCourseId || !list.some((c) => c.id === selectedCourseId)) {
+              setSelectedCourseId(list[0].id);
+            }
           }
         }
       } catch (e) {
@@ -86,7 +110,22 @@ export default function ExamStudio({
       }
     }
     loadCourses();
-  }, []);
+  }, [courseId, user?.id, isEducator]);
+
+  const handleOpenCreateModal = () => {
+    if (isEducator && authoredCourses.length === 0 && user?.role !== 'ADMIN') {
+      const confirmCreate = window.confirm(
+        'You have not created any courses yet. Assessments must be attached to a course you authored.\n\nWould you like to create a new course now?'
+      );
+      if (confirmCreate) {
+        if (onOpenCreateCourse) onOpenCreateCourse();
+        else if (onNavigateTab) onNavigateTab('courses');
+      }
+      return;
+    }
+    setCreateExamCourseId(isSelectedCourseOwner ? selectedCourseId : (authoredCourses[0]?.id || selectedCourseId));
+    setShowCreateModal(true);
+  };
 
   // 2. Fetch exams whenever selected course changes
   useEffect(() => {
@@ -188,6 +227,18 @@ export default function ExamStudio({
     e.preventDefault();
     if (!newExamTitle.trim()) return;
 
+    const targetCourseId = Number(createExamCourseId || selectedCourseId);
+    if (!targetCourseId) {
+      alert('Please select a valid course for this assessment.');
+      return;
+    }
+
+    const isOwner = user?.role === 'ADMIN' || authoredCourses.some((c) => c.id === targetCourseId);
+    if (!isOwner) {
+      alert('You can only create assessments for courses that you have authored.');
+      return;
+    }
+
     try {
       setIsCreatingExam(true);
       let initialQuestions = [];
@@ -196,7 +247,7 @@ export default function ExamStudio({
       if (autoGenerateAI) {
         try {
           const aiRes = await examsAPI.suggestAI({
-            course_id: selectedCourseId,
+            course_id: targetCourseId,
             module_id: null,
             topic: newExamTitle.trim(),
             count: 4,
@@ -218,9 +269,9 @@ export default function ExamStudio({
         }
       }
 
-      // Persist to Supabase
+      // Persist to Backend
       const created = await examsAPI.create({
-        course_id: selectedCourseId,
+        course_id: targetCourseId,
         module_id: null,
         title: newExamTitle.trim(),
         exam_type: newExamType,
@@ -231,7 +282,10 @@ export default function ExamStudio({
 
       setShowCreateModal(false);
       setNewExamTitle('');
-      await fetchExams(selectedCourseId);
+      if (targetCourseId !== selectedCourseId) {
+        setSelectedCourseId(targetCourseId);
+      }
+      await fetchExams(targetCourseId);
 
       if (created?.id) {
         setSelectedExamId(created.id);
@@ -315,6 +369,10 @@ export default function ExamStudio({
   // Real Save / Sync Exam to Backend
   const handleSaveExam = async () => {
     if (!activeExam) return;
+    if (!isSelectedCourseOwner && user?.role !== 'ADMIN') {
+      alert('Only the author of this course can edit or save changes to this assessment.');
+      return;
+    }
     try {
       setSaveStatus('Saving changes to cloud...');
 
@@ -414,6 +472,11 @@ export default function ExamStudio({
                   {activeExam.exam_type || 'MODULE_QUIZ'}
                 </span>
               )}
+              {isEducator && !isSelectedCourseOwner && (
+                <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-500/15 text-blue-300 border border-blue-500/30">
+                  Read Only • Authored by {selectedCourse?.educator_name || 'Prof. Rajesh Ramanujan'}
+                </span>
+              )}
             </div>
             <h1 className="text-lg font-black text-white">{activeExam?.title || 'Course Assessments'}</h1>
           </div>
@@ -423,16 +486,39 @@ export default function ExamStudio({
         <div className="flex items-center gap-3">
           {/* Course Selector Dropdown */}
           <select
-            value={selectedCourseId}
+            value={selectedCourseId || ''}
             onChange={(e) => setSelectedCourseId(Number(e.target.value))}
             className="px-3 py-2 rounded-xl bg-[#121826] border border-[#1e2638] text-xs font-bold text-slate-200 focus:outline-none focus:border-amber-500 cursor-pointer"
             title="Select Course"
           >
-            {courses.map((c) => (
-              <option key={c.id} value={c.id}>
-                {c.code ? `${c.code}: ` : ''}{c.title}
-              </option>
-            ))}
+            {isEducator ? (
+              <>
+                {authoredCourses.length > 0 && (
+                  <optgroup label="My Authored Courses (Full Control)">
+                    {authoredCourses.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.code ? `${c.code}: ` : ''}{c.title}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                {otherCourses.length > 0 && (
+                  <optgroup label="Other Courses (View/Take Only)">
+                    {otherCourses.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.code ? `${c.code}: ` : ''}{c.title}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+              </>
+            ) : (
+              courses.map((c) => (
+                <option key={c.id} value={c.id}>
+                  {c.code ? `${c.code}: ` : ''}{c.title}
+                </option>
+              ))
+            )}
           </select>
 
           {/* Exam Selector Dropdown */}
@@ -454,7 +540,7 @@ export default function ExamStudio({
           {/* Educator: + Create New Assessment Button */}
           {isEducator && (
             <button
-              onClick={() => setShowCreateModal(true)}
+              onClick={handleOpenCreateModal}
               className="px-3.5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:opacity-90 text-white text-xs font-bold transition flex items-center gap-1.5 shadow-md shadow-amber-500/20"
             >
               <Plus className="h-3.5 w-3.5" />
@@ -491,17 +577,40 @@ export default function ExamStudio({
             <h3 className="text-lg font-bold text-white">No Assessments Created Yet</h3>
             <p className="text-xs text-slate-400">
               {isEducator
-                ? 'Create a custom assessment or let AI generate multiple choice questions grounded in your course videos and lecture notes.'
+                ? isSelectedCourseOwner
+                  ? 'Create a custom assessment or let AI generate multiple choice questions grounded in your course videos and lecture notes.'
+                  : 'No published assessments for this course yet. Switch to your authored courses to design assessments.'
                 : 'No published assessments for this course yet. Check back soon!'}
             </p>
           </div>
-          {isEducator && (
+          {isEducator && isSelectedCourseOwner && (
             <button
-              onClick={() => setShowCreateModal(true)}
+              onClick={handleOpenCreateModal}
               className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-amber-500 to-rose-600 hover:opacity-90 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/30"
             >
               <Plus className="h-4 w-4" />
               <span>Create First Assessment (with AI MCQs)</span>
+            </button>
+          )}
+          {isEducator && !isSelectedCourseOwner && authoredCourses.length > 0 && (
+            <button
+              onClick={() => setSelectedCourseId(authoredCourses[0].id)}
+              className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-indigo-500 to-purple-600 hover:opacity-90 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-indigo-500/30"
+            >
+              <BookOpen className="h-4 w-4" />
+              <span>Switch to My Authored Course ({authoredCourses[0].title})</span>
+            </button>
+          )}
+          {isEducator && authoredCourses.length === 0 && (
+            <button
+              onClick={() => {
+                if (onOpenCreateCourse) onOpenCreateCourse();
+                else if (onNavigateTab) onNavigateTab('courses');
+              }}
+              className="px-6 py-2.5 rounded-2xl bg-gradient-to-r from-amber-500 to-rose-600 hover:opacity-90 text-white font-bold text-xs flex items-center gap-2 shadow-lg shadow-amber-500/30"
+            >
+              <Plus className="h-4 w-4" />
+              <span>Create Your First Course</span>
             </button>
           )}
         </div>
@@ -878,6 +987,27 @@ export default function ExamStudio({
 
             <form onSubmit={handleCreateNewExam} className="space-y-4">
               <div>
+                <label className="block text-xs font-semibold text-slate-300 mb-1">Target Course</label>
+                {authoredCourses.length > 0 || user?.role === 'ADMIN' ? (
+                  <select
+                    value={createExamCourseId || selectedCourseId || ''}
+                    onChange={(e) => setCreateExamCourseId(Number(e.target.value))}
+                    className="w-full bg-[#0b0f19] border border-[#1e2638] rounded-xl px-3 py-2 text-xs text-white focus:outline-none focus:border-amber-500 cursor-pointer"
+                  >
+                    {(user?.role === 'ADMIN' ? courses : authoredCourses).map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.code ? `${c.code}: ` : ''}{c.title}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <div className="p-3 rounded-xl bg-amber-500/10 border border-amber-500/20 text-xs text-amber-300">
+                    You have not created any courses yet. Please create a course first to attach this assessment.
+                  </div>
+                )}
+              </div>
+
+              <div>
                 <label className="block text-xs font-semibold text-slate-300 mb-1">Assessment Title</label>
                 <input
                   type="text"
@@ -949,7 +1079,7 @@ export default function ExamStudio({
                 </button>
                 <button
                   type="submit"
-                  disabled={isCreatingExam || !newExamTitle.trim()}
+                  disabled={isCreatingExam || !newExamTitle.trim() || (authoredCourses.length === 0 && user?.role !== 'ADMIN')}
                   className="px-5 py-2 rounded-xl bg-gradient-to-r from-amber-500 to-rose-600 hover:opacity-90 disabled:opacity-40 text-white font-bold text-xs"
                 >
                   {isCreatingExam ? 'Creating & Generating...' : 'Create Assessment'}

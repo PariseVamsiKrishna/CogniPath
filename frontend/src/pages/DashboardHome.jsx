@@ -739,14 +739,12 @@ export default function DashboardHome({
           onClose={() => setCourseToDelete(null)}
           course={courseToDelete}
           isEducator={user?.role === 'EDUCATOR'}
-          isCreator={user?.role === 'EDUCATOR' && (courseToDelete.educator_id === user?.id || !courseToDelete.educator_id)}
+          isCreator={false}
           onConfirm={async (c) => {
-            const isCreator = user?.role === 'EDUCATOR' && (c.educator_id === user?.id || !c.educator_id);
-            if (isCreator && onDeleteCoursePermanently) {
-              await onDeleteCoursePermanently(c.id);
-            } else if (onUnenrollCourse) {
+            if (onUnenrollCourse) {
               await onUnenrollCourse(c.id);
             }
+            if (onRefreshCourses) await onRefreshCourses();
           }}
         />
       )}

@@ -54,8 +54,12 @@ export default function EnrolledCoursesGrid({
 }) {
   const isEducator = user?.role === 'EDUCATOR';
   const createdCourses = (allCourses && allCourses.length > 0 ? allCourses : courses).filter(
-    (c) => c.educator_id === user?.id
+    (c) => String(c.educator_id) === String(user?.id)
   );
+  // For educators, "Continue Learning" should strictly show enrolled courses authored by others
+  const learningCourses = isEducator
+    ? courses.filter((c) => String(c.educator_id) !== String(user?.id))
+    : courses;
 
   return (
     <div className="min-h-full ambient-canvas p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-10">
@@ -144,9 +148,9 @@ export default function EnrolledCoursesGrid({
         </div>
 
         {/* Elevated Journey Track Cards Grid (Stacks to single column on mobile) */}
-        {courses && courses.length > 0 ? (
+        {learningCourses && learningCourses.length > 0 ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-            {courses.map((course, idx) => (
+            {learningCourses.map((course, idx) => (
               <JourneyTrackCard
                 key={course.id}
                 course={course}

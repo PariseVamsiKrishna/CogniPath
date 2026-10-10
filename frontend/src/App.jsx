@@ -503,6 +503,7 @@ export default function App() {
                 courseId={selectedCourseId}
                 user={user}
                 onNavigateTab={handleNavigate}
+                onOpenCreateCourse={() => setShowCreateCourseModal(true)}
               />
             )}
 
@@ -693,6 +694,7 @@ export default function App() {
           setActiveTab('course-player');
         }}
         user={user}
+        enrolledCourses={enrolledCourses}
       />
 
       {/* Global Create & Post Course Modal */}

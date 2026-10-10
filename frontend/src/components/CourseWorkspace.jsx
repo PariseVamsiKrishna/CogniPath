@@ -68,6 +68,7 @@ export default function CourseWorkspace({
   // Hierarchy and Course State
   const [hierarchy, setHierarchy] = useState(null);
   const [loading, setLoading] = useState(true);
+  const isCourseOwner = user?.role === 'ADMIN' || (isEducator && hierarchy && String(hierarchy.educator_id) === String(user?.id));
 
   // Active Navigation Hierarchy
   const [activeModuleId, setActiveModuleId] = useState(null);
@@ -315,6 +316,10 @@ export default function CourseWorkspace({
 
   const handleGenerateExamRAG = async () => {
     if (!currentModule || generatingExamRAG) return;
+    if (!isCourseOwner) {
+      alert('You can only generate AI assessments for courses that you have authored.');
+      return;
+    }
 
     // Preflight: warn if no documents uploaded — RAG will fail silently otherwise
     const hasDocuments = currentModule.resources && currentModule.resources.length > 0;
@@ -337,6 +342,10 @@ export default function CourseWorkspace({
 
   const handleCreateFinalExam = async () => {
     if (creatingFinalExam) return;
+    if (!isCourseOwner) {
+      alert('You can only create final exams for courses that you have authored.');
+      return;
+    }
     setCreatingFinalExam(true);
     try {
       await examsAPI.create({
@@ -1000,7 +1009,7 @@ export default function CourseWorkspace({
                     </div>
 
                     <div className="flex items-center gap-3">
-                      {isEducator ? (
+                      {isEducator && isCourseOwner ? (
                         <div className="flex items-center gap-2">
                           {!isFinalExam && (
                             <button

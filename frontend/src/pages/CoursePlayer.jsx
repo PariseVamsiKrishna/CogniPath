@@ -28,6 +28,7 @@ export default function CoursePlayer({
 }) {
   const isEducator = user?.role === 'EDUCATOR';
   const [courseToDelete, setCourseToDelete] = useState(null);
+  const [deleteMode, setDeleteMode] = useState('unenroll'); // 'unenroll' | 'permanent'
 
   // Active focused course ID: strictly gate to enrolled courses for students
   const [focusedCourseId, setFocusedCourseId] = useState(() => {
@@ -138,8 +139,14 @@ export default function CoursePlayer({
         onOpenExploreCatalog={() => setShowCatalogModal(true)}
         onOpenCreateCourse={isEducator ? () => setShowCreateModal(true) : undefined}
         onOpenRateModal={handleOpenRateModal}
-        onDeleteCourse={(course) => setCourseToDelete(course)}
-        onUnenrollCourse={(course) => setCourseToDelete(course)}
+        onDeleteCourse={(course) => {
+          setCourseToDelete(course);
+          setDeleteMode('permanent');
+        }}
+        onUnenrollCourse={(course) => {
+          setCourseToDelete(course);
+          setDeleteMode('unenroll');
+        }}
         onSelectRecommendedTopic={async (rec) => {
           if (!isEducator && !courses.some((c) => c.id === rec.course_id)) {
             if (onEnrollCourse) {
@@ -163,6 +170,7 @@ export default function CoursePlayer({
           handleSelectCourse(cId);
         }}
         user={user}
+        enrolledCourses={enrolledCourses && enrolledCourses.length > 0 ? enrolledCourses : courses}
         onOpenRateModal={handleOpenRateModal}
       />
 
@@ -193,13 +201,15 @@ export default function CoursePlayer({
       {courseToDelete && (
         <CourseDeleteModal
           isOpen={Boolean(courseToDelete)}
-          onClose={() => setCourseToDelete(null)}
+          onClose={() => {
+            setCourseToDelete(null);
+            setDeleteMode('unenroll');
+          }}
           course={courseToDelete}
           isEducator={isEducator}
-          isCreator={courseToDelete && (user?.role === 'EDUCATOR' || user?.role === 'ADMIN') && courseToDelete.educator_id === user?.id}
+          isCreator={deleteMode === 'permanent' && (user?.role === 'EDUCATOR' || user?.role === 'ADMIN') && String(courseToDelete?.educator_id) === String(user?.id)}
           onConfirm={async (c) => {
-            const isCreator = c && (user?.role === 'EDUCATOR' || user?.role === 'ADMIN') && c.educator_id === user?.id;
-            if (isCreator && onDeleteCoursePermanently) {
+            if (deleteMode === 'permanent' && onDeleteCoursePermanently) {
               await onDeleteCoursePermanently(c.id);
             } else if (onUnenrollCourse) {
               await onUnenrollCourse(c.id);
