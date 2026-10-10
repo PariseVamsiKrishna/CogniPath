@@ -171,6 +171,9 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
             const candidate = data.user || (data.email ? data : null);
             if (candidate && candidate.email) {
               loggedUser = { ...candidate, profile_completed: true };
+              if (data.access_token) {
+                localStorage.setItem('cognipath_token', data.access_token);
+              }
             }
           }
         } catch (apiErr) {
@@ -318,7 +321,9 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
       const userObj = candidate && candidate.email ? { ...candidate, profile_completed: true } : localAccount;
       
       localStorage.setItem('cognipath_user', JSON.stringify(userObj));
-      if (!localStorage.getItem('cognipath_token')) {
+      if (regData && regData.access_token) {
+        localStorage.setItem('cognipath_token', regData.access_token);
+      } else if (!localStorage.getItem('cognipath_token')) {
         localStorage.setItem('cognipath_token', 'local_jwt_' + Date.now());
       }
 

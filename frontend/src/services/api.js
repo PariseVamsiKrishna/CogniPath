@@ -53,8 +53,14 @@ apiClient.interceptors.response.use(
 
 // Exports
 export const authAPI = {
-  login: (credentials) => apiClient.post('/auth/login', credentials),
-  register: (userData) => apiClient.post('/auth/register', userData),
+  login: async (credentials) => {
+    const res = await apiClient.post('/auth/login-json', credentials);
+    return res.data;
+  },
+  register: async (userData) => {
+    const res = await apiClient.post('/auth/register', userData);
+    return res.data;
+  },
   getMe: () => apiClient.get('/auth/me'),
   updateProfile: (data) => apiClient.put('/auth/profile', data),
   logout: () => {
