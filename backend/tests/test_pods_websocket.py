@@ -255,3 +255,20 @@ def test_tutor_query_does_not_drop_socket(client, educator_token, db_session):
     # db check
     messages = db_session.query(PodMessage).filter(PodMessage.pod_id == pod_id).all()
     assert len(messages) == 2
+
+import asyncio
+
+def test_reconnect_does_not_count_as_new_peer(client, educator_token, db_session):
+    headers = {"Authorization": f"Bearer {educator_token}"}
+    p_res = client.post("/api/v1/pods/", json={"title": "Test Pod", "course_id": 1, "max_peers": 1}, headers=headers)
+    pod_id = p_res.json()["id"]
+    
+    with client.websocket_connect(f"/api/v1/pods/ws/{pod_id}?client_id=client123&user_id=1&role=EDUCATOR") as ws1:
+        # First connection is established. Max peers is 1.
+        # Now try to reconnect with the exact same client_id
+        with client.websocket_connect(f"/api/v1/pods/ws/{pod_id}?client_id=client123&user_id=1&role=EDUCATOR") as ws2:
+            # It should succeed because it doesnt count the existing one!
+            ws2.send_json({"type": "PING", "timestamp": 123})
+            resp = ws2.receive_json()
+            assert resp["type"] == "PONG"
+

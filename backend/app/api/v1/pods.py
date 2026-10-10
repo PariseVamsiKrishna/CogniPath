@@ -647,7 +647,12 @@ async def pod_websocket_endpoint(
 
         # Check Capacity
         active_conns = pod_manager.active_connections.get(room_key, set())
-        if len(active_conns) >= pod_obj.max_peers:
+        existing_client_socket = pod_manager.peer_sockets.get(room_key, {}).get(client_id)
+        effective_count = len(active_conns)
+        if existing_client_socket and existing_client_socket in active_conns:
+            effective_count -= 1
+
+        if effective_count >= pod_obj.max_peers:
             await websocket.close(code=4409, reason="Pod is full")
             return
 

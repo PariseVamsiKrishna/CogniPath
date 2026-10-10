@@ -212,6 +212,12 @@ class PodConnectionManager:
 
     def disconnect(self, pod_id: Any, websocket: WebSocket, client_id: str, user_id: int | None = None):
         room_key = str(pod_id)
+        current = self.peer_sockets.get(room_key, {}).get(client_id)
+        if current is not None and current is not websocket:
+            if room_key in self.active_connections:
+                self.active_connections[room_key].discard(websocket)
+            return
+
         if room_key in self.active_connections:
             if websocket not in self.active_connections[room_key] and client_id not in self.pod_peers.get(room_key, {}):
                 return  # Already disconnected
