@@ -208,7 +208,7 @@ export default function LearningPods({ courseId, user }) {
     {
       id: 1,
       title: "Tree Traversal & Rotation Study Pod",
-      course_id: courseId || 1,
+      course_id: courseId,
       topic: "BST Invariants & Tree Rotations",
       is_active: true,
       max_peers: 6,
@@ -217,7 +217,7 @@ export default function LearningPods({ courseId, user }) {
     {
       id: 2,
       title: "Transformer Attention Architecture Pod",
-      course_id: courseId || 1,
+      course_id: courseId,
       topic: "Multi-Head Attention & Scaled Dot-Product",
       is_active: true,
       max_peers: 6,
@@ -395,7 +395,7 @@ export default function LearningPods({ courseId, user }) {
 
   const fetchPods = async () => {
     try {
-      const data = await podsAPI.list(courseId || 1);
+      const data = await podsAPI.list(courseId);
       if (data && data.length > 0) setPods(data);
     } catch (err) {
       console.error('Failed to load pods:', err);
@@ -1495,7 +1495,7 @@ export default function LearningPods({ courseId, user }) {
       const durationVal = customDuration ? parseInt(customDuration, 10) : parseInt(newPodDuration, 10);
       const created = await podsAPI.create({
         title: newPodTitle,
-        course_id: courseId || 1,
+        course_id: courseId,
         topic: newPodTopic || 'General Study',
         agenda: newPodAgenda || null,
         passcode: newPodPasscode || null,
@@ -1564,7 +1564,7 @@ export default function LearningPods({ courseId, user }) {
     try {
       const created = await podsAPI.create({
         title: `Live Kshetra: ${cleanCode}`,
-        course_id: courseId || 1,
+        course_id: courseId,
         topic: 'Live Kshetra Conference',
         agenda: `Direct session bridged with Live Kshetra code [${cleanCode}]`,
         kshetra_meeting_code: cleanCode,
@@ -1587,7 +1587,7 @@ export default function LearningPods({ courseId, user }) {
     try {
       const created = await podsAPI.create({
         title: `Live Kshetra Pod #${randomSuffix.toUpperCase()}`,
-        course_id: courseId || 1,
+        course_id: courseId,
         topic: 'Live Kshetra Video Conference',
         agenda: 'Instant live conference via Live Kshetra bridge',
         kshetra_meeting_code: instantCode,
@@ -1843,6 +1843,20 @@ export default function LearningPods({ courseId, user }) {
   };
 
   const isUserSpeaking = micOn && audioLevel > 18;
+
+  if (!courseId) {
+    return (
+      <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto flex items-center justify-center min-h-[50vh]">
+        <div className="text-center space-y-4">
+          <div className="mx-auto w-16 h-16 rounded-full bg-[#1A1E36] flex items-center justify-center mb-4 border border-[#262C4C]">
+            <Radio className="h-8 w-8 text-[#8B7CFF]" />
+          </div>
+          <h2 className="text-2xl font-black text-white">Select a Course</h2>
+          <p className="text-slate-400 text-sm">Please select a course to view or create Learning Pods.</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-6">
