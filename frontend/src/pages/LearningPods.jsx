@@ -413,6 +413,10 @@ export default function LearningPods({ courseId, user }) {
         },
         audio: true
       });
+      if (isLeavingRef.current) {
+        stream.getTracks().forEach(track => track.stop());
+        return null;
+      }
       localStreamRef.current = stream;
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
@@ -434,6 +438,10 @@ export default function LearningPods({ courseId, user }) {
       // Try audio-only if video failed
       try {
         const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        if (isLeavingRef.current) {
+          audioStream.getTracks().forEach(track => track.stop());
+          return null;
+        }
         localStreamRef.current = audioStream;
         setupAudioMeter(audioStream);
         setMicOn(true);
@@ -635,6 +643,8 @@ export default function LearningPods({ courseId, user }) {
 
   const scheduleReconnect = (pod, passcodeToUse, wsUrl, attempt) => {
     if (isLeavingRef.current) return;
+    if (reconnectTimerRef.current) clearTimeout(reconnectTimerRef.current);
+
     if (attempt > 6) {
       setIsReconnecting(false);
       setConnectionError('Unable to re-establish connection after 6 attempts. Please retry.');
@@ -666,8 +676,14 @@ export default function LearningPods({ courseId, user }) {
         wsRef.current = ws;
         setWsReady(true);
         setIsReconnecting(false);
-        setWsReconnectAttempts(0);
         setConnectionError(null);
+
+        // Reset reconnect attempts after 10s of stable connection
+        setTimeout(() => {
+           if (ws.readyState === WebSocket.OPEN) {
+               setWsReconnectAttempts(0);
+           }
+        }, 10000);
 
         ws.onmessage = (event) => handlePodMessage(event, pod, ws);
         ws.onclose = (event) => handlePostHandshakeClose(event, pod, passcodeToUse, wsUrl);
@@ -1037,58 +1053,67 @@ export default function LearningPods({ courseId, user }) {
     try {
       const ws = new WebSocket(wsUrl);
 
-      // Wait for onopen before calling setActivePod
+      // Wait for PEER_JOINED before calling setActivePod
       await new Promise((resolve, reject) => {
+        let hasResolved = false;
         const timeoutTimer = setTimeout(() => {
           try { ws.close(); } catch (e) {}
-          reject(new Error('Signaling connection timed out after 10s.'));
+          if (!hasResolved) reject(new Error('Signaling connection timed out after 10s.'));
         }, 10000);
 
         ws.onopen = () => {
-          clearTimeout(timeoutTimer);
-          console.log('[WebSocket] Pod signaling connected to:', wsUrl);
+          console.log('[WebSocket] Pod signaling connected, waiting for PEER_JOINED...');
           if (pingTimerRef.current) clearInterval(pingTimerRef.current);
           pingTimerRef.current = setInterval(() => {
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'PING', timestamp: Date.now() }));
             }
           }, 25000);
+        };
 
-          // 1 & 2: Set wsRef.current and setWsReady(true) IMMEDIATELY upon handshake resolution
-          wsRef.current = ws;
-          setWsReady(true);
-          resolve();
+        ws.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (!hasResolved && data.type === 'PEER_JOINED' && data.client_id === myClientId) {
+              clearTimeout(timeoutTimer);
+              hasResolved = true;
+              wsRef.current = ws;
+              setWsReady(true);
+              resolve();
+            }
+          } catch (e) {}
+          // Also pass it to the main message handler
+          handlePodMessage(event, pod, ws);
         };
 
         ws.onerror = () => {
           clearTimeout(timeoutTimer);
-          reject(new Error('WebSocket connection failed.'));
+          if (!hasResolved) reject(new Error('WebSocket connection failed.'));
         };
 
         ws.onclose = (event) => {
           clearTimeout(timeoutTimer);
-          console.log('[WebSocket] Closed during handshake:', event.code, event.reason);
-          let reasonMsg = event.reason || 'Connection closed';
-          if (event.code === 4401) reasonMsg = 'Authentication failed: Invalid token or incorrect passcode';
-          else if (event.code === 4403) reasonMsg = 'Access Denied: You are blacklisted from this pod';
-          else if (event.code === 4404) reasonMsg = 'Learning pod not found or expired';
-          else if (event.code === 4409) reasonMsg = 'Pod is at maximum participant capacity';
-          else if (event.code === 4410) reasonMsg = 'Pod has already concluded';
-          else if (event.code === 1006 || !event.code) reasonMsg = 'Signaling connection failed (code 1006). The backend server may be waking up or unreachable. Please check VITE_API_BASE_URL and network connectivity.';
-          reject(new Error(reasonMsg));
+          if (!hasResolved) {
+            console.log('[WebSocket] Closed during handshake:', event.code, event.reason);
+            let reasonMsg = event.reason || 'Connection closed';
+            if (event.code === 4401) reasonMsg = 'Authentication failed: Invalid token or incorrect passcode';
+            else if (event.code === 4403) reasonMsg = 'Access Denied: You are blacklisted from this pod';
+            else if (event.code === 4404) reasonMsg = 'Learning pod not found or expired';
+            else if (event.code === 4409) reasonMsg = 'Pod is at maximum participant capacity';
+            else if (event.code === 4410) reasonMsg = 'Pod has already concluded';
+            else if (event.code === 1006 || !event.code) reasonMsg = 'Signaling connection failed (code 1006). The backend server may be waking up or unreachable. Please check VITE_API_BASE_URL and network connectivity.';
+            reject(new Error(reasonMsg));
+          } else {
+            handlePostHandshakeClose(event, pod, passcodeToUse, wsUrl);
+          }
         };
       });
 
-      // 2: Assign onmessage and post-handshake close handlers immediately
-      ws.onmessage = (event) => handlePodMessage(event, pod, ws);
-      ws.onclose = (event) => handlePostHandshakeClose(event, pod, passcodeToUse, wsUrl);
+      // Post-handshake error handler
       ws.onerror = (err) => {
         console.warn('[WebSocket] Error on active connection:', err);
       };
 
-      // 1 & 2: Set wsRef.current and wsReady BEFORE setActivePod
-      wsRef.current = ws;
-      setWsReady(true);
       setModerationToast('Requesting camera & microphone access...');
 
       // Acquire user media after socket is ready and buffering
