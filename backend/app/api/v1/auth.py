@@ -5,10 +5,19 @@ from sqlalchemy.future import select
 
 from app.core.database import get_db
 from app.core.security import (
-    verify_password, get_password_hash, create_access_token, get_current_user
+    create_access_token,
+    get_current_user,
+    get_password_hash,
+    verify_password,
 )
 from app.models.models import User
-from app.schemas.schemas import UserCreate, UserLogin, UserResponse, Token, UserProfileUpdate
+from app.schemas.schemas import (
+    Token,
+    UserCreate,
+    UserLogin,
+    UserProfileUpdate,
+    UserResponse,
+)
 
 router = APIRouter(prefix="/auth", tags=["Authentication"])
 
@@ -133,10 +142,8 @@ async def update_profile(
                 )
             current_user.email = profile_in.email
 
-    requested_role = profile_in.role.upper()
-    if requested_role == "ADMIN" and current_user.role != "ADMIN":
-        raise HTTPException(status_code=403, detail="Cannot escalate to ADMIN role")
-    current_user.role = requested_role
+    if current_user.role == 'ADMIN':
+        current_user.role = profile_in.role.upper()
     current_user.university = profile_in.university
     current_user.department = profile_in.department
     current_user.institutional_email = profile_in.institutional_email

@@ -1,15 +1,18 @@
 from datetime import datetime, timezone
-from typing import List
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.models.models import (
-    User, Course, StudentQuizAttempt, StudentConceptRetention,
-    StudentActivityLog, StudentSkillMastery
+    StudentConceptRetention,
+    StudentQuizAttempt,
 )
 from app.schemas.schemas import (
-    LearningRoadmapResponse, SkillMasteryItem, RoadmapActionItem
+    LearningRoadmapResponse,
+    RoadmapActionItem,
+    SkillMasteryItem,
 )
+
 
 class AdaptiveRoadmapService:
     """Computes personal knowledge gaps and personalizes the Next-Best-Action roadmap."""
@@ -20,7 +23,7 @@ class AdaptiveRoadmapService:
         course_id: int,
         db: AsyncSession
     ) -> LearningRoadmapResponse:
-        now = datetime.now(timezone.utc)
+        datetime.now(timezone.utc)
 
         # 1. Fetch student retention records
         ret_res = await db.execute(
@@ -76,7 +79,7 @@ class AdaptiveRoadmapService:
         ]
 
         # 4. Generate Personalized "Next Best Action" Queue
-        actions: List[RoadmapActionItem] = [
+        actions: list[RoadmapActionItem] = [
             RoadmapActionItem(
                 id="act_1",
                 title="Review 5-Min Concept Note: Unbalanced BST Degeneracy",

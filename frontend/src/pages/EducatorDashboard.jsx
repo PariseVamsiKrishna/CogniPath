@@ -19,7 +19,6 @@ import {
   Compass,
   FileCheck,
   Plus,
-  BookOpen,
   Trash2
 } from 'lucide-react';
 import { analyticsAPI, documentsAPI, curriculumAuditAPI } from '../services/api';
@@ -38,7 +37,17 @@ export default function EducatorDashboard({
   const [showDeleteModal, setShowDeleteModal] = useState(false);
   const activeCourse = courses.find((c) => c.id === courseId) || courses[0];
   const isCreator = Boolean(
-    activeCourse && (user?.role === 'ADMIN' || activeCourse.educator_id === user?.id)
+    activeCourse &&
+      (user?.role === 'ADMIN' ||
+        String(activeCourse.educator_id) === String(user?.id) ||
+        (activeCourse.educator_email && user?.email && activeCourse.educator_email.toLowerCase().trim() === user.email.toLowerCase().trim()) ||
+        (activeCourse.educator_name && user?.full_name && activeCourse.educator_name.toLowerCase().trim() === user.full_name.toLowerCase().trim()) ||
+        Boolean(activeCourse.id && (() => {
+          try {
+            const key = `cognipath_created_courses_${user?.id || user?.email || 'educator'}`;
+            return JSON.parse(localStorage.getItem(key) || '[]').includes(activeCourse.id);
+          } catch (e) { return false; }
+        })()))
   );
   const [overview, setOverview] = useState({
     total_students: 32,
@@ -234,17 +243,6 @@ export default function EducatorDashboard({
             >
               <Plus className="h-4 w-4" />
               <span>Create & Post Course</span>
-            </button>
-          )}
-
-          {onNavigateTab && (
-            <button
-              onClick={() => onNavigateTab('course-player', activeCourse?.id || courseId)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#1e2638] hover:bg-slate-700 text-slate-200 text-xs font-bold transition border border-[#2b354d]"
-              title="Open Course Curriculum Player & Editor"
-            >
-              <BookOpen className="h-4 w-4 text-indigo-400" />
-              <span>Curriculum Studio</span>
             </button>
           )}
 

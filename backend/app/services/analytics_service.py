@@ -1,16 +1,24 @@
 from datetime import datetime, timedelta, timezone
-from typing import List, Dict, Any
+
+from sqlalchemy import func
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import func
 
 from app.models.models import (
-    User, Course, Enrollment, StudentQuizAttempt,
-    StudentConceptRetention, StudentActivityLog, Document
+    Course,
+    Document,
+    Enrollment,
+    StudentActivityLog,
+    StudentConceptRetention,
+    StudentQuizAttempt,
+    User,
 )
 from app.schemas.schemas import (
-    AtRiskStudent, TopicDifficultyStat, EducatorDashboardOverview
+    AtRiskStudent,
+    EducatorDashboardOverview,
+    TopicDifficultyStat,
 )
+
 
 class EducatorAnalyticsService:
     """Heuristic Engine for At-Risk student detection and Educator Learning Analytics."""
@@ -21,8 +29,8 @@ class EducatorAnalyticsService:
         db: AsyncSession
     ) -> EducatorDashboardOverview:
         now = datetime.now(timezone.utc)
-        four_days_ago = now - timedelta(days=4)
-        seven_days_ago = now - timedelta(days=7)
+        now - timedelta(days=4)
+        now - timedelta(days=7)
 
         # 1. Fetch courses taught by this educator
         course_query = await db.execute(select(Course).where(Course.educator_id == educator_id))
@@ -50,8 +58,8 @@ class EducatorAnalyticsService:
         total_docs = doc_query.scalar() or 0
 
         # 4. Analyze each student for At-Risk heuristics
-        at_risk_list: List[AtRiskStudent] = []
-        all_student_scores: List[float] = []
+        at_risk_list: list[AtRiskStudent] = []
+        all_student_scores: list[float] = []
         active_student_count = 0
 
         for s_id in student_ids:

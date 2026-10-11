@@ -1,17 +1,33 @@
-import logging
-import json
 import hashlib
+import json
+import logging
 from datetime import datetime, timedelta, timezone
+
 from sqlalchemy.future import select
 
 from app.core.database import AsyncSessionLocal
 from app.core.security import get_password_hash
+from app.core.config import settings
 from app.models.models import (
-    User, Course, Enrollment, Document, Quiz, QuizQuestion,
-    StudentQuizAttempt, StudentConceptRetention, StudentActivityLog,
-    LearningPod, CommunityChannel, CommunityMessage,
-    Module, Topic, ModuleResource, Exam, ExamQuestion,
-    Assignment, StudentBadge
+    Assignment,
+    CommunityChannel,
+    CommunityMessage,
+    Course,
+    Document,
+    Enrollment,
+    Exam,
+    ExamQuestion,
+    LearningPod,
+    Module,
+    ModuleResource,
+    Quiz,
+    QuizQuestion,
+    StudentActivityLog,
+    StudentBadge,
+    StudentConceptRetention,
+    StudentQuizAttempt,
+    Topic,
+    User,
 )
 from app.services.chroma_service import chroma_service
 
@@ -69,6 +85,7 @@ async def ensure_hierarchical_curriculum_data(db):
 
     if course_1:
         c1_id = course_1.id
+        c_id = course_1.id  # Restore c_id assignment for later use
 
         # Module 1
         m1 = (await db.execute(select(Module).where(Module.course_id == c1_id, Module.order_index == 1))).scalars().first()
@@ -677,6 +694,9 @@ async def ensure_hierarchical_curriculum_data(db):
 
 async def seed_demo_data():
     """Populates realistic demonstration data on startup if database is fresh."""
+    if settings.ENVIRONMENT in ["production", "testing"]:
+        return
+        
     async with AsyncSessionLocal() as db:
         # 1. Ensure Educator exists
         educator = (await db.execute(select(User).where(User.email == "teacher@cognipath.edu"))).scalars().first()

@@ -1,6 +1,5 @@
 import {
   LayoutDashboard,
-  BookOpen,
   Bot,
   ClipboardCheck,
   BarChart3,
@@ -28,7 +27,6 @@ export default function Sidebar({
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard, color: 'text-[#8B7CFF]' },
-    { id: 'course-player', label: isEducator ? 'My Courses' : 'Course Player', icon: BookOpen, color: 'text-[#8B7CFF]', badge: isEducator ? 'Studio' : 'Syllabus', badgeColor: isEducator ? 'amber' : 'violet' },
     { id: 'exam-studio', label: 'Exam & Quiz Studio', icon: ClipboardCheck, color: 'text-[#FFC15E]', badge: 'Alert', badgeColor: 'amber' },
     { id: 'assignments', label: 'AI Assignments', icon: FileText, color: 'text-[#5FE3B0]', badge: 'Auto', badgeColor: 'mint' },
     { id: 'tutor', label: 'AI Tutor', icon: Bot, color: 'text-[#8B7CFF]' },

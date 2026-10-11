@@ -1,7 +1,7 @@
-import os
-import logging
 import hashlib
-from typing import List, Dict, Any, Optional
+import logging
+import os
+from typing import Any
 
 try:
     import chromadb
@@ -18,6 +18,7 @@ except ImportError:
     HAS_GENAI = False
 
 from openai import AsyncOpenAI
+
 from app.core.config import settings
 
 logger = logging.getLogger("cognipath.chroma")
@@ -61,7 +62,7 @@ class InMemoryCollection:
 
             # Compute cosine similarity if query embedding is available
             if q_emb and doc_emb:
-                dot = sum(a * b for a, b in zip(q_emb, doc_emb))
+                dot = sum(a * b for a, b in zip(q_emb, doc_emb, strict=False))
                 norm_a = sum(a * a for a in q_emb) ** 0.5 or 1.0
                 norm_b = sum(b * b for b in doc_emb) ** 0.5 or 1.0
                 cos_sim = dot / (norm_a * norm_b)
@@ -82,7 +83,7 @@ class InMemoryCollection:
 class ChromaService:
     def __init__(self):
         self._client = None
-        self._in_memory_collections: Dict[str, InMemoryCollection] = {}
+        self._in_memory_collections: dict[str, InMemoryCollection] = {}
         self._openai_client = None
         self._init_client()
 
@@ -126,7 +127,7 @@ class ChromaService:
     def _get_collection_name(self, course_id: int) -> str:
         return f"course_collection_{course_id}"
 
-    async def get_embeddings(self, texts: List[str]) -> List[List[float]]:
+    async def get_embeddings(self, texts: list[str]) -> list[list[float]]:
         """Generate embeddings using Gemini or OpenAI, with deterministic fallback."""
         # 1. Prefer Google Gemini embedding
         if self._gemini_client and settings.GEMINI_API_KEY:
@@ -158,7 +159,7 @@ class ChromaService:
         # 3. High-dimension pseudo-semantic fallback vector (1536 dimensions) for testing without API keys
         return [self._generate_fallback_embedding(t) for t in texts]
 
-    def _generate_fallback_embedding(self, text: str, dim: int = 1536) -> List[float]:
+    def _generate_fallback_embedding(self, text: str, dim: int = 1536) -> list[float]:
         """Generates reproducible unit-normalized vector for standalone testing."""
         h = hashlib.sha256(text.encode("utf-8")).digest()
         raw = [(h[i % len(h)] / 255.0) - 0.5 for i in range(dim)]
@@ -180,9 +181,9 @@ class ChromaService:
     async def add_chunks(
         self,
         course_id: int,
-        chunks: List[str],
-        metadatas: List[Dict[str, Any]],
-        ids: List[str]
+        chunks: list[str],
+        metadatas: list[dict[str, Any]],
+        ids: list[str]
     ):
         """Embeds and indexes document chunks into the course collection."""
         collection = self.get_or_create_collection(course_id)
@@ -200,8 +201,8 @@ class ChromaService:
         course_id: int,
         query: str,
         n_results: int = 4,
-        where: Optional[Dict[str, Any]] = None
-    ) -> Dict[str, Any]:
+        where: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
         """Queries the course collection for top matching chunks with cosine distance, optionally filtered by metadata."""
         collection = self.get_or_create_collection(course_id)
         query_embeddings = await self.get_embeddings([query]) if query else None
@@ -234,7 +235,7 @@ class ChromaService:
         module_id: int,
         query: str = "",
         n_results: int = 6
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Queries chunks strictly filtered by module_id."""
         return await self.query_similar(
             course_id=course_id,

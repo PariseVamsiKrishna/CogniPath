@@ -367,13 +367,15 @@ export default function DashboardHome({
                     <ArrowRight className="h-3.5 w-3.5" />
                   </button>
                 )}
-                <button
-                  type="button"
-                  onClick={() => onNavigateTab('courses')}
-                  className="text-xs font-semibold text-slate-300 hover:text-white flex items-center gap-1.5 transition px-3 py-1.5 rounded-full bg-[#12162B] border border-[#262C4C]"
-                >
-                  <span>View courses</span>
-                </button>
+                {onOpenExploreCatalog && (
+                  <button
+                    type="button"
+                    onClick={onOpenExploreCatalog}
+                    className="text-xs font-semibold text-slate-300 hover:text-white flex items-center gap-1.5 transition px-3 py-1.5 rounded-full bg-[#12162B] border border-[#262C4C]"
+                  >
+                    <span>View all courses</span>
+                  </button>
+                )}
               </div>
             </div>
 
@@ -385,7 +387,7 @@ export default function DashboardHome({
                     key={course.id || idx}
                     course={course}
                     index={idx}
-                    onSelectCourse={() => onNavigateTab('course-player', course.id)}
+                    onSelectCourse={() => onNavigateTab && onNavigateTab('tutor', course.id)}
                     onDeleteCourse={(c) => setCourseToDelete(c)}
                     user={user}
                   />
@@ -491,10 +493,8 @@ export default function DashboardHome({
                   key={rec.id}
                   recommendation={rec}
                   onStartLearning={() => {
-                    if (rec.course_id && safeEnrolled.some((c) => c?.id === rec.course_id)) {
-                      onNavigateTab('course-player', rec.course_id);
-                    } else {
-                      onNavigateTab('tutor');
+                    if (onNavigateTab) {
+                      onNavigateTab('tutor', rec.course_id);
                     }
                   }}
                 />
@@ -739,14 +739,12 @@ export default function DashboardHome({
           onClose={() => setCourseToDelete(null)}
           course={courseToDelete}
           isEducator={user?.role === 'EDUCATOR'}
-          isCreator={user?.role === 'EDUCATOR' && (courseToDelete.educator_id === user?.id || !courseToDelete.educator_id)}
+          isCreator={false}
           onConfirm={async (c) => {
-            const isCreator = user?.role === 'EDUCATOR' && (c.educator_id === user?.id || !c.educator_id);
-            if (isCreator && onDeleteCoursePermanently) {
-              await onDeleteCoursePermanently(c.id);
-            } else if (onUnenrollCourse) {
+            if (onUnenrollCourse) {
               await onUnenrollCourse(c.id);
             }
+            if (onRefreshCourses) await onRefreshCourses();
           }}
         />
       )}

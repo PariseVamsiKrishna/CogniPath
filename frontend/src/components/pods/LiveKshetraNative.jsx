@@ -1,3 +1,4 @@
+import { getIceServers } from './iceServers';
 import React, { useState, useEffect, useRef, useMemo } from 'react';
 import {
   Video,
@@ -63,7 +64,7 @@ function SignalBars({ strength }) {
   );
 }
 
-function RemotePeerTile({
+const RemotePeerTile = React.memo(function RemotePeerTile({
   peer,
   stream,
   isHost,
@@ -74,72 +75,36 @@ function RemotePeerTile({
   const videoRef = useRef(null);
   const audioRef = useRef(null);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
-  const [hasVideoTrack, setHasVideoTrack] = useState(false);
 
-  // Monitor video track presence and live status dynamically
-  useEffect(() => {
-    if (!stream) {
-      setHasVideoTrack(false);
-      return;
-    }
-    const updateVideo = () => {
-      const vTracks = stream.getVideoTracks();
-      const active = vTracks.length > 0 && vTracks.some((t) => t.enabled && t.readyState === 'live');
-      setHasVideoTrack(active);
-    };
+  // Direct video visibility check matching working reference implementation
+  const showVideo = Boolean(stream && peer?.videoOn !== false);
 
-    updateVideo();
-
-    stream.onaddtrack = updateVideo;
-    stream.onremovetrack = updateVideo;
-    const vTracks = stream.getVideoTracks();
-    vTracks.forEach((t) => {
-      t.onunmute = updateVideo;
-      t.onmute = updateVideo;
-      t.onended = updateVideo;
-    });
-
-    return () => {
-      stream.onaddtrack = null;
-      stream.onremovetrack = null;
-      vTracks.forEach((t) => {
-        t.onunmute = null;
-        t.onmute = null;
-        t.onended = null;
-      });
-    };
-  }, [stream]);
-
-  // Video track rendering (ALWAYS active and muted to guarantee continuous frame decoding)
+  // Video stream attachment
   useEffect(() => {
     if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-      videoRef.current.muted = true;
-      const playPromise = videoRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise.catch((err) => {
-          console.warn('[WebRTC] Video play notice:', err);
-        });
+      if (videoRef.current.srcObject !== stream) {
+        videoRef.current.srcObject = stream;
       }
+      videoRef.current.play().catch((err) => {
+        console.warn(`[RemotePeerTile] Video play error for ${peer.name}:`, err.message);
+      });
     }
-  }, [stream, hasVideoTrack, peer.videoOn]);
+  }, [stream, showVideo, peer?.name]);
 
-  // Audio track playback via dedicated HTML5 Audio element
+  // Dedicated HTML5 audio element for clean, unmuted voice decoding
   useEffect(() => {
     if (audioRef.current && stream) {
-      audioRef.current.srcObject = stream;
-      audioRef.current.muted = peer.audioOn === false;
-      const playPromise = audioRef.current.play();
-      if (playPromise !== undefined) {
-        playPromise
-          .then(() => setAutoplayBlocked(false))
-          .catch((err) => {
-            console.warn('[WebRTC] Audio autoplay blocked:', err);
-            setAutoplayBlocked(true);
-          });
+      if (audioRef.current.srcObject !== stream) {
+        audioRef.current.srcObject = stream;
       }
+      audioRef.current.play()
+        .then(() => setAutoplayBlocked(false))
+        .catch((err) => {
+          console.warn(`[RemotePeerTile] Audio autoplay blocked for ${peer.name}:`, err.message);
+          setAutoplayBlocked(true);
+        });
     }
-  }, [stream, peer.audioOn]);
+  }, [stream, peer?.name, peer?.audioOn]);
 
   const handleUnblockAudio = () => {
     if (audioRef.current) {
@@ -150,8 +115,6 @@ function RemotePeerTile({
     }
   };
 
-  const showAvatar = !hasVideoTrack || peer.videoOn === false;
-
   return (
     <div
       className={`relative rounded-2xl bg-[#0e1424] border transition-all duration-300 flex flex-col items-center justify-center overflow-hidden min-h-[190px] shadow-xl group ${
@@ -159,22 +122,25 @@ function RemotePeerTile({
           ? 'ring-2 ring-emerald-400 border-emerald-400 shadow-lg shadow-emerald-400/20'
           : 'border-[#1e2638]'
       }`}
+      onClick={autoplayBlocked ? handleUnblockAudio : undefined}
     >
-      {/* Dedicated Hidden Audio Element for Reliable Remote Audio Playback */}
+      {/* Dedicated Hidden Audio Element for Remote Audio Playback */}
       <audio ref={audioRef} autoPlay playsInline />
 
-      {/* Remote Video Stream (Always mounted & playing, muted to bypass autoplay restrictions) */}
-      <video
-        ref={videoRef}
-        autoPlay
-        playsInline
-        muted
-        className="w-full h-full object-cover"
-      />
+      {/* Remote Video Stream */}
+      {stream && (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          muted
+          className={`w-full h-full object-cover ${!showVideo ? 'hidden' : 'block'}`}
+        />
+      )}
 
-      {/* Avatar Overlay when Camera is Off or Video Track is Initializing */}
-      {showAvatar && !autoplayBlocked && (
-        <div className="absolute inset-0 bg-[#0e1424] flex flex-col items-center justify-center space-y-3 z-10">
+      {/* Avatar Placeholder when Camera is Off or Stream is Pending */}
+      {!showVideo && (
+        <div className="w-full h-full flex flex-col items-center justify-center space-y-3 z-10">
           <div
             className={`h-20 w-20 rounded-full flex items-center justify-center text-xl font-bold font-heading shadow-xl transition-transform ${
               peer.isSpeaking && peer.audioOn !== false ? 'scale-110 ring-4 ring-emerald-400/30' : ''
@@ -251,7 +217,9 @@ function RemotePeerTile({
       )}
     </div>
   );
-}
+});
+
+
 
 export default function LiveKshetraNative({
   meetingCode = 'sih-kshetra-live',
@@ -264,7 +232,8 @@ export default function LiveKshetraNative({
   sharedClientId = null,     // ← If provided, use this client_id instead of generating a new one
   wsHandlersRef = null,      // ← Registry to register this component's ws message handler into
   pendingMessagesRef = null, // ← Buffer of messages that arrived before handler was registered
-  sharedLocalStreamRef = null,
+  sharedLocalStreamRef = null, // ← Local media stream reference from parent
+  wsReady = false // ← Prop to indicate parent WS is open
 }) {
   const cleanCode = (meetingCode || 'sih-pod-live').trim().replace(/\s+/g, '-').toLowerCase();
   const userName = user?.full_name || 'Learner';
@@ -419,28 +388,30 @@ export default function LiveKshetraNative({
 
         // Setup Audio Analyser
         try {
-          const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
-          audioContextRef.current = audioCtx;
-          const analyser = audioCtx.createAnalyser();
-          analyser.fftSize = 64;
-          analyserRef.current = analyser;
+          if (stream && stream.getAudioTracks().length > 0) {
+            const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+            audioContextRef.current = audioCtx;
+            const analyser = audioCtx.createAnalyser();
+            analyser.fftSize = 64;
+            analyserRef.current = analyser;
 
-          const source = audioCtx.createMediaStreamSource(stream);
-          source.connect(analyser);
+            const source = audioCtx.createMediaStreamSource(stream);
+            source.connect(analyser);
 
-          const dataArray = new Uint8Array(analyser.frequencyBinCount);
-          const checkVolume = () => {
-            if (!isMounted) return;
-            analyser.getByteFrequencyData(dataArray);
-            let sum = 0;
-            for (let i = 0; i < dataArray.length; i++) {
-              sum += dataArray[i];
-            }
-            const avg = sum / dataArray.length;
-            setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
-            animFrameRef.current = requestAnimationFrame(checkVolume);
-          };
-          checkVolume();
+            const dataArray = new Uint8Array(analyser.frequencyBinCount);
+            const checkVolume = () => {
+              if (!isMounted) return;
+              analyser.getByteFrequencyData(dataArray);
+              let sum = 0;
+              for (let i = 0; i < dataArray.length; i++) {
+                sum += dataArray[i];
+              }
+              const avg = sum / dataArray.length;
+              setAudioLevel(Math.min(100, Math.round((avg / 128) * 100)));
+              animFrameRef.current = requestAnimationFrame(checkVolume);
+            };
+            checkVolume();
+          }
         } catch (audioErr) {
           console.warn('AudioContext setup skipped:', audioErr);
         }
@@ -470,7 +441,7 @@ export default function LiveKshetraNative({
     return () => {
       isMounted = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
-      if (localStreamRef.current && !sharedLocalStreamRef) {
+      if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
       }
       if (screenStreamRef.current) {
@@ -482,6 +453,16 @@ export default function LiveKshetraNative({
     };
   }, []);
 
+  // Ensure local video element always receives and plays local stream
+  useEffect(() => {
+    if (localVideoRef.current && localStreamRef.current) {
+      if (localVideoRef.current.srcObject !== localStreamRef.current) {
+        localVideoRef.current.srcObject = localStreamRef.current;
+      }
+      localVideoRef.current.play().catch(() => {});
+    }
+  }, [mediaReady, videoOn]);
+
   // ---------------------------------------------------------------------------
   // 2. WEBRTC PEER CONNECTION FACTORY & SIGNALING
   // ---------------------------------------------------------------------------
@@ -490,31 +471,7 @@ export default function LiveKshetraNative({
       return peerConnectionsRef.current[targetClientId];
     }
 
-    const iceServers = [
-      { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      { urls: 'stun:stun2.l.google.com:19302' },
-      { urls: 'stun:stun3.l.google.com:19302' },
-      { urls: 'stun:stun4.l.google.com:19302' },
-      { urls: 'stun:stun.cloudflare.com:3478' },
-      {
-        urls: [
-          'turn:openrelay.metered.ca:80',
-          'turn:openrelay.metered.ca:443',
-          'turn:openrelay.metered.ca:443?transport=tcp'
-        ],
-        username: 'openrelayproject',
-        credential: 'openrelayproject'
-      }
-    ];
-    if (import.meta.env.VITE_TURN_URL) {
-      iceServers.push({
-        urls: import.meta.env.VITE_TURN_URL,
-        username: import.meta.env.VITE_TURN_USERNAME || '',
-        credential: import.meta.env.VITE_TURN_CREDENTIAL || ''
-      });
-    }
-
+    const iceServers = getIceServers();
     const pc = new RTCPeerConnection({ iceServers, iceCandidatePoolSize: 10 });
 
     // Attach local media stream tracks
@@ -532,15 +489,13 @@ export default function LiveKshetraNative({
       });
     }
 
-    // Only create transceivers if we are the INITIATOR (caller) and don't already have local tracks for that kind.
-    // Callee (answerer) gets transceivers created automatically by setRemoteDescription from the offer.
-    if (isInitiator) {
-      const existingTransceivers = pc.getTransceivers();
-      const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio' || t.sender.track?.kind === 'audio');
-      const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video' || t.sender.track?.kind === 'video');
-      if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
-      if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
-    }
+    // Always ensure both audio & video transceivers exist so remote media can be received
+    // and local media can be attached later via replaceTrack without needing offer/answer renegotiation!
+    const existingTransceivers = pc.getTransceivers();
+    const hasAudio = existingTransceivers.some((t) => t.receiver.track.kind === 'audio' || t.sender.track?.kind === 'audio');
+    const hasVideo = existingTransceivers.some((t) => t.receiver.track.kind === 'video' || t.sender.track?.kind === 'video');
+    if (!hasAudio) pc.addTransceiver('audio', { direction: 'sendrecv' });
+    if (!hasVideo) pc.addTransceiver('video', { direction: 'sendrecv' });
 
     // Receive remote tracks — build MediaStream manually for clean reference change
     pc.ontrack = (event) => {
@@ -593,9 +548,17 @@ export default function LiveKshetraNative({
 
     pc.onconnectionstatechange = () => {
       console.log(`[WebRTC] Peer ${targetClientId} connection state:`, pc.connectionState);
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
+      if (pc.connectionState === 'failed') {
         console.warn(`[WebRTC] Connection to ${targetClientId} ${pc.connectionState}. Restarting ICE...`);
         if (pc.restartIce) pc.restartIce();
+      } else if (pc.connectionState === 'disconnected') {
+        // Debounce disconnect restartIce to avoid storms
+        setTimeout(() => {
+          if (pc && pc.connectionState === 'disconnected') {
+            console.warn(`[WebRTC] Connection to ${targetClientId} disconnected for 5s. Restarting ICE...`);
+            if (pc.restartIce) pc.restartIce();
+          }
+        }, 5000);
       }
       if (pc.connectionState === 'closed') {
         delete peerConnectionsRef.current[targetClientId];
@@ -616,10 +579,14 @@ export default function LiveKshetraNative({
   const createAndSendOffer = async (targetClientId, ws) => {
     const pc = getOrCreatePeerConnection(targetClientId, true);
     try {
-      const offer = await pc.createOffer();
+      const offer = await pc.createOffer({
+        offerToReceiveAudio: true,
+        offerToReceiveVideo: true
+      });
       await pc.setLocalDescription(offer);
-      if (ws && ws.readyState === WebSocket.OPEN) {
-        ws.send(
+      const activeWs = ws || wsRef.current;
+      if (activeWs && activeWs.readyState === WebSocket.OPEN) {
+        activeWs.send(
           JSON.stringify({
             type: 'SIGNAL_OFFER',
             from_client: myClientId,
@@ -663,6 +630,21 @@ export default function LiveKshetraNative({
               }
             }
             setPeers(existingPeers);
+
+            // Proactively initiate call to existing peers after brief timeout (with Perfect Negotiation)
+            if (existingPeers.length > 0) {
+              setTimeout(() => {
+                if (!isMounted) return;
+                const wsToUse = wsRef.current;
+                existingPeers.forEach(async (peer) => {
+                  const existingPc = peerConnectionsRef.current[peer.client_id];
+                  if (!existingPc || (existingPc.signalingState === 'stable' && existingPc.connectionState !== 'connected')) {
+                    console.log(`[WebRTC] Proactively connecting to existing peer: ${peer.client_id}`);
+                    await createAndSendOffer(peer.client_id, wsToUse);
+                  }
+                });
+              }, 600);
+            }
           } else {
             playChime(720, 0.15);
             showToast(`${data.user_name || 'Participant'} joined the pod`);
@@ -682,7 +664,7 @@ export default function LiveKshetraNative({
             const wsToUse = wsRef.current;
             await createAndSendOffer(data.client_id, wsToUse);
           }
-        } else if (data.type === 'SIGNAL_OFFER' && data.to_client === myClientId) {
+        } else if (data.type === 'SIGNAL_OFFER' && (!data.to_client || data.to_client === myClientId)) {
           console.log(`[WebRTC] Received offer from ${data.from_client}`);
           // Ensure the peer is in the peers state so the video tile is rendered in the UI
           setPeers((prev) => {
@@ -714,7 +696,7 @@ export default function LiveKshetraNative({
               wsToUse.send(JSON.stringify({ type: 'SIGNAL_ANSWER', from_client: myClientId, to_client: data.from_client, sdp: pc.localDescription }));
             }
           } catch (err) { console.error('[WebRTC] Answer error:', err); }
-        } else if (data.type === 'SIGNAL_ANSWER' && data.to_client === myClientId) {
+        } else if (data.type === 'SIGNAL_ANSWER' && (!data.to_client || data.to_client === myClientId)) {
           console.log(`[WebRTC] Received answer from ${data.from_client}`);
           // Ensure the peer is in the peers state so the video tile is rendered in the UI
           setPeers((prev) => {
@@ -736,7 +718,7 @@ export default function LiveKshetraNative({
               delete iceCandidateBufferRef.current[data.from_client];
             } catch (err) { console.error('[WebRTC] Set remote desc error:', err); }
           }
-        } else if (data.type === 'SIGNAL_ICE' && data.to_client === myClientId && data.candidate) {
+        } else if (data.type === 'SIGNAL_ICE' && (!data.to_client || data.to_client === myClientId) && data.candidate) {
           const pc = peerConnectionsRef.current[data.from_client];
           if (pc && pc.remoteDescription && pc.remoteDescription.type) {
             try { await pc.addIceCandidate(new RTCIceCandidate(data.candidate)); } catch (err) {}
@@ -792,10 +774,10 @@ export default function LiveKshetraNative({
             setTimeout(() => { setFloatingReactions((prev) => prev.filter((r) => r.id !== id)); }, 2400);
           }
         } else if (data.type === 'KICKED_BY_HOST') {
-          alert(`You were removed from the room: ${data.reason || 'Removed by host'}`);
+          console.warn(`[LiveKshetra] Removed from room: ${data.reason || 'Removed by host'}`);
           if (onClose) onClose();
         } else if (data.type === 'EVENT_ROOM_CLOSED') {
-          alert(`Meeting ended: ${data.reason || 'Host closed the room'}`);
+          console.log(`[LiveKshetra] Meeting ended: ${data.reason || 'Host closed the room'}`);
           if (onClose) onClose();
         }
       } catch (e) { console.error('[WS handler] Error:', e); }
@@ -803,7 +785,12 @@ export default function LiveKshetraNative({
 
     async function connectSignaling() {
       // If parent (LearningPods.jsx) passes its WebSocket, reuse it — prevents double-connection to same room
-      if (sharedWsRef && sharedWsRef.current) {
+      if (sharedWsRef) {
+        if (!sharedWsRef.current || !wsReady) {
+            // Parent will pass wsRef when ready. Wait for next effect trigger without closing existing peer connections.
+            console.log('[WebRTC] Waiting for shared WebSocket to become ready...');
+            return;
+        }
         console.log('[WebRTC] Shared WebSocket from parent — registering message handler');
         wsRef.current = sharedWsRef.current;
         // Register our WebRTC message handler into parent's dispatcher registry
@@ -812,9 +799,6 @@ export default function LiveKshetraNative({
           wsHandlersRef.current.push(handleWsMessage);
         }
         // ─── CRITICAL: Flush messages that arrived before we registered ───
-        // The timing bug: offers/PEER_JOINED arrive at LearningPods' WS before LiveKshetraNative
-        // has registered its handler (getUserMedia takes 1-3s). These messages were buffered
-        // in pendingKshetraMessagesRef. Process them now sequentially.
         if (pendingMessagesRef && pendingMessagesRef.current.length > 0) {
           console.log(`[WebRTC] Flushing ${pendingMessagesRef.current.length} buffered messages`);
           const pending = pendingMessagesRef.current.splice(0); // clear and take all
@@ -822,19 +806,49 @@ export default function LiveKshetraNative({
             try { await handleWsMessage(msg); } catch (e) { console.warn('[flush] error:', e); }
           }
         }
+
+        // ─── Re-negotiate existing peer connections after reconnect ───
+        if (sharedWsRef.current && sharedWsRef.current.readyState === WebSocket.OPEN) {
+          const activePeers = Object.entries(peerConnectionsRef.current);
+          for (const [peerClientId, pc] of activePeers) {
+            if (pc && pc.connectionState !== 'closed' && pc.connectionState !== 'failed') {
+              try {
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                sharedWsRef.current.send(
+                  JSON.stringify({
+                    type: 'SIGNAL_OFFER',
+                    from_client: myClientId,
+                    to_client: peerClientId,
+                    sdp: pc.localDescription
+                  })
+                );
+              } catch (err) {
+                console.warn('[WebRTC] Re-signaling offer notice:', peerClientId, err);
+              }
+            }
+          }
+        }
         return;
       }
 
+      const token = localStorage.getItem('cognipath_token') || '';
       let wsUrl = '';
       const apiBase = import.meta.env.VITE_API_BASE_URL;
+      let urlBase = '';
       if (apiBase && (apiBase.startsWith('http://') || apiBase.startsWith('https://'))) {
         const parsed = new URL(apiBase);
         const wsProto = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-        wsUrl = `${wsProto}//${parsed.host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(userName)}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
+        urlBase = `${wsProto}//${parsed.host}`;
       } else {
         const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         const host = window.location.host;
-        wsUrl = `${protocol}//${host}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&user_name=${encodeURIComponent(userName)}&user_id=${user?.id || ''}&role=${userRole}&is_creator=${Boolean(isHost)}`;
+        urlBase = `${protocol}//${host}`;
+      }
+
+      wsUrl = `${urlBase}/api/v1/pods/ws/${cleanCode}?client_id=${myClientId}&token=${encodeURIComponent(token)}`;
+      if (passcode) {
+        wsUrl += `&passcode=${encodeURIComponent(passcode)}`;
       }
 
       try {
@@ -857,7 +871,12 @@ export default function LiveKshetraNative({
           } catch (e) { console.error('[WebSocket] Message parsing error:', e); }
         };
 
-        ws.onclose = () => { console.log('[WebSocket] Connection closed'); };
+        ws.onclose = (event) => {
+          console.log('[WebSocket] Connection closed:', event.code, event.reason);
+          if (event.code === 4401 || event.code === 4403 || event.code === 4404 || event.code === 4409 || event.code === 4410) {
+            if (onClose) onClose();
+          }
+        };
       } catch (err) { console.error('[WebSocket] Setup failed:', err); }
     }
 
@@ -874,13 +893,27 @@ export default function LiveKshetraNative({
       if (wsHandlersRef) {
         wsHandlersRef.current = wsHandlersRef.current.filter((h) => h !== handleWsMessage);
       }
+      // If we are unmounting or changing room codes completely (not just wsReady toggling in shared mode), close peer connections
+      if (!sharedWsRef) {
+        Object.values(peerConnectionsRef.current).forEach((pc) => {
+          try { pc.close(); } catch (e) {}
+        });
+        peerConnectionsRef.current = {};
+        iceCandidateBufferRef.current = {};
+      }
+    };
+  }, [cleanCode, mediaReady, wsReady]);
+
+  // Clean up all peer connections only when LiveKshetraNative unmounts completely
+  useEffect(() => {
+    return () => {
       Object.values(peerConnectionsRef.current).forEach((pc) => {
         try { pc.close(); } catch (e) {}
       });
       peerConnectionsRef.current = {};
       iceCandidateBufferRef.current = {};
     };
-  }, [cleanCode, mediaReady]);
+  }, [cleanCode]);
 
   // When media becomes ready, send local tracks over all existing peer connections.
   // CRITICAL: Use sender.replaceTrack() instead of pc.addTrack() so tracks are sent immediately
@@ -893,14 +926,13 @@ export default function LiveKshetraNative({
     console.log(`[WebRTC] Media now ready — transmitting tracks to ${existingPcs.length} existing peer connection(s)`);
     existingPcs.forEach(([peerId, pc]) => {
       if (pc.connectionState === 'closed' || pc.connectionState === 'failed') return;
-      const senders = pc.getSenders();
+      const transceivers = pc.getTransceivers();
       tracks.forEach(async (track) => {
-        // Find existing sender matching this track kind (or an unassigned sender)
-        const sender = senders.find((s) => s.track && s.track.kind === track.kind) ||
-                       senders.find((s) => !s.track);
-        if (sender) {
+        // Find existing transceiver matching this track kind via its receiver track
+        const transceiver = transceivers.find((t) => t.receiver && t.receiver.track && t.receiver.track.kind === track.kind);
+        if (transceiver && transceiver.sender) {
           try {
-            await sender.replaceTrack(track);
+            await transceiver.sender.replaceTrack(track);
             console.log(`[WebRTC] replaceTrack (${track.kind}) succeeded for peer ${peerId}`);
           } catch (e) {
             console.warn('[WebRTC] replaceTrack error:', e);

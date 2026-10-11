@@ -1,10 +1,8 @@
 import asyncio
 import json
 import logging
-from datetime import datetime, timedelta, timezone
-from typing import Tuple, List, Dict, Any, Optional
+from typing import Any
 
-from app.models.models import StudentConceptRetention, Quiz, QuizQuestion
 from app.core.config import settings
 
 logger = logging.getLogger("cognipath.quiz")
@@ -18,7 +16,7 @@ class SpacedRepetitionService:
         easiness_factor: float,
         interval_days: int,
         quality_rating: int  # Rating 0 (complete blackout) to 5 (perfect response)
-    ) -> Tuple[int, float, int]:
+    ) -> tuple[int, float, int]:
         """Calculates (new_repetition_count, new_easiness_factor, new_interval_days) using standard SM-2.
         
         Formula:
@@ -38,8 +36,7 @@ class SpacedRepetitionService:
 
         # Update Easiness Factor (EF)
         new_ef = easiness_factor + (0.1 - (5 - q) * (0.08 + (5 - q) * 0.02))
-        if new_ef < 1.3:
-            new_ef = 1.3
+        new_ef = max(new_ef, 1.3)
 
         if q < 3:
             # Concept forgotten: reset repetitions
@@ -77,8 +74,8 @@ class SpacedRepetitionService:
     async def generate_concept_micro_quiz(
         course_id: int,
         topic: str,
-        context_chunks: Optional[List[str]] = None
-    ) -> List[Dict[str, Any]]:
+        context_chunks: list[str] | None = None
+    ) -> list[dict[str, Any]]:
         """Generates micro-quiz MCQs grounded in provided topic chunks using Gemini AI."""
         # Ensure context chunks are available from ChromaDB if not passed directly
         if not context_chunks and course_id:
@@ -87,7 +84,7 @@ class SpacedRepetitionService:
                 results = await chroma_service.query_similar(course_id, topic, n_results=4)
                 docs = results.get("documents", [[]])[0]
                 context_chunks = [d for d in docs if d and len(d.strip()) > 0]
-            except Exception as ce:
+            except Exception as ce:  # noqa: BLE001
                 logger.warning(f"Vector retrieval notice during quiz generation: {ce}")
 
         # 1. Try real Google Gemini generation grounded in context chunks
@@ -119,12 +116,9 @@ Return ONLY a valid JSON array of objects. Do not include markdown code block fo
                     contents=prompt
                 )
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 if isinstance(parsed, list) and len(parsed) >= 2:
                     validated = []
@@ -147,7 +141,7 @@ Return ONLY a valid JSON array of objects. Do not include markdown code block fo
                     if len(validated) >= 2:
                         logger.info("Successfully generated %d Gemini-grounded quiz questions for '%s'", len(validated), topic)
                         return validated
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             logger.warning(f"AI quiz generation fallback notice: {e}")
 
         # 2. Dynamic synthesis fallback (grounded in context_chunks if available)
@@ -156,9 +150,9 @@ Return ONLY a valid JSON array of objects. Do not include markdown code block fo
                 "question": f"In the study of {topic}, which core property or principle is fundamentally established?",
                 "options": [
                     f"Operational bounds and state invariants defined for {topic}",
-                    f"Arbitrary unconstrained recursion without termination guarantees",
-                    f"Random memory allocation bypassing structural constraints",
-                    f"Deprecated sequential execution unsuitable for parallelized systems"
+                    "Arbitrary unconstrained recursion without termination guarantees",
+                    "Random memory allocation bypassing structural constraints",
+                    "Deprecated sequential execution unsuitable for parallelized systems"
                 ],
                 "correct_index": 0,
                 "explanation": f"The curriculum establishes that {topic} enforces bounded operational efficiency and structural invariants.",
@@ -167,10 +161,10 @@ Return ONLY a valid JSON array of objects. Do not include markdown code block fo
             {
                 "question": f"When analyzing the computational efficiency of {topic}, which condition leads to worst-case performance degradation?",
                 "options": [
-                    f"Loss of structural balance or skewed pathological inputs",
-                    f"Optimal partitioning across all subcomponents",
-                    f"Deterministic constant-time cache hits",
-                    f"Uniform distribution across balanced partitions"
+                    "Loss of structural balance or skewed pathological inputs",
+                    "Optimal partitioning across all subcomponents",
+                    "Deterministic constant-time cache hits",
+                    "Uniform distribution across balanced partitions"
                 ],
                 "correct_index": 0,
                 "explanation": f"In {topic}, skewed or pathological input sequences break balanced invariants, causing worst-case degradation.",
@@ -179,10 +173,10 @@ Return ONLY a valid JSON array of objects. Do not include markdown code block fo
             {
                 "question": f"Which best describes the practical application and relevance of {topic} in computer systems?",
                 "options": [
-                    f"Efficient indexing, fast retrieval, and scalable data organization",
-                    f"Exclusively utilized for legacy magnetic tape storage",
-                    f"Replacement for fundamental CPU hardware registers",
-                    f"Eliminating all algorithmic space complexity completely"
+                    "Efficient indexing, fast retrieval, and scalable data organization",
+                    "Exclusively utilized for legacy magnetic tape storage",
+                    "Replacement for fundamental CPU hardware registers",
+                    "Eliminating all algorithmic space complexity completely"
                 ],
                 "correct_index": 0,
                 "explanation": f"{topic} is primarily applied to maintain efficient lookup, structured representation, and scalable processing.",

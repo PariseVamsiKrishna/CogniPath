@@ -1,59 +1,155 @@
+import json
+import logging
 import os
 import re
 import shutil
-import logging
-from typing import List, Optional
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, status
+import uuid
+from datetime import datetime, timezone
+from urllib.parse import parse_qs, urlparse
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
+from sqlalchemy import delete, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
-from sqlalchemy import or_, delete, update
 
-from datetime import datetime, timezone
-import json
+from app.core.cache import ttl_cache
 from app.core.config import settings
 from app.core.database import get_db
-from app.core.security import get_current_user, require_roles, get_optional_current_user
+from app.core.security import get_current_user, get_optional_current_user, require_roles
 from app.models.models import (
-    Course, Enrollment, User, CommunityChannel, CommunityMessage, Module, Topic,
-    ModuleResource, StudentBadge, Exam, ExamQuestion, ExamSubmission, CourseRating, TopicRating,
-    StudentActivityLog, Document, Quiz, QuizQuestion, StudentQuizAttempt, StudentConceptRetention,
-    LearningPod, PodMessage, PodBlacklist, Assignment, AssignmentSubmission,
-    StudentSkillMastery, CurriculumAuditReport
+    Assignment,
+    AssignmentSubmission,
+    CommunityChannel,
+    CommunityMessage,
+    Course,
+    CourseRating,
+    CurriculumAuditReport,
+    Document,
+    Enrollment,
+    Exam,
+    ExamQuestion,
+    ExamSubmission,
+    LearningPod,
+    Module,
+    ModuleResource,
+    PodBlacklist,
+    PodMessage,
+    Quiz,
+    QuizQuestion,
+    StudentActivityLog,
+    StudentBadge,
+    StudentConceptRetention,
+    StudentQuizAttempt,
+    StudentSkillMastery,
+    Topic,
+    TopicRating,
+    User,
 )
 from app.schemas.schemas import (
-    CourseCreate, CourseResponse, CourseHierarchyResponse,
-    ModuleCreate, ModuleResponse, ModuleUpdate,
-    TopicCreate, TopicResponse, TopicUpdate,
-    ModuleResourceResponse, StudentBadgeResponse,
-    RAGMCQGenerateRequest, RAGMCQGenerateResponse,
-    ModuleExamCreateRequest, ExamResponse, ExamQuestionSchema,
-    TabsSummaryResponse, TabsSummaryCourse, TabsSummaryModule,
-    CourseExploreItem, CourseRatingCreate, CourseRatingResponse,
-    CourseRatingsSummary, TopicRatingCreate, TopicRatingResponse, TopicRatingSummary
+    CourseCreate,
+    CourseExploreItem,
+    CourseHierarchyResponse,
+    CourseRatingCreate,
+    CourseRatingResponse,
+    CourseRatingsSummary,
+    CourseResponse,
+    ExamResponse,
+    ModuleCreate,
+    ModuleExamCreateRequest,
+    ModuleResourceResponse,
+    ModuleResponse,
+    ModuleUpdate,
+    RAGMCQGenerateRequest,
+    RAGMCQGenerateResponse,
+    TabsSummaryCourse,
+    TabsSummaryModule,
+    TabsSummaryResponse,
+    TopicCompleteRequest,
+    TopicCompleteResponse,
+    TopicCreate,
+    TopicRatingCreate,
+    TopicRatingResponse,
+    TopicRatingSummary,
+    TopicResponse,
+    TopicUpdate,
 )
-from app.services.ingestion_service import ingestion_service
-from app.services.exam_service import exam_service
 from app.services.chroma_service import chroma_service
+from app.services.exam_service import exam_service
+from app.services.ingestion_service import ingestion_service
 
 logger = logging.getLogger("cognipath.courses")
 
 router = APIRouter(prefix="/courses", tags=["Courses & Hierarchical Content Delivery"])
 module_router = APIRouter(tags=["Module End Assessments"])
 
-def extract_youtube_video_id(url: str) -> str:
-    """Extract standard 11-character YouTube video ID from various link formats."""
+def extract_youtube_video_id(url: str | None) -> str | None:
+    """Extract standard 11-character YouTube video ID from supported YouTube link formats.
+    Returns None if the URL is invalid, unsupported, or from an unauthorized domain.
+    Never returns a hardcoded fallback.
+    """
     if not url:
-        return "qH6clASSS54"
-    patterns = [
-        r'(?:v=|\/embed\/|\/watch\?v=|\.be\/|\/v\/)([0-9A-Za-z_-]{11})',
-        r'^([0-9A-Za-z_-]{11})$'
-    ]
-    for p in patterns:
-        m = re.search(p, url.strip())
-        if m:
-            return m.group(1)
-    return "qH6clASSS54"
+        return None
+    url_str = str(url).strip()
+    if not url_str:
+        return None
+
+    # Bare 11-character video ID
+    if re.fullmatch(r"[0-9A-Za-z_-]{11}", url_str):
+        return url_str
+
+    parse_url = url_str
+    if not parse_url.startswith(("http://", "https://")):
+        parse_url = "https://" + parse_url
+
+    try:
+        parsed = urlparse(parse_url)
+    except Exception:
+        return None
+
+    hostname = (parsed.hostname or "").lower()
+    allowed_domains = {
+        "youtube.com",
+        "www.youtube.com",
+        "m.youtube.com",
+        "music.youtube.com",
+        "youtube-nocookie.com",
+        "www.youtube-nocookie.com",
+        "youtu.be"
+    }
+
+    if hostname not in allowed_domains:
+        return None
+
+    # Handle youtu.be/<id>
+    if hostname == "youtu.be":
+        path_parts = parsed.path.strip("/").split("/")
+        if path_parts and re.fullmatch(r"[0-9A-Za-z_-]{11}", path_parts[0]):
+            return path_parts[0]
+        return None
+
+    # Handle youtube.com/watch?v=<id>
+    if parsed.path in ("/watch", "/watch/"):
+        query_params = parse_qs(parsed.query)
+        v_list = query_params.get("v")
+        if v_list and len(v_list) > 0:
+            vid = v_list[0]
+            if re.fullmatch(r"[0-9A-Za-z_-]{11}", vid):
+                return vid
+
+    # Handle /embed/<id>, /shorts/<id>, or /v/<id>
+    path_match = re.match(r"^/(?:embed|shorts|v)/([0-9A-Za-z_-]{11})(?:/|$)", parsed.path)
+    if path_match:
+        return path_match.group(1)
+
+    return None
+
+
+def invalidate_course_hierarchy_cache(course_id: int):
+    """Invalidates all cached role variants of course hierarchy."""
+    ttl_cache.invalidate(f"hierarchy_{course_id}")
+    ttl_cache.invalidate(f"hierarchy_{course_id}_educator")
+    ttl_cache.invalidate(f"hierarchy_{course_id}_student")
 
 
 async def _check_course_ownership(course_id: int, current_user: User, db: AsyncSession):
@@ -61,8 +157,16 @@ async def _check_course_ownership(course_id: int, current_user: User, db: AsyncS
     course = course_res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
-    if course.educator_id != current_user.id and current_user.role != 'ADMIN':
-        raise HTTPException(status_code=403, detail="Not authorized to modify this course")
+
+    is_owner = (course.educator_id == current_user.id)
+    if not is_owner and course.educator_id and current_user.email:
+        ed_res = await db.execute(select(User).where(User.id == course.educator_id))
+        ed_user = ed_res.scalars().first()
+        if ed_user and ed_user.email and ed_user.email.strip().lower() == current_user.email.strip().lower():
+            is_owner = True
+
+    if not is_owner and current_user.role != "ADMIN":
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the educator who created this course can modify or delete it.")
     return course
 
 
@@ -71,10 +175,11 @@ async def _check_course_ownership(course_id: int, current_user: User, db: AsyncS
 # ==============================================================================
 
 async def get_course_rating_stats(course: Course, db: AsyncSession):
-    """Calculates creator name, aggregated star rating, and review count."""
+    """Calculates creator name, creator email, aggregated star rating, and review count."""
     educator_res = await db.execute(select(User).where(User.id == course.educator_id))
     educator = educator_res.scalars().first()
     educator_name = educator.full_name if educator else "Prof. Rajesh Ramanujan"
+    educator_email = educator.email if educator else None
 
     c_ratings_res = await db.execute(select(CourseRating).where(CourseRating.course_id == course.id))
     c_ratings = c_ratings_res.scalars().all()
@@ -97,9 +202,9 @@ async def get_course_rating_stats(course: Course, db: AsyncSession):
         avg_rating = 0.0
         total_count = 0
 
-    return educator_name, avg_rating, total_count
+    return educator_name, educator_email, avg_rating, total_count
 
-async def get_course_ratings_summary(course_id: int, user_id: Optional[int], db: AsyncSession):
+async def get_course_ratings_summary(course_id: int, user_id: int | None, db: AsyncSession):
     """Summarizes course reviews and current user rating."""
     ratings_res = await db.execute(
         select(CourseRating).where(CourseRating.course_id == course_id).order_by(CourseRating.created_at.desc())
@@ -133,8 +238,8 @@ async def get_course_ratings_summary(course_id: int, user_id: Optional[int], db:
         avg = round(sum(r.rating for r in all_ratings) / len(all_ratings), 1)
         cnt = len(all_ratings)
     else:
-        avg = 4.9
-        cnt = 12
+        avg = 0.0
+        cnt = 0
 
     return CourseRatingsSummary(
         course_id=course_id,
@@ -145,12 +250,12 @@ async def get_course_ratings_summary(course_id: int, user_id: Optional[int], db:
         reviews=reviews_out
     )
 
-@router.get("/explore", response_model=List[CourseExploreItem])
+@router.get("/explore", response_model=list[CourseExploreItem])
 async def explore_courses(
-    q: Optional[str] = None,
-    category: Optional[str] = None,
+    q: str | None = None,
+    category: str | None = None,
     sort_by: str = "rating",  # "rating" | "popular" | "newest"
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -168,7 +273,7 @@ async def explore_courses(
 
     items = []
     for c in all_courses:
-        educator_name, avg_rating, total_count = await get_course_rating_stats(c, db)
+        educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(c, db)
 
         # Count modules and topics
         mod_res = await db.execute(select(Module).where(Module.course_id == c.id))
@@ -180,27 +285,29 @@ async def explore_courses(
         )
         topics_count = len(t_count_res.scalars().all())
 
-        # Category Filter
-        if category and category.lower() != "all":
-            if c.category.lower() != category.lower():
+        # Category Filter (null-safe)
+        cat_val = (c.category or "").strip()
+        if category and category.strip().lower() != "all":
+            if cat_val.lower() != category.strip().lower():
                 continue
 
-        # Text Query Search (Title, Code, Description, Category, Creator Name)
+        # Text Query Search (Title, Code, Description, Category, Creator Name, Creator Email)
         if q and q.strip():
             query_str = q.strip().lower()
             matches = (
-                query_str in c.title.lower() or
+                query_str in (c.title or "").lower() or
                 query_str in (c.code or "").lower() or
                 query_str in (c.description or "").lower() or
                 query_str in (c.category or "").lower() or
-                query_str in educator_name.lower()
+                query_str in (educator_name or "").lower() or
+                query_str in (educator_email or "").lower()
             )
             if not matches:
                 continue
 
         items.append(CourseExploreItem(
             id=c.id,
-            title=c.title,
+            title=c.title or "Untitled Course",
             code=c.code or "CS101",
             description=c.description,
             category=c.category or "Computer Science",
@@ -208,6 +315,7 @@ async def explore_courses(
             thumbnail_url=c.thumbnail_url,
             educator_id=c.educator_id,
             educator_name=educator_name,
+            educator_email=educator_email,
             average_rating=avg_rating,
             total_ratings=total_count,
             modules_count=modules_count,
@@ -226,14 +334,14 @@ async def explore_courses(
 
     return items
 
-@router.get("/enrolled", response_model=List[CourseResponse])
-@router.get("/my-courses", response_model=List[CourseResponse])
+@router.get("/enrolled", response_model=list[CourseResponse])
+@router.get("/my-courses", response_model=list[CourseResponse])
 async def get_enrolled_courses(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve ONLY courses the logged-in student has enrolled in (or educator has created/enrolled in)."""
-    if current_user.role == "EDUCATOR":
+    if current_user.role in ("EDUCATOR", "ADMIN"):
         res = await db.execute(
             select(Course).where(
                 or_(
@@ -255,7 +363,7 @@ async def get_enrolled_courses(
 
     out = []
     for c in courses:
-        educator_name, avg_rating, total_count = await get_course_rating_stats(c, db)
+        educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(c, db)
 
         # Get student's personal completion percentage for this course
         enr_res = await db.execute(
@@ -265,7 +373,7 @@ async def get_enrolled_courses(
             )
         )
         enr = enr_res.scalars().first()
-        prog = enr.completion_percentage if enr else (100.0 if current_user.role == "EDUCATOR" and c.educator_id == current_user.id else 0.0)
+        prog = enr.completion_percentage if enr else (100.0 if current_user.role in ("EDUCATOR", "ADMIN") and c.educator_id == current_user.id else 0.0)
 
         # Find first topic as next topic
         next_t_title = "Overview & Introduction"
@@ -288,6 +396,7 @@ async def get_enrolled_courses(
             thumbnail_url=c.thumbnail_url,
             educator_id=c.educator_id,
             educator_name=educator_name,
+            educator_email=educator_email,
             average_rating=avg_rating,
             total_ratings=total_count,
             progress_percentage=prog,
@@ -297,10 +406,10 @@ async def get_enrolled_courses(
         ))
     return out
 
-@router.get("", response_model=List[CourseResponse])
+@router.get("", response_model=list[CourseResponse])
 async def list_courses(
     enrolled_only: bool = False,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """List courses with enriched creator name, star ratings, and student enrollment flag."""
@@ -310,7 +419,7 @@ async def list_courses(
             select(Enrollment.course_id).where(Enrollment.user_id == current_user.id)
         )
         enrolled_ids = set(enr_res.scalars().all())
-        if current_user.role == "EDUCATOR":
+        if current_user.role in ("EDUCATOR", "ADMIN"):
             c_res = await db.execute(select(Course.id).where(Course.educator_id == current_user.id))
             enrolled_ids.update(c_res.scalars().all())
 
@@ -322,7 +431,7 @@ async def list_courses(
     courses = result.scalars().all()
     out = []
     for c in courses:
-        educator_name, avg_rating, total_count = await get_course_rating_stats(c, db)
+        educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(c, db)
         is_enr = c.id in enrolled_ids
         
         # Get progress if enrolled
@@ -348,6 +457,7 @@ async def list_courses(
             thumbnail_url=c.thumbnail_url,
             educator_id=c.educator_id,
             educator_name=educator_name,
+            educator_email=educator_email,
             average_rating=avg_rating,
             total_ratings=total_count,
             progress_percentage=prog,
@@ -363,17 +473,17 @@ async def create_course(
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new course with difficulty, thumbnail, and auto-provisioned community channels."""
-    existing = await db.execute(select(Course).where(Course.code == course_in.code))
+    """Create a new course with difficulty, thumbnail, auto-provisioned community channels, and atomic nested curriculum."""
+    code_candidate = (course_in.code or "").strip()
+    if not code_candidate:
+        code_candidate = f"CP{uuid.uuid4().hex[:6].upper()}"
+    existing = await db.execute(select(Course).where(Course.code == code_candidate))
     if existing.scalars().first():
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="A course with this code already exists."
-        )
+        code_candidate = f"{code_candidate}-{uuid.uuid4().hex[:4].upper()}"
 
     new_course = Course(
         title=course_in.title,
-        code=course_in.code,
+        code=code_candidate,
         description=course_in.description,
         category=course_in.category or "Computer Science",
         difficulty=course_in.difficulty or "Intermediate",
@@ -381,8 +491,7 @@ async def create_course(
         educator_id=current_user.id
     )
     db.add(new_course)
-    await db.commit()
-    await db.refresh(new_course)
+    await db.flush()
 
     # Automatically provision native community channels for this course
     channels = [
@@ -391,9 +500,48 @@ async def create_course(
         CommunityChannel(course_id=new_course.id, name="exam-prep", description="Collaborative revision, mock questions, and notes"),
     ]
     db.add_all(channels)
+
+    # Atomically provision nested modules and topics if provided
+    if course_in.modules:
+        for m_idx, mod_in in enumerate(course_in.modules):
+            if not mod_in.title or not mod_in.title.strip():
+                continue
+            module_obj = Module(
+                course_id=new_course.id,
+                title=mod_in.title.strip(),
+                description=mod_in.description.strip() if mod_in.description else f"Module {m_idx + 1} syllabus.",
+                order_index=m_idx + 1,
+                has_module_exam=bool(mod_in.has_module_exam)
+            )
+            db.add(module_obj)
+            await db.flush()
+
+            if mod_in.topics:
+                for t_idx, top_in in enumerate(mod_in.topics):
+                    if not top_in.title or not top_in.title.strip():
+                        continue
+                    yt_url = (top_in.youtube_url or "").strip()
+                    vid_id = extract_youtube_video_id(yt_url)
+                    if not vid_id:
+                        vid_id = "dQw4w9WgXcQ" if not yt_url else extract_youtube_video_id(yt_url)
+                    if not vid_id:
+                        vid_id = "qH6clASSS54"
+                    topic_obj = Topic(
+                        module_id=module_obj.id,
+                        title=top_in.title.strip(),
+                        description=top_in.description.strip() if top_in.description else "Video lecture and conceptual walkthrough.",
+                        youtube_url=yt_url or f"https://www.youtube.com/watch?v={vid_id}",
+                        youtube_video_id=vid_id,
+                        order_index=t_idx + 1
+                    )
+                    db.add(topic_obj)
+
     await db.commit()
+    await db.refresh(new_course)
+    invalidate_course_hierarchy_cache(new_course.id)
 
     educator_name = current_user.full_name or "Prof. Rajesh Ramanujan"
+    educator_email = current_user.email
     return CourseResponse(
         id=new_course.id,
         title=new_course.title,
@@ -404,6 +552,7 @@ async def create_course(
         thumbnail_url=new_course.thumbnail_url,
         educator_id=new_course.educator_id,
         educator_name=educator_name,
+        educator_email=educator_email,
         average_rating=5.0,
         total_ratings=0,
         created_at=new_course.created_at
@@ -479,7 +628,7 @@ async def rate_topic(
 @router.get("/topics/{topic_id}/ratings", response_model=TopicRatingSummary)
 async def get_topic_ratings(
     topic_id: int,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Get rating summary and current user rating for a topic."""
@@ -502,8 +651,8 @@ async def get_topic_ratings(
         avg = round(sum(r.rating for r in all_ratings) / len(all_ratings), 1)
         cnt = len(all_ratings)
     else:
-        avg = 4.9
-        cnt = 8
+        avg = 0.0
+        cnt = 0
 
     return TopicRatingSummary(
         topic_id=topic_id,
@@ -518,14 +667,18 @@ async def get_topic_ratings(
 # ==============================================================================
 
 @router.get("/{course_id}", response_model=CourseResponse)
-async def get_course(course_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def get_course(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Get single course basic details enriched with creator name and star ratings."""
     result = await db.execute(select(Course).where(Course.id == course_id))
     course = result.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    educator_name, avg_rating, total_count = await get_course_rating_stats(course, db)
+    educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(course, db)
     return CourseResponse(
         id=course.id,
         title=course.title,
@@ -536,6 +689,7 @@ async def get_course(course_id: int, db: AsyncSession = Depends(get_db), current
         thumbnail_url=course.thumbnail_url,
         educator_id=course.educator_id,
         educator_name=educator_name,
+        educator_email=educator_email,
         average_rating=avg_rating,
         total_ratings=total_count,
         created_at=course.created_at
@@ -606,7 +760,7 @@ async def rate_course(
 @router.get("/{course_id}/ratings", response_model=CourseRatingsSummary)
 async def get_course_ratings(
     course_id: int,
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """Retrieve full reviews and star rating distribution for a course."""
@@ -620,12 +774,23 @@ async def get_course_ratings(
 
 
 @router.get("/{course_id}/hierarchy", response_model=CourseHierarchyResponse)
-async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+async def get_course_hierarchy(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
     """Get complete hierarchical syllabus: Course -> Modules -> Topics & View-Only PDF Resources."""
     res = await db.execute(select(Course).where(Course.id == course_id))
     course = res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
+
+    is_educator = (current_user.role == "ADMIN" or (current_user.role == "EDUCATOR" and course.educator_id == current_user.id))
+    cache_role = "educator" if is_educator else "student"
+    cache_key = f"hierarchy_{course_id}_{cache_role}"
+    cached = ttl_cache.get(cache_key)
+    if cached:
+        return cached
 
     # Fetch modules ordered by order_index
     m_res = await db.execute(
@@ -700,16 +865,16 @@ async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db
                     "question_type": q.question_type,
                     "question_text": q.question_text,
                     "options": json.loads(q.options) if isinstance(q.options, str) else q.options,
-                    "correct_answer": q.correct_answer,
-                    "explanation": q.explanation,
-                    "source_ref": q.source_ref,
+                    "correct_answer": q.correct_answer if is_educator else None,
+                    "explanation": q.explanation if is_educator else None,
+                    "source_ref": q.source_ref if is_educator else None,
                     "order_index": q.order_index
                 }
                 for q in fe_questions
             ]
         }
 
-    return CourseHierarchyResponse(
+    response = CourseHierarchyResponse(
         id=course.id,
         title=course.title,
         code=course.code,
@@ -722,6 +887,8 @@ async def get_course_hierarchy(course_id: int, db: AsyncSession = Depends(get_db
         modules=module_responses,
         final_exam=final_exam_data
     )
+    ttl_cache.set(cache_key, response)
+    return response
 
 
 @router.post("/{course_id}/enroll")
@@ -784,17 +951,7 @@ async def delete_course_permanently(
     assessments, Chroma vectors, and associated resources.
     Requires user to be the course creator (educator) or ADMIN.
     """
-    c_res = await db.execute(select(Course).where(Course.id == course_id))
-    course = c_res.scalars().first()
-    if not course:
-        raise HTTPException(status_code=404, detail="Course not found")
-
-    # Only creator or ADMIN can permanently delete
-    if current_user.role != "ADMIN" and course.educator_id != current_user.id:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Only the educator who created this course can permanently delete it."
-        )
+    course = await _check_course_ownership(course_id, current_user, db)
 
     # 0. Break circular foreign key on module_exam_id before deleting exams/modules
     await db.execute(
@@ -864,6 +1021,7 @@ async def delete_course_permanently(
     # 7. Delete course itself
     await db.delete(course)
     await db.commit()
+    invalidate_course_hierarchy_cache(course_id)
 
     # 8. Clean up Chroma vector store
     try:
@@ -904,6 +1062,7 @@ async def create_module(
     db.add(module)
     await db.commit()
     await db.refresh(module)
+    invalidate_course_hierarchy_cache(course_id)
 
     return ModuleResponse(
         id=module.id,
@@ -932,6 +1091,8 @@ async def update_module(
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
+    await _check_course_ownership(module.course_id, current_user, db)
+
     if req.title is not None:
         module.title = req.title
     if req.description is not None:
@@ -945,6 +1106,7 @@ async def update_module(
 
     await db.commit()
     await db.refresh(module)
+    invalidate_course_hierarchy_cache(module.course_id)
 
     t_res = await db.execute(select(Topic).where(Topic.module_id == module.id).order_by(Topic.order_index.asc()))
     r_res = await db.execute(select(ModuleResource).where(ModuleResource.module_id == module.id))
@@ -975,8 +1137,12 @@ async def delete_module(
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
+    await _check_course_ownership(module.course_id, current_user, db)
+    course_id_to_invalidate = module.course_id
+
     await db.delete(module)
     await db.commit()
+    invalidate_course_hierarchy_cache(course_id_to_invalidate)
     return {"status": "success", "message": "Module deleted successfully"}
 
 
@@ -993,13 +1159,21 @@ async def create_topic(
 ):
     """Educator adds a topic concept inside a module with automated YouTube ID parsing."""
     mod_res = await db.execute(select(Module).where(Module.id == module_id))
-    if not mod_res.scalars().first():
+    module = mod_res.scalars().first()
+    if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     count_res = await db.execute(select(Topic).where(Topic.module_id == module_id))
     existing_count = len(count_res.scalars().all())
 
     video_id = extract_youtube_video_id(req.youtube_url)
+    if not video_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid YouTube URL. Please provide a valid YouTube watch, embed, shorts, or youtu.be link."
+        )
 
     topic = Topic(
         module_id=module_id,
@@ -1012,6 +1186,7 @@ async def create_topic(
     db.add(topic)
     await db.commit()
     await db.refresh(topic)
+    invalidate_course_hierarchy_cache(module.course_id)
 
     return TopicResponse.model_validate(topic)
 
@@ -1029,6 +1204,11 @@ async def update_topic(
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
 
+    mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
+    module = mod_res.scalars().first()
+    if module:
+        await _check_course_ownership(module.course_id, current_user, db)
+
     if req.title is not None:
         topic.title = req.title
     if req.description is not None:
@@ -1036,11 +1216,19 @@ async def update_topic(
     if req.order_index is not None:
         topic.order_index = req.order_index
     if req.youtube_url is not None:
+        video_id = extract_youtube_video_id(req.youtube_url)
+        if not video_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid YouTube URL. Please provide a valid YouTube watch, embed, shorts, or youtu.be link."
+            )
         topic.youtube_url = req.youtube_url
-        topic.youtube_video_id = extract_youtube_video_id(req.youtube_url)
+        topic.youtube_video_id = video_id
 
     await db.commit()
     await db.refresh(topic)
+    if module:
+        invalidate_course_hierarchy_cache(module.course_id)
     return TopicResponse.model_validate(topic)
 
 
@@ -1056,8 +1244,16 @@ async def delete_topic(
     if not topic:
         raise HTTPException(status_code=404, detail="Topic not found")
 
+    mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
+    module = mod_res.scalars().first()
+    if module:
+        await _check_course_ownership(module.course_id, current_user, db)
+    target_course_id = module.course_id if module else None
+
     await db.delete(topic)
     await db.commit()
+    if target_course_id:
+        invalidate_course_hierarchy_cache(target_course_id)
     return {"status": "success", "message": "Topic deleted successfully"}
 
 
@@ -1078,6 +1274,8 @@ async def upload_module_resource(
     module = mod_res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     filename = file.filename
     ext = os.path.splitext(filename)[1].lower().replace(".", "")
@@ -1116,6 +1314,7 @@ async def upload_module_resource(
     db.add(resource)
     await db.commit()
     await db.refresh(resource)
+    invalidate_course_hierarchy_cache(module.course_id)
 
     return ModuleResourceResponse.model_validate(resource)
 
@@ -1123,14 +1322,31 @@ async def upload_module_resource(
 @router.get("/resources/{resource_id}/view")
 async def view_module_resource(
     resource_id: int,
-    db: AsyncSession = Depends(get_db),
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
 ):
     """Secure endpoint streaming PDF bytes for in-browser canvas rendering with watermarks."""
     res = await db.execute(select(ModuleResource).where(ModuleResource.id == resource_id))
     resource = res.scalars().first()
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
+        
+    # Check course enrollment or ownership
+    mod_res = await db.execute(select(Module).where(Module.id == resource.module_id))
+    module = mod_res.scalars().first()
+    if module:
+        course_res = await db.execute(select(Course).where(Course.id == module.course_id))
+        course = course_res.scalars().first()
+        if course:
+            if course.educator_id != current_user.id and current_user.role != "ADMIN":
+                enr_res = await db.execute(
+                    select(Enrollment).where(
+                        Enrollment.user_id == current_user.id,
+                        Enrollment.course_id == course.id
+                    )
+                )
+                if not enr_res.scalars().first():
+                    raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Not enrolled in this course")
 
     file_name = os.path.basename(resource.file_url)
     disk_path = os.path.join(settings.UPLOAD_DIR, file_name)
@@ -1190,7 +1406,7 @@ async def verify_badge(
         "difficulty_level": badge.difficulty_level,
         "issued_at": badge.issued_at.isoformat(),
         "student_name": student.full_name if student else "Enrolled Student",
-        "student_email": f"{student.email[:3]}***@{student.email.split('@')[1]}" if student and "@" in student.email else "",
+        "student_email": f"{student.email[:3]}***@{student.email.split('@')[1]}" if student and '@' in student.email else "",
         "course_title": course.title if course else "COGNIPATH Verified Track",
         "course_code": course.code if course else "CP101",
         "verification_hash": badge.verification_hash,
@@ -1207,7 +1423,7 @@ async def verify_badge(
 async def generate_module_exam_rag(
     module_id: int,
     req: RAGMCQGenerateRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1219,6 +1435,8 @@ async def generate_module_exam_rag(
     module = mod_res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
+
+    await _check_course_ownership(module.course_id, current_user, db)
 
     course_id = req.course_id or module.course_id
 
@@ -1256,6 +1474,8 @@ async def save_module_exam(
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
+    await _check_course_ownership(module.course_id, current_user, db)
+
     exam = Exam(
         course_id=module.course_id,
         module_id=module.id,
@@ -1289,6 +1509,7 @@ async def save_module_exam(
     module.module_exam_id = exam.id
     await db.commit()
     await db.refresh(module)
+    invalidate_course_hierarchy_cache(module.course_id)
 
     # Fetch and return full exam details
     from app.api.v1.exams import get_exam_details
@@ -1298,7 +1519,7 @@ async def save_module_exam(
 @router.get("/tabs-summary", response_model=TabsSummaryResponse)
 @module_router.get("/user/courses/tabs-summary", response_model=TabsSummaryResponse)
 async def get_tabs_summary(
-    current_user: Optional[User] = Depends(get_optional_current_user),
+    current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
@@ -1343,4 +1564,177 @@ async def get_tabs_summary(
         ))
 
     return TabsSummaryResponse(courses=tabs_courses)
+
+
+# ==============================================================================
+# TOPIC COMPLETION & PROGRESS TRACKING ENDPOINTS
+# ==============================================================================
+
+@router.post("/topics/{topic_id}/complete", response_model=TopicCompleteResponse)
+@module_router.post("/topics/{topic_id}/complete", response_model=TopicCompleteResponse)
+async def complete_topic(
+    topic_id: int,
+    req: TopicCompleteRequest = TopicCompleteRequest(),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Marks a topic as completed (or uncompleted) for the current student, updates course completion %."""
+    top_res = await db.execute(select(Topic).where(Topic.id == topic_id))
+    topic = top_res.scalars().first()
+    if not topic:
+        raise HTTPException(status_code=404, detail="Topic not found")
+
+    mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
+    module = mod_res.scalars().first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Parent module not found")
+
+    course_id = module.course_id
+
+    # Ensure enrollment exists for progress tracking
+    enr_res = await db.execute(
+        select(Enrollment).where(
+            Enrollment.user_id == current_user.id,
+            Enrollment.course_id == course_id
+        )
+    )
+    enrollment = enr_res.scalars().first()
+    if not enrollment:
+        enrollment = Enrollment(user_id=current_user.id, course_id=course_id, completion_percentage=0.0)
+        db.add(enrollment)
+        await db.flush()
+
+    # Query existing activity logs for this topic
+    log_res = await db.execute(
+        select(StudentActivityLog).where(
+            StudentActivityLog.user_id == current_user.id,
+            StudentActivityLog.course_id == course_id,
+            StudentActivityLog.action_type == "TOPIC_COMPLETE"
+        )
+    )
+    existing_logs = log_res.scalars().all()
+
+    target_log = None
+    for l in existing_logs:
+        if l.query_text == str(topic_id):
+            target_log = l
+            break
+        if l.metadata_info:
+            try:
+                meta = json.loads(l.metadata_info)
+                if meta.get("topic_id") == topic_id:
+                    target_log = l
+                    break
+            except Exception:
+                pass
+
+    if not req.is_completed:
+        if target_log:
+            await db.delete(target_log)
+            await db.flush()
+    else:
+        if not target_log:
+            new_log = StudentActivityLog(
+                user_id=current_user.id,
+                course_id=course_id,
+                action_type="TOPIC_COMPLETE",
+                activity_type="PROGRESS",
+                query_text=str(topic_id),
+                metadata_info=json.dumps({"topic_id": topic_id, "title": topic.title})
+            )
+            db.add(new_log)
+            await db.flush()
+
+    # Calculate overall completion percentage for the course
+    course_mods_res = await db.execute(select(Module.id).where(Module.course_id == course_id))
+    course_mod_ids = course_mods_res.scalars().all()
+
+    course_topics_res = await db.execute(select(Topic.id).where(Topic.module_id.in_(course_mod_ids)))
+    course_topic_ids = set(course_topics_res.scalars().all())
+    total_topics_count = len(course_topic_ids)
+
+    # Re-fetch active completed topic logs
+    active_logs_res = await db.execute(
+        select(StudentActivityLog).where(
+            StudentActivityLog.user_id == current_user.id,
+            StudentActivityLog.course_id == course_id,
+            StudentActivityLog.action_type == "TOPIC_COMPLETE"
+        )
+    )
+    active_logs = active_logs_res.scalars().all()
+
+    completed_topic_ids = []
+    for l in active_logs:
+        try:
+            tid = int(l.query_text) if l.query_text and l.query_text.isdigit() else None
+            if not tid and l.metadata_info:
+                meta = json.loads(l.metadata_info)
+                tid = meta.get("topic_id")
+            if tid and tid in course_topic_ids and tid not in completed_topic_ids:
+                completed_topic_ids.append(tid)
+        except Exception:
+            pass
+
+    completion_pct = round((len(completed_topic_ids) / max(1, total_topics_count)) * 100.0, 1)
+    enrollment.completion_percentage = completion_pct
+    await db.commit()
+
+    return TopicCompleteResponse(
+        status="success",
+        topic_id=topic_id,
+        is_completed=req.is_completed,
+        completion_percentage=completion_pct,
+        completed_topic_ids=completed_topic_ids
+    )
+
+
+@router.get("/{course_id}/completed-topics")
+async def get_completed_topics(
+    course_id: int,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Returns all completed topic IDs for the current user and their completion %."""
+    course_mods_res = await db.execute(select(Module.id).where(Module.course_id == course_id))
+    course_mod_ids = course_mods_res.scalars().all()
+
+    course_topics_res = await db.execute(select(Topic.id).where(Topic.module_id.in_(course_mod_ids)))
+    course_topic_ids = set(course_topics_res.scalars().all())
+
+    logs_res = await db.execute(
+        select(StudentActivityLog).where(
+            StudentActivityLog.user_id == current_user.id,
+            StudentActivityLog.course_id == course_id,
+            StudentActivityLog.action_type == "TOPIC_COMPLETE"
+        )
+    )
+    logs = logs_res.scalars().all()
+
+    completed_topic_ids = []
+    for l in logs:
+        try:
+            tid = int(l.query_text) if l.query_text and l.query_text.isdigit() else None
+            if not tid and l.metadata_info:
+                meta = json.loads(l.metadata_info)
+                tid = meta.get("topic_id")
+            if tid and tid in course_topic_ids and tid not in completed_topic_ids:
+                completed_topic_ids.append(tid)
+        except Exception:
+            pass
+
+    enr_res = await db.execute(
+        select(Enrollment).where(
+            Enrollment.user_id == current_user.id,
+            Enrollment.course_id == course_id
+        )
+    )
+    enrollment = enr_res.scalars().first()
+    completion_pct = enrollment.completion_percentage if enrollment else round((len(completed_topic_ids) / max(1, len(course_topic_ids))) * 100.0, 1)
+
+    return {
+        "course_id": course_id,
+        "completed_topic_ids": completed_topic_ids,
+        "completion_percentage": completion_pct
+    }
+
 

@@ -4,18 +4,30 @@ import hashlib
 import logging
 import uuid
 from datetime import datetime, timezone
-from typing import List, Dict, Any, Optional
+from typing import Optional, List, Any
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
+from app.core.config import settings
 from app.models.models import (
-    Exam, ExamQuestion, ExamSubmission, StudentBadge, Course, Module, Topic, ModuleResource, User
+    Course,
+    Exam,
+    ExamQuestion,
+    ExamSubmission,
+    Module,
+    ModuleResource,
+    StudentBadge,
+    Topic,
+    User,
 )
 from app.schemas.schemas import (
-    AISuggestionItem, ExamSubmitItem, ExamSubmitResponse, ExamQuestionSchema, RAGMCQItem
+    AISuggestionItem,
+    ExamSubmitItem,
+    ExamSubmitResponse,
+    RAGMCQItem,
 )
 from app.services.chroma_service import chroma_service
-from app.core.config import settings
 
 logger = logging.getLogger("cognipath.exams")
 
@@ -25,7 +37,7 @@ class ExamService:
     async def generate_ai_suggestions(
         self,
         course_id: int,
-        module_id: Optional[int] = None,
+        module_id: int | None = None,
         topic: str = "Computer Science Concepts",
         count: int = 4,
         difficulty: str = "Intermediate",
@@ -103,12 +115,9 @@ Each object must have EXACTLY these fields:
                     contents=prompt
                 )
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 if isinstance(parsed, list) and len(parsed) >= 1:
                     items = []
@@ -137,10 +146,10 @@ Each object must have EXACTLY these fields:
                 question_type="MCQ",
                 question_text=f"Which core architectural principle governs the operational efficiency of {topic}?",
                 options=[
-                    f"Strict invariant preservation guaranteeing bounded logarithmic/linear search",
-                    f"Arbitrary memory mutation without structural synchronization",
-                    f"Single-threaded sequential lookups across unindexed memory arrays",
-                    f"Deprecated legacy pointer structures unsuitable for concurrent access"
+                    "Strict invariant preservation guaranteeing bounded logarithmic/linear search",
+                    "Arbitrary memory mutation without structural synchronization",
+                    "Single-threaded sequential lookups across unindexed memory arrays",
+                    "Deprecated legacy pointer structures unsuitable for concurrent access"
                 ],
                 correct_answer="0",
                 explanation=f"{topic} relies on explicit ordering invariants to bound operational complexity.",
@@ -152,7 +161,7 @@ Each object must have EXACTLY these fields:
                 question_type="SHORT_ANSWER",
                 question_text=f"Explain how pathological or skewed input sequences affect the worst-case time complexity of {topic}.",
                 options=None,
-                correct_answer=f"Skewed insertions eliminate balanced branching, causing tree or graph structures to degenerate into linear chains operating in O(N) time.",
+                correct_answer="Skewed insertions eliminate balanced branching, causing tree or graph structures to degenerate into linear chains operating in O(N) time.",
                 explanation=f"Balance preservation is essential in {topic} to prevent worst-case linear degradation.",
                 source_ref=f"{topic} Complexity Analysis, Page 3",
                 bloom_level="ANALYZE"
@@ -162,23 +171,68 @@ Each object must have EXACTLY these fields:
                 question_type="MCQ",
                 question_text=f"When applying {topic} in production distributed systems, what is the primary engineering trade-off?",
                 options=[
-                    f"Guaranteed query latency vs write-time rebalancing/synchronization overhead",
-                    f"Zero CPU memory footprint vs infinite cache invalidations",
-                    f"Unlimited throughput with complete loss of consistency",
-                    f"Eliminating all algorithmic space complexity entirely"
+                    "Guaranteed query latency vs write-time rebalancing/synchronization overhead",
+                    "Zero CPU memory footprint vs infinite cache invalidations",
+                    "Unlimited throughput with complete loss of consistency",
+                    "Eliminating all algorithmic space complexity entirely"
                 ],
                 correct_answer="0",
-                explanation=f"Rebalancing and invariant checks require constant-time pointer updates during write operations.",
+                explanation="Rebalancing and invariant checks require constant-time pointer updates during write operations.",
                 source_ref=f"{topic} Applied Engineering Guide",
                 bloom_level="APPLY"
             )
         ]
 
+def check_mcq_answer(selected: Any, correct: Any, options_raw: Any) -> bool:
+    """Robust MCQ answer checker that normalizes between 0-based indices, letters (A-E), and option text."""
+    if selected is None or correct is None:
+        return False
+    sel_str = str(selected).strip().lower()
+    cor_str = str(correct).strip().lower()
+    if sel_str == cor_str:
+        return True
+
+    letter_to_idx = {"a": "0", "b": "1", "c": "2", "d": "3", "e": "4"}
+    idx_to_letter = {"0": "a", "1": "b", "2": "c", "3": "d", "4": "e"}
+
+    # Direct letter <-> index cross-mapping
+    if letter_to_idx.get(sel_str) == cor_str or idx_to_letter.get(sel_str) == cor_str:
+        return True
+    if letter_to_idx.get(cor_str) == sel_str or idx_to_letter.get(cor_str) == sel_str:
+        return True
+
+    # Option text matching if options exist
+    if options_raw:
+        try:
+            opts = json.loads(options_raw) if isinstance(options_raw, str) else options_raw
+            if isinstance(opts, list):
+                if sel_str.isdigit():
+                    s_idx = int(sel_str)
+                    if 0 <= s_idx < len(opts) and str(opts[s_idx]).strip().lower() == cor_str:
+                        return True
+                if cor_str.isdigit():
+                    c_idx = int(cor_str)
+                    if 0 <= c_idx < len(opts) and str(opts[c_idx]).strip().lower() == sel_str:
+                        return True
+                if sel_str in letter_to_idx:
+                    s_idx = int(letter_to_idx[sel_str])
+                    if 0 <= s_idx < len(opts) and str(opts[s_idx]).strip().lower() == cor_str:
+                        return True
+                if cor_str in letter_to_idx:
+                    c_idx = int(letter_to_idx[cor_str])
+                    if 0 <= c_idx < len(opts) and str(opts[c_idx]).strip().lower() == sel_str:
+                        return True
+        except Exception:
+            pass
+
+    return False
+
+
     async def evaluate_submission(
         self,
         exam_id: int,
         student_id: int,
-        responses: List[ExamSubmitItem],
+        responses: list[ExamSubmitItem],
         db: AsyncSession
     ) -> ExamSubmitResponse:
         """Evaluates student exam submission, calculates scores, and issues verified digital badge upon completion."""
@@ -210,8 +264,7 @@ Each object must have EXACTLY these fields:
             is_correct = False
             if q.question_type == "MCQ":
                 if resp.selected_option is not None:
-                    # Compare string representations of option index
-                    is_correct = str(resp.selected_option).strip() == str(q.correct_answer).strip()
+                    is_correct = check_mcq_answer(resp.selected_option, q.correct_answer, q.options)
             else:
                 # Short Answer heuristic check
                 ans_text = (resp.short_answer or "").strip().lower()
@@ -314,11 +367,11 @@ Each object must have EXACTLY these fields:
         self,
         course_id: int,
         module_id: int,
-        topic: Optional[str] = None,
+        topic: str | None = None,
         count: int = 4,
         difficulty: str = "Intermediate",
-        db: Optional[AsyncSession] = None
-    ) -> Dict[str, Any]:
+        db: AsyncSession | None = None
+    ) -> dict[str, Any]:
         """
         RAG-Powered Module MCQ Generation:
         1. Query vector embeddings strictly filtered by module_id.
@@ -327,7 +380,7 @@ Each object must have EXACTLY these fields:
         4. Provide robust topic-aware fallback if LLM/vector store is unavailable.
         """
         sources_used = []
-        context_chunks: List[str] = []
+        context_chunks: list[str] = []
         module_title = f"Module {module_id}"
 
         # 1. Fetch DB ground truth for the module (topics, notes, title)
@@ -406,12 +459,9 @@ Each JSON object must have EXACTLY these fields:
                     contents=prompt
                 )
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 if isinstance(parsed, list) and len(parsed) >= 1:
                     questions = []

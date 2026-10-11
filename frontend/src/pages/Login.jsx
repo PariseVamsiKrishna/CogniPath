@@ -134,47 +134,49 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
     try {
       let loggedUser = null;
 
-      // 1. One-click match for standard demo accounts
-      if (emailTrim === 'student@cognipath.edu' && (pwd === 'password123' || pwd === 'password')) {
-        loggedUser = {
-          id: 2,
-          email: 'student@cognipath.edu',
-          full_name: 'Alex Kumar',
-          role: 'STUDENT',
-          university: 'Birla Institute of Technology & Science (BITS Pilani)',
-          department: 'Computer Science & Engineering (CSE)',
-          institutional_email: 'alex.2022@pilani.bits-pilani.ac.in',
-          student_year: '3rd Year',
-          profile_completed: true
-        };
-      } else if (emailTrim === 'teacher@cognipath.edu' && (pwd === 'password123' || pwd === 'password')) {
-        loggedUser = {
-          id: 1,
-          email: 'teacher@cognipath.edu',
-          full_name: 'Prof. Rajesh Ramanujan',
-          role: 'EDUCATOR',
-          university: 'Indian Institute of Technology Bombay (IIT Bombay)',
-          department: 'Computer Science & Engineering (CSE)',
-          institutional_email: 'rajesh.cs@iitb.ac.in',
-          highest_qualification: 'Ph.D. / Doctorate',
-          designation: 'Professor',
-          profile_completed: true
-        };
-      }
-
-      // 2. Attempt Backend API Login if not demo account
-      if (!loggedUser) {
-        try {
-          const data = await authAPI.login(signInEmail.trim(), pwd);
-          // Verify data is a valid JSON object, not an HTML error or redirect string
-          if (data && typeof data === 'object') {
-            const candidate = data.user || (data.email ? data : null);
-            if (candidate && candidate.email) {
-              loggedUser = { ...candidate, profile_completed: true };
+      // 1. Attempt Backend API Login for all accounts (retrieves authentic JWT token)
+      try {
+        const data = await authAPI.login(signInEmail.trim(), pwd);
+        if (data && typeof data === 'object') {
+          const candidate = data.user || (data.email ? data : null);
+          if (candidate && candidate.email) {
+            loggedUser = { ...candidate, profile_completed: true };
+            if (data.access_token) {
+              localStorage.setItem('cognipath_token', data.access_token);
             }
           }
-        } catch (apiErr) {
-          console.warn('Backend API login request returned notice:', apiErr?.message);
+        }
+      } catch (apiErr) {
+        console.warn('Backend API login request returned notice:', apiErr?.message);
+      }
+
+      // 2. Demo account fallback if backend API was unreachable
+      if (!loggedUser) {
+        if (emailTrim === 'student@cognipath.edu' && (pwd === 'password123' || pwd === 'password')) {
+          loggedUser = {
+            id: 2,
+            email: 'student@cognipath.edu',
+            full_name: 'Alex Kumar',
+            role: 'STUDENT',
+            university: 'Birla Institute of Technology & Science (BITS Pilani)',
+            department: 'Computer Science & Engineering (CSE)',
+            institutional_email: 'alex.2022@pilani.bits-pilani.ac.in',
+            student_year: '3rd Year',
+            profile_completed: true
+          };
+        } else if (emailTrim === 'teacher@cognipath.edu' && (pwd === 'password123' || pwd === 'password')) {
+          loggedUser = {
+            id: 1,
+            email: 'teacher@cognipath.edu',
+            full_name: 'Prof. Rajesh Ramanujan',
+            role: 'EDUCATOR',
+            university: 'Indian Institute of Technology Bombay (IIT Bombay)',
+            department: 'Computer Science & Engineering (CSE)',
+            institutional_email: 'rajesh.cs@iitb.ac.in',
+            highest_qualification: 'Ph.D. / Doctorate',
+            designation: 'Professor',
+            profile_completed: true
+          };
         }
       }
 
@@ -216,8 +218,9 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
       if (loggedUser) {
         setSuccess(`Welcome back, ${loggedUser.full_name || 'Learner'}! Entering platform...`);
         localStorage.setItem('cognipath_user', JSON.stringify(loggedUser));
-        if (!localStorage.getItem('cognipath_token')) {
-          localStorage.setItem('cognipath_token', 'local_jwt_' + (loggedUser.id || Date.now()));
+        const currToken = localStorage.getItem('cognipath_token');
+        if (currToken && (currToken.startsWith('local_') || currToken.startsWith('mock_'))) {
+          localStorage.removeItem('cognipath_token');
         }
         setTimeout(() => {
           onLoginSuccess(loggedUser);
@@ -318,26 +321,31 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
       const userObj = candidate && candidate.email ? { ...candidate, profile_completed: true } : localAccount;
       
       localStorage.setItem('cognipath_user', JSON.stringify(userObj));
-      if (!localStorage.getItem('cognipath_token')) {
-        localStorage.setItem('cognipath_token', 'local_jwt_' + Date.now());
+      if (regData && regData.access_token) {
+        localStorage.setItem('cognipath_token', regData.access_token);
       }
 
       setTimeout(() => {
         onLoginSuccess(userObj);
       }, 400);
     } catch (err) {
-      console.warn('Backend register notice, proceeding with local registered account:', err);
+      console.warn('Backend register error:', err);
       const detail = err.response?.data?.detail;
-      if (detail && detail.toLowerCase().includes('already registered')) {
+      if (detail && typeof detail === 'string' && (detail.toLowerCase().includes('already exists') || detail.toLowerCase().includes('already registered'))) {
         setError('This email is already registered. Please switch to the Sign In tab.');
-      } else {
-        // Graceful entry with local registered account
-        localStorage.setItem('cognipath_token', 'local_token_' + Date.now());
+      } else if (!err.response || err.message?.toLowerCase().includes('network') || err.code === 'ERR_NETWORK') {
+        // Backend API offline or cold-start: smoothly enter with the registered local account
+        console.info('Backend API offline or unreachable; activating offline-ready account session');
+        setSuccess('Account created! Entering platform...');
         localStorage.setItem('cognipath_user', JSON.stringify(localAccount));
-        setSuccess('Welcome to CogniPath! Entering your workspace...');
         setTimeout(() => {
           onLoginSuccess(localAccount);
-        }, 500);
+        }, 400);
+      } else {
+        const errMsg = typeof detail === 'string' 
+          ? detail 
+          : (err.message || 'Registration failed. Please verify your details and try again.');
+        setError(errMsg);
       }
     } finally {
       setLoading(false);
@@ -373,6 +381,9 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
       const data = await authAPI.login(demoEmail, 'password123');
       const candidate = (data && typeof data === 'object') ? (data.user || data) : null;
       if (candidate && (candidate.email || candidate.id)) {
+        if (data.access_token) {
+          localStorage.setItem('cognipath_token', data.access_token);
+        }
         localStorage.setItem('cognipath_user', JSON.stringify({ ...candidate, profile_completed: true }));
         onLoginSuccess({ ...candidate, profile_completed: true });
         return;
@@ -383,7 +394,6 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
       setLoading(false);
     }
 
-    localStorage.setItem('cognipath_token', 'mock_token_sih2026');
     localStorage.setItem('cognipath_user', JSON.stringify(mockUser));
     onLoginSuccess(mockUser);
   };

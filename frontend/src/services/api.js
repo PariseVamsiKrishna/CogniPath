@@ -1,6 +1,12 @@
 import axios from 'axios';
 
-const rawBase = (import.meta.env.VITE_API_BASE_URL || '').trim();
+const rawBase = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '').trim();
+const isProd = import.meta.env.PROD;
+
+if (isProd && !rawBase) {
+  console.error('[COGNIPATH] CRITICAL CONFIG ERROR: VITE_API_BASE_URL environment variable is not set in production! Ensure VITE_API_BASE_URL is configured on Vercel dashboard to point to your backend API URL.');
+}
+
 const cleanBase = rawBase.replace(/\/+$/, '').replace(/\/api\/v1\/?$/, '');
 const API_BASE_URL = cleanBase ? `${cleanBase}/api/v1` : '/api/v1';
 
@@ -9,76 +15,88 @@ const apiClient = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
-  timeout: 30000,
+  timeout: 60000,
 });
+
+// Ping health endpoint on load to wake up cold-start backend (e.g. Render free tier)
+try {
+  const wakeUrl = cleanBase ? `${cleanBase}/health` : '/health';
+  axios.get(wakeUrl, { timeout: 60000 }).catch(() => {
+    /* silent wake attempt */
+  });
+} catch (e) {
+  /* ignore */
+}
 
 // Request Interceptor: Attach JWT Token
 apiClient.interceptors.request.use(
   (config) => {
     const token = localStorage.getItem('cognipath_token');
     if (token) {
-      config.headers.Authorization = `Bearer ${token}`;
+      if (token.startsWith('local_') || token.startsWith('mock_')) {
+        localStorage.removeItem('cognipath_token');
+      } else {
+        config.headers.Authorization = `Bearer ${token}`;
+      }
     }
     return config;
   },
   (error) => Promise.reject(error)
 );
 
-// Response Interceptor: Handle Unauthenticated
+// Response Interceptor: Safe GET Retries for Render Cold Starts & Unauthenticated Handling
 apiClient.interceptors.response.use(
   (response) => response,
-  (error) => {
+  async (error) => {
+    const config = error.config;
+    if (config) {
+      const method = (config.method || 'get').toLowerCase();
+      const isSafeMethod = ['get', 'head', 'options'].includes(method);
+
+      // Only retry idempotent GET requests; DO NOT retry mutating requests (POST/PUT/DELETE)
+      if (isSafeMethod) {
+        config.__retryCount = config.__retryCount || 0;
+        const maxRetries = 2;
+        const isTimeoutOrNetwork = error.code === 'ECONNABORTED' || !error.response;
+        const isColdStartServerError = error.response && [502, 503, 504].includes(error.response.status);
+
+        if ((isTimeoutOrNetwork || isColdStartServerError) && config.__retryCount < maxRetries) {
+          config.__retryCount += 1;
+          const backoffMs = config.__retryCount * 1500;
+          console.warn(`[COGNIPATH API] Retrying ${config.url} (${config.__retryCount}/${maxRetries}) after ${backoffMs}ms due to: ${error.message || error.response?.status}`);
+          await new Promise((resolve) => setTimeout(resolve, backoffMs));
+          return apiClient(config);
+        }
+      }
+    }
+
     if (error.response && error.response.status === 401) {
-      localStorage.removeItem('cognipath_token');
-      localStorage.removeItem('cognipath_user');
+      console.warn('[COGNIPATH API] 401 Unauthorized encountered');
     }
     return Promise.reject(error);
   }
 );
 
+// Exports
 export const authAPI = {
-  login: async (email, password) => {
-    const res = await apiClient.post('/auth/login-json', { email, password });
-    if (res.data && res.data.access_token) {
-      localStorage.setItem('cognipath_token', res.data.access_token);
-      localStorage.setItem('cognipath_user', JSON.stringify(res.data.user || res.data));
-    }
+  login: async (emailOrCredentials, maybePassword) => {
+    const payload =
+      typeof emailOrCredentials === 'string'
+        ? { email: emailOrCredentials, password: maybePassword }
+        : emailOrCredentials;
+    const res = await apiClient.post('/auth/login-json', payload);
     return res.data;
   },
   register: async (userData) => {
     const res = await apiClient.post('/auth/register', userData);
-    if (res.data && res.data.access_token) {
-      localStorage.setItem('cognipath_token', res.data.access_token);
-      localStorage.setItem('cognipath_user', JSON.stringify(res.data.user || res.data));
-    }
     return res.data;
   },
-  getMe: async () => {
-    const res = await apiClient.get('/auth/me');
-    return res.data;
-  },
-  updateProfile: async (profileData) => {
-    try {
-      const res = await apiClient.put('/auth/profile', profileData);
-      if (res.data) {
-        localStorage.setItem('cognipath_user', JSON.stringify(res.data));
-      }
-      return res.data;
-    } catch (err) {
-      if (err.response?.status === 404 || err.response?.status === 405) {
-        const res2 = await apiClient.post('/auth/onboarding', profileData);
-        if (res2.data) {
-          localStorage.setItem('cognipath_user', JSON.stringify(res2.data));
-        }
-        return res2.data;
-      }
-      throw err;
-    }
-  },
+  getMe: () => apiClient.get('/auth/me'),
+  updateProfile: (data) => apiClient.put('/auth/profile', data),
   logout: () => {
     localStorage.removeItem('cognipath_token');
     localStorage.removeItem('cognipath_user');
-  }
+  },
 };
 
 export const coursesAPI = {
@@ -88,6 +106,10 @@ export const coursesAPI = {
   },
   getEnrolled: async () => {
     const res = await apiClient.get('/courses/enrolled');
+    return res.data;
+  },
+  getMyCourses: async () => {
+    const res = await apiClient.get('/courses/my-courses');
     return res.data;
   },
   get: async (id) => {
@@ -179,6 +201,20 @@ export const coursesAPI = {
   verifyBadge: async (hash) => {
     const res = await apiClient.get(`/courses/badges/verify/${hash}`);
     return res.data;
+  },
+  completeTopic: async (topicId, data = { is_completed: true }) => {
+    const res = await apiClient.post(`/courses/topics/${topicId}/complete`, data);
+    return res.data;
+  },
+  getCompletedTopics: async (courseId) => {
+    const res = await apiClient.get(`/courses/${courseId}/completed-topics`);
+    return res.data;
+  },
+  viewResource: async (resourceId) => {
+    const res = await apiClient.get(`/courses/resources/${resourceId}/view`, {
+      responseType: 'blob'
+    });
+    return res.data;
   }
 };
 
@@ -251,37 +287,21 @@ export const assignmentsAPI = {
 };
 
 export const documentsAPI = {
-  upload: async (formData) => {
-    const res = await apiClient.post('/documents/upload', formData, {
-      headers: { 'Content-Type': 'multipart/form-data' }
-    });
-    return res.data;
-  },
-  listByCourse: async (courseId) => {
-    const res = await apiClient.get(`/documents/course/${courseId}`);
-    return res.data;
-  }
+  upload: (formData) => apiClient.post('/documents/upload', formData, {
+    headers: { 'Content-Type': 'multipart/form-data' },
+  }),
+  list: (params) => apiClient.get('/documents', { params }),
+  delete: (id) => apiClient.delete(`/documents/${id}`),
 };
 
 export const tutorAPI = {
-  query: async ({ course_id, module_id = null, topic_id = null, query, target_language = 'en', audio_base64 = null }) => {
-    const res = await apiClient.post('/tutor/query', {
-      course_id,
-      module_id,
-      topic_id,
-      query,
-      target_language,
-      audio_base64
-    });
+  ask: (data) => apiClient.post('/tutor/query', data),
+  query: async (data) => {
+    const res = await apiClient.post('/tutor/query', data);
     return res.data;
   },
-  suggestVideo: async ({ course_id = null, module_id = null, topic, query = null }) => {
-    const res = await apiClient.post('/tutor/suggest-video', {
-      course_id,
-      module_id,
-      topic,
-      query
-    });
+  suggestVideo: async (data) => {
+    const res = await apiClient.post('/tutor/suggest-video', data);
     return res.data;
   },
   getLanguages: async () => {
@@ -310,129 +330,40 @@ export const quizzesAPI = {
 };
 
 export const analyticsAPI = {
-  getOverview: async () => {
-    const res = await apiClient.get('/analytics/educator/overview');
-    return res.data;
-  },
-  getStudentOverview: async () => {
-    const res = await apiClient.get('/analytics/student/overview');
-    return res.data;
-  },
-  getAtRiskStudents: async () => {
-    const res = await apiClient.get('/analytics/educator/at-risk');
-    return res.data;
-  },
-  intervene: async (studentId, note) => {
-    const res = await apiClient.post(`/analytics/educator/intervene/${studentId}?custom_note=${encodeURIComponent(note)}`);
-    return res.data;
-  }
+  getEducatorOverview: (courseId) => apiClient.get(`/analytics/educator/overview?course_id=${courseId}`),
+  getStudentProgress: () => apiClient.get('/analytics/student/progress'),
 };
 
 export const podsAPI = {
-  list: async (courseId) => {
-    const res = await apiClient.get(`/pods?course_id=${courseId}`);
-    return res.data;
-  },
-  create: async (data) => {
-    const res = await apiClient.post('/pods', data);
-    return res.data;
-  },
-  get: async (id) => {
-    const res = await apiClient.get(`/pods/${id}`);
-    return res.data;
-  },
-  getMessages: async (podId) => {
-    const res = await apiClient.get(`/pods/${podId}/messages`);
-    return res.data;
-  },
-  verifyPasscode: async (podId, passcode) => {
-    const res = await apiClient.post(`/pods/${podId}/verify-passcode`, { passcode });
-    return res.data;
-  },
-  getQuota: async () => {
-    const res = await apiClient.get('/pods/educator/quota');
-    return res.data;
-  },
-  endPod: async (podId, reason = 'Host terminated session') => {
-    const res = await apiClient.post(`/pods/${podId}/end`, { reason });
-    return res.data;
-  },
-  getKshetraMeta: async (code) => {
-    const res = await apiClient.get(`/pods/kshetra-meta/${encodeURIComponent(code)}`);
-    return res.data;
-  },
-  getKshetraEmbedUrl: (code) => {
-    return `/api/v1/pods/kshetra-embed/${encodeURIComponent(code)}`;
-  }
+  list: (courseId) => apiClient.get(`/pods?course_id=${courseId}`),
+  get: (id) => apiClient.get(`/pods/${id}`),
+  create: (data) => apiClient.post('/pods', data),
+  verifyPasscode: (podId, passcode) => apiClient.post(`/pods/${podId}/verify-passcode`, { passcode }),
+  getMessages: (podId) => apiClient.get(`/pods/${podId}/messages`),
+  endPod: (podId, reason) => apiClient.post(`/pods/${podId}/end`, { reason }),
+  getQuota: () => apiClient.get('/pods/educator/quota'),
 };
 
 export const communitiesAPI = {
-  listChannels: async (courseId) => {
-    const res = await apiClient.get(`/communities/courses/${courseId}/channels`);
-    return res.data;
-  },
-  listMessages: async (channelId) => {
-    const res = await apiClient.get(`/communities/channels/${channelId}/messages`);
-    return res.data;
-  },
-  postMessage: async (channelId, content) => {
-    const res = await apiClient.post(`/communities/channels/${channelId}/messages`, { content });
-    return res.data;
-  },
-  upvote: async (messageId) => {
-    const res = await apiClient.post(`/communities/messages/${messageId}/upvote`);
-    return res.data;
-  },
-  getMembers: async (courseId) => {
-    const res = await apiClient.get(`/communities/courses/${courseId}/members`);
-    return res.data;
-  },
-  kickMember: async (courseId, userId) => {
-    const res = await apiClient.delete(`/communities/courses/${courseId}/members/${userId}`);
-    return res.data;
-  },
-  closeCommunity: async (courseId) => {
-    const res = await apiClient.delete(`/communities/courses/${courseId}/close`);
-    return res.data;
-  }
+  listChannels: (courseId) => apiClient.get(`/communities/courses/${courseId}/channels`),
+  getMessages: (channelId) => apiClient.get(`/communities/channels/${channelId}/messages`),
+  postMessage: (channelId, content) => apiClient.post(`/communities/channels/${channelId}/messages`, { content }),
 };
 
 export const socraticAPI = {
-  query: async ({ course_id, query, student_attempt = null, target_language = 'en' }) => {
-    const res = await apiClient.post('/socratic/query', {
-      course_id,
-      query,
-      student_attempt,
-      target_language
-    });
-    return res.data;
-  },
-  getMindmap: async (topic) => {
-    const res = await apiClient.get(`/socratic/mindmap?topic=${encodeURIComponent(topic)}`);
-    return res.data;
-  }
+  startSession: (topic) => apiClient.post('/socratic/start', { topic }),
+  respond: (sessionId, answer) => apiClient.post(`/socratic/${sessionId}/respond`, { answer }),
 };
 
 export const roadmapAPI = {
-  get: async (courseId = 1) => {
-    const res = await apiClient.get(`/roadmap?course_id=${courseId}`);
-    return res.data;
-  },
-  completeAction: async (actionId) => {
-    const res = await apiClient.post(`/roadmap/complete-action/${actionId}`);
-    return res.data;
-  }
+  generate: (goal) => apiClient.post('/roadmap/generate', { goal }),
+  get: () => apiClient.get('/roadmap'),
 };
 
 export const curriculumAuditAPI = {
-  getAudit: async (courseId = 1) => {
-    const res = await apiClient.get(`/curriculum-audit?course_id=${courseId}`);
-    return res.data;
-  },
-  generateBloomsQuiz: async (topic = 'Binary Search Trees') => {
-    const res = await apiClient.get(`/curriculum-audit/blooms-quiz?topic=${encodeURIComponent(topic)}`);
-    return res.data;
-  }
+  audit: (courseId) => apiClient.post(`/curriculum-audit/${courseId}`),
 };
+
+
 
 export default apiClient;

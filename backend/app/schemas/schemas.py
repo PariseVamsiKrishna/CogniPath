@@ -1,6 +1,8 @@
-from pydantic import BaseModel, EmailStr, Field
-from typing import List, Optional, Dict, Any
 from datetime import datetime
+from typing import Any, Optional
+
+from pydantic import BaseModel, EmailStr, Field
+
 
 # ==========================================
 # User & Auth Schemas
@@ -9,13 +11,13 @@ class UserBase(BaseModel):
     email: EmailStr
     full_name: str
     role: str = "STUDENT"  # STUDENT, EDUCATOR, ADMIN
-    university: Optional[str] = None
-    department: Optional[str] = None
-    institutional_email: Optional[str] = None
-    student_year: Optional[str] = None
-    student_id_num: Optional[str] = None
-    highest_qualification: Optional[str] = None
-    designation: Optional[str] = None
+    university: str | None = None
+    department: str | None = None
+    institutional_email: str | None = None
+    student_year: str | None = None
+    student_id_num: str | None = None
+    highest_qualification: str | None = None
+    designation: str | None = None
     profile_completed: bool = False
 
 class UserCreate(UserBase):
@@ -27,21 +29,21 @@ class UserLogin(BaseModel):
 
 class UserProfileUpdate(BaseModel):
     full_name: str
-    email: Optional[EmailStr] = None
+    email: EmailStr | None = None
     role: str = "STUDENT"  # STUDENT, EDUCATOR
     university: str
     department: str
-    institutional_email: Optional[str] = None
+    institutional_email: str | None = None
     # Student dynamic fields
-    student_year: Optional[str] = None
-    student_id_num: Optional[str] = None
+    student_year: str | None = None
+    student_id_num: str | None = None
     # Educator dynamic fields
-    highest_qualification: Optional[str] = None
-    designation: Optional[str] = None
+    highest_qualification: str | None = None
+    designation: str | None = None
 
 class UserResponse(UserBase):
     id: int
-    avatar_url: Optional[str] = None
+    avatar_url: str | None = None
     created_at: datetime
 
     class Config:
@@ -55,29 +57,42 @@ class Token(BaseModel):
 # ==========================================
 # Course & Document Schemas
 # ==========================================
+class TopicCreateNested(BaseModel):
+    title: str
+    description: str | None = None
+    youtube_url: str
+
+class ModuleCreateNested(BaseModel):
+    title: str
+    description: str | None = None
+    has_module_exam: bool | None = False
+    topics: list[TopicCreateNested] = []
+
 class CourseCreate(BaseModel):
     title: str
     code: str
-    description: Optional[str] = None
-    category: Optional[str] = "Computer Science"
-    difficulty: Optional[str] = "Intermediate"
-    thumbnail_url: Optional[str] = None
+    description: str | None = None
+    category: str | None = "Computer Science"
+    difficulty: str | None = "Intermediate"
+    thumbnail_url: str | None = None
+    modules: list[ModuleCreateNested] = []
 
 class CourseResponse(BaseModel):
     id: int
     title: str
     code: str
-    description: Optional[str] = None
+    description: str | None = None
     category: str
-    difficulty: Optional[str] = "Intermediate"
-    thumbnail_url: Optional[str] = None
+    difficulty: str | None = "Intermediate"
+    thumbnail_url: str | None = None
     educator_id: int
-    educator_name: Optional[str] = "Prof. Rajesh Ramanujan"
-    average_rating: Optional[float] = 4.9
-    total_ratings: Optional[int] = 0
-    progress_percentage: Optional[float] = 0.0
-    next_topic_title: Optional[str] = None
-    is_enrolled: Optional[bool] = False
+    educator_name: str | None = "Prof. Rajesh Ramanujan"
+    educator_email: str | None = None
+    average_rating: float | None = 4.9
+    total_ratings: int | None = 0
+    progress_percentage: float | None = 0.0
+    next_topic_title: str | None = None
+    is_enrolled: bool | None = False
     created_at: datetime
 
     class Config:
@@ -87,12 +102,13 @@ class CourseExploreItem(BaseModel):
     id: int
     title: str
     code: str
-    description: Optional[str] = None
+    description: str | None = None
     category: str
     difficulty: str = "Intermediate"
-    thumbnail_url: Optional[str] = None
+    thumbnail_url: str | None = None
     educator_id: int
     educator_name: str
+    educator_email: str | None = None
     average_rating: float = 4.9
     total_ratings: int = 0
     modules_count: int = 0
@@ -102,7 +118,7 @@ class CourseExploreItem(BaseModel):
 
 class CourseRatingCreate(BaseModel):
     rating: float = Field(..., ge=1.0, le=5.0)
-    review: Optional[str] = None
+    review: str | None = None
 
 class CourseRatingResponse(BaseModel):
     id: int
@@ -110,34 +126,34 @@ class CourseRatingResponse(BaseModel):
     user_id: int
     user_name: str
     rating: float
-    review: Optional[str] = None
+    review: str | None = None
     created_at: datetime
 
 class CourseRatingsSummary(BaseModel):
     course_id: int
     average_rating: float
     total_ratings: int
-    user_rating: Optional[float] = None
-    user_review: Optional[str] = None
-    reviews: List[CourseRatingResponse] = []
+    user_rating: float | None = None
+    user_review: str | None = None
+    reviews: list[CourseRatingResponse] = []
 
 class TopicRatingCreate(BaseModel):
     rating: int = Field(..., ge=1, le=5)
-    feedback: Optional[str] = None
+    feedback: str | None = None
 
 class TopicRatingResponse(BaseModel):
     id: int
     topic_id: int
     user_id: int
     rating: int
-    feedback: Optional[str] = None
+    feedback: str | None = None
     created_at: datetime
 
 class TopicRatingSummary(BaseModel):
     topic_id: int
     average_rating: float
     total_ratings: int
-    user_rating: Optional[int] = None
+    user_rating: int | None = None
 
 class DocumentResponse(BaseModel):
     id: int
@@ -145,7 +161,7 @@ class DocumentResponse(BaseModel):
     title: str
     file_type: str
     chunk_count: int
-    topic: Optional[str] = None
+    topic: str | None = None
     created_at: datetime
 
     class Config:
@@ -162,34 +178,34 @@ class Citation(BaseModel):
 
 class TutorQueryRequest(BaseModel):
     course_id: int
-    module_id: Optional[int] = None
-    topic_id: Optional[int] = None
+    module_id: int | None = None
+    topic_id: int | None = None
     query: str
     target_language: str = "en"  # "en", "hi", "te", "ta", "kn", "bn", "mr"
-    audio_base64: Optional[str] = None
+    audio_base64: str | None = None
 
 class SupplementaryVideoResponse(BaseModel):
     title: str
     youtube_video_id: str
     embed_url: str
-    channel: Optional[str] = "CogniPath Knowledge Base"
-    duration: Optional[str] = "10 mins"
+    channel: str | None = "CogniPath Knowledge Base"
+    duration: str | None = "10 mins"
     relevance_reason: str
-    timestamp_anchor: Optional[int] = 0
+    timestamp_anchor: int | None = 0
 
 class SupplementaryVideoSuggestRequest(BaseModel):
-    course_id: Optional[int] = None
-    module_id: Optional[int] = None
+    course_id: int | None = None
+    module_id: int | None = None
     topic: str
-    query: Optional[str] = None
+    query: str | None = None
 
 class TutorQueryResponse(BaseModel):
     answer: str
-    citations: List[Citation]
+    citations: list[Citation]
     language: str
-    audio_base64: Optional[str] = None
+    audio_base64: str | None = None
     processing_time_ms: int
-    suggested_video: Optional[SupplementaryVideoResponse] = None
+    suggested_video: SupplementaryVideoResponse | None = None
 
 # ==========================================
 # Spaced Repetition & Quiz Schemas
@@ -197,10 +213,10 @@ class TutorQueryResponse(BaseModel):
 class QuizQuestionSchema(BaseModel):
     id: int
     question_text: str
-    options: List[str]
+    options: list[str]
     correct_option_index: int
-    explanation: Optional[str] = None
-    source_chunk_ref: Optional[str] = None
+    explanation: str | None = None
+    source_chunk_ref: str | None = None
 
 class QuizResponse(BaseModel):
     id: int
@@ -208,12 +224,12 @@ class QuizResponse(BaseModel):
     topic: str
     title: str
     difficulty_level: str
-    questions: List[QuizQuestionSchema]
+    questions: list[QuizQuestionSchema]
 
 class QuizSubmitRequest(BaseModel):
     quiz_id: int
-    answers: Dict[int, int]  # question_id -> selected_option_index
-    quality_rating: Optional[int] = Field(None, ge=0, le=5)  # SM-2 rating 0 to 5
+    answers: dict[int, int]  # question_id -> selected_option_index
+    quality_rating: int | None = Field(None, ge=0, le=5)  # SM-2 rating 0 to 5
 
 class QuizSubmitResponse(BaseModel):
     score: float
@@ -242,9 +258,9 @@ class AtRiskStudent(BaseModel):
     email: str
     average_quiz_score: float
     days_inactive: int
-    struggling_topics: List[str]
+    struggling_topics: list[str]
     risk_level: str  # HIGH, MEDIUM, LOW
-    risk_reasons: List[str]
+    risk_reasons: list[str]
 
 class TopicDifficultyStat(BaseModel):
     topic: str
@@ -259,8 +275,8 @@ class EducatorDashboardOverview(BaseModel):
     total_courses: int
     total_documents_indexed: int
     at_risk_count: int
-    at_risk_students: List[AtRiskStudent]
-    topic_difficulties: List[TopicDifficultyStat]
+    at_risk_students: list[AtRiskStudent]
+    topic_difficulties: list[TopicDifficultyStat]
 
 class StudentRecommendationItem(BaseModel):
     id: str
@@ -279,7 +295,7 @@ class StudentDashboardOverview(BaseModel):
     topics_completed: int = 0
     total_topics: int = 0
     enrolled_courses_count: int = 0
-    recommendations: List[StudentRecommendationItem] = []
+    recommendations: list[StudentRecommendationItem] = []
 
 # ==========================================
 # Native Learning Pods & Community Schemas
@@ -288,11 +304,12 @@ class PodCreate(BaseModel):
     title: str
     course_id: int
     topic: str
-    agenda: Optional[str] = None
-    passcode: Optional[str] = None
-    kshetra_meeting_code: Optional[str] = None
-    max_peers: int = 8
-    scheduled_duration_minutes: Optional[int] = 45
+    agenda: str | None = None
+    passcode: str | None = None
+    kshetra_meeting_code: str | None = None
+    # NOTE: Mesh WebRTC is capped at max 6 peers. >6 requires an SFU (e.g. LiveKit).
+    max_peers: int = 6
+    scheduled_duration_minutes: int | None = 45
 
 class PodResponse(BaseModel):
     id: int
@@ -300,25 +317,25 @@ class PodResponse(BaseModel):
     course_id: int
     host_id: int
     topic: str
-    agenda: Optional[str] = None
+    agenda: str | None = None
     has_passcode: bool = False
-    host_name: Optional[str] = None
+    host_name: str | None = None
     is_active: bool
     max_peers: int
     scheduled_duration_minutes: int = 45
-    started_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
-    ended_at: Optional[datetime] = None
+    started_at: datetime | None = None
+    expires_at: datetime | None = None
+    ended_at: datetime | None = None
     status: str = "ACTIVE"
-    remaining_seconds: Optional[int] = None
-    kshetra_meeting_code: Optional[str] = None
+    remaining_seconds: int | None = None
+    kshetra_meeting_code: str | None = None
     created_at: datetime
 
     class Config:
         from_attributes = True
 
 class PodEndRequest(BaseModel):
-    reason: Optional[str] = "Host terminated session"
+    reason: str | None = "Host terminated session"
 
 class PodEndResponse(BaseModel):
     pod_id: int
@@ -331,7 +348,7 @@ class PodEndResponse(BaseModel):
 class PodMessageSchema(BaseModel):
     id: int
     pod_id: int
-    user_id: Optional[int] = None
+    user_id: int | None = None
     sender_name: str
     content: str
     is_ai_tutor: bool
@@ -344,7 +361,7 @@ class CommunityChannelResponse(BaseModel):
     id: int
     course_id: int
     name: str
-    description: Optional[str] = None
+    description: str | None = None
     created_at: datetime
 
     class Config:
@@ -378,26 +395,26 @@ class MindmapNode(BaseModel):
 class MindmapEdge(BaseModel):
     source: str
     target: str
-    label: Optional[str] = None
+    label: str | None = None
 
 class ConceptMindmap(BaseModel):
     title: str
-    nodes: List[MindmapNode]
-    edges: List[MindmapEdge]
+    nodes: list[MindmapNode]
+    edges: list[MindmapEdge]
     mermaid_code: str
 
 class SocraticQueryRequest(BaseModel):
     course_id: int
     query: str
-    student_attempt: Optional[str] = None
+    student_attempt: str | None = None
     target_language: str = "en"
 
 class SocraticQueryResponse(BaseModel):
     stage: str  # PROBING, HINT, VERIFICATION, MASTERY
     probing_question: str
     pedagogical_guidance: str
-    concept_mindmap: Optional[ConceptMindmap] = None
-    citations: List[Citation]
+    concept_mindmap: ConceptMindmap | None = None
+    citations: list[Citation]
     latency_ms: int
 
 # ==========================================
@@ -423,8 +440,8 @@ class LearningRoadmapResponse(BaseModel):
     total_xp: int
     streak_days: int
     current_level: str
-    skills: List[SkillMasteryItem]
-    next_best_actions: List[RoadmapActionItem]
+    skills: list[SkillMasteryItem]
+    next_best_actions: list[RoadmapActionItem]
 
 # ==========================================
 # Educator Curriculum Health & Bloom's Schemas
@@ -438,7 +455,7 @@ class PrerequisiteGapItem(BaseModel):
 class BloomsQuestionItem(BaseModel):
     level: str  # REMEMBER, UNDERSTAND, APPLY, ANALYZE
     question: str
-    options: List[str]
+    options: list[str]
     correct_index: int
     explanation: str
     syllabus_source: str
@@ -447,16 +464,16 @@ class CurriculumAuditResponse(BaseModel):
     health_score: float  # 0 to 100
     grade_rating: str    # A+, A, B, C
     total_chunks_analyzed: int
-    prerequisite_gaps: List[PrerequisiteGapItem]
-    blooms_balance: Dict[str, int]  # e.g. {"REMEMBER": 35, "UNDERSTAND": 30, "APPLY": 20, "ANALYZE": 15}
-    recommendations: List[str]
+    prerequisite_gaps: list[PrerequisiteGapItem]
+    blooms_balance: dict[str, int]  # e.g. {"REMEMBER": 35, "UNDERSTAND": 30, "APPLY": 20, "ANALYZE": 15}
+    recommendations: list[str]
 
 # ==============================================================================
 # HIERARCHICAL CONTENT DELIVERY ENGINE SCHEMAS
 # ==============================================================================
 class TopicBase(BaseModel):
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     youtube_url: str
 
 class TopicCreate(TopicBase):
@@ -485,48 +502,48 @@ class ModuleResourceResponse(BaseModel):
 
 class ModuleCreate(BaseModel):
     title: str
-    description: Optional[str] = None
-    has_module_exam: Optional[bool] = False
+    description: str | None = None
+    has_module_exam: bool | None = False
 
 class ModuleResponse(BaseModel):
     id: int
     course_id: int
     title: str
-    description: Optional[str] = None
+    description: str | None = None
     order_index: int
     has_module_exam: bool = False
-    module_exam_id: Optional[int] = None
+    module_exam_id: int | None = None
     created_at: datetime
-    topics: List[TopicResponse] = []
-    resources: List[ModuleResourceResponse] = []
-    module_exam: Optional[Any] = None
+    topics: list[TopicResponse] = []
+    resources: list[ModuleResourceResponse] = []
+    module_exam: Any | None = None
     class Config:
         from_attributes = True
 
 class ModuleUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    order_index: Optional[int] = None
-    has_module_exam: Optional[bool] = None
-    module_exam_id: Optional[int] = None
+    title: str | None = None
+    description: str | None = None
+    order_index: int | None = None
+    has_module_exam: bool | None = None
+    module_exam_id: int | None = None
 
 class TopicUpdate(BaseModel):
-    title: Optional[str] = None
-    description: Optional[str] = None
-    youtube_url: Optional[str] = None
-    order_index: Optional[int] = None
+    title: str | None = None
+    description: str | None = None
+    youtube_url: str | None = None
+    order_index: int | None = None
 
 class CourseHierarchyResponse(BaseModel):
     id: int
     title: str
     code: str
-    description: Optional[str] = None
+    description: str | None = None
     category: str
-    difficulty: Optional[str] = "Intermediate"
-    thumbnail_url: Optional[str] = None
+    difficulty: str | None = "Intermediate"
+    thumbnail_url: str | None = None
     educator_id: int
     created_at: datetime
-    modules: List[ModuleResponse] = []
+    modules: list[ModuleResponse] = []
     final_exam: Optional[Any] = None
 
     class Config:
@@ -536,36 +553,36 @@ class CourseHierarchyResponse(BaseModel):
 # DUAL-ENGINE ASSESSMENT SCHEMAS (EXAMS, BUILDER, AUTO-GRADING)
 # ==============================================================================
 class ExamQuestionSchema(BaseModel):
-    id: Optional[int] = None
+    id: int | None = None
     question_type: str = "MCQ"  # MCQ or SHORT_ANSWER
     question_text: str
-    options: Optional[List[str]] = None
-    correct_answer: str
-    explanation: Optional[str] = None
-    source_ref: Optional[str] = None
+    options: list[str] | None = None
+    correct_answer: str | None = None
+    explanation: str | None = None
+    source_ref: str | None = None
     order_index: int = 1
 
 class ExamCreate(BaseModel):
     course_id: int
-    module_id: Optional[int] = None
+    module_id: int | None = None
     exam_type: str = "MODULE_QUIZ"
     scope: str = "MODULE_END"
     title: str
     time_limit_mins: int = 20
     passing_score: float = 60.0
-    questions: Optional[List[ExamQuestionSchema]] = None
+    questions: list[ExamQuestionSchema] | None = None
 
 class ExamResponse(BaseModel):
     id: int
     course_id: int
-    module_id: Optional[int] = None
+    module_id: int | None = None
     exam_type: str
     scope: str = "MODULE_END"
     title: str
     time_limit_mins: int
     passing_score: float
     created_at: datetime
-    questions: List[ExamQuestionSchema] = []
+    questions: list[ExamQuestionSchema] = []
     class Config:
         from_attributes = True
 
@@ -575,14 +592,14 @@ class ExamResponse(BaseModel):
 class RAGMCQItem(BaseModel):
     question_id: str
     question_text: str
-    options: List[str]
+    options: list[str]
     correct_option: str  # "A", "B", "C", or "D"
     explanation: str
     source_reference: str
 
 class RAGMCQGenerateRequest(BaseModel):
-    course_id: Optional[int] = None
-    topic: Optional[str] = None
+    course_id: int | None = None
+    topic: str | None = None
     count: int = 4
     difficulty: str = "Intermediate"
 
@@ -590,15 +607,15 @@ class RAGMCQGenerateResponse(BaseModel):
     module_id: int
     course_id: int
     count: int
-    questions: List[RAGMCQItem]
-    sources_used: List[str] = []
+    questions: list[RAGMCQItem]
+    sources_used: list[str] = []
 
 class ModuleExamCreateRequest(BaseModel):
     title: str
     time_limit_mins: int = 20
     passing_score: float = 60.0
     scope: str = "MODULE_END"
-    questions: List[ExamQuestionSchema]
+    questions: list[ExamQuestionSchema]
 
 # ==============================================================================
 # LIGHTWEIGHT TABBED NAVIGATION SUMMARY SCHEMAS
@@ -610,7 +627,7 @@ class TabsSummaryModule(BaseModel):
     topics_count: int
     resources_count: int
     has_module_exam: bool
-    module_exam_id: Optional[int] = None
+    module_exam_id: int | None = None
     is_completed: bool = False
 
 class TabsSummaryCourse(BaseModel):
@@ -620,25 +637,25 @@ class TabsSummaryCourse(BaseModel):
     category: str
     difficulty: str = "Intermediate"
     completion_percentage: float = 0.0
-    modules: List[TabsSummaryModule] = []
+    modules: list[TabsSummaryModule] = []
 
 class TabsSummaryResponse(BaseModel):
-    courses: List[TabsSummaryCourse]
+    courses: list[TabsSummaryCourse]
 
 class ExamReorderItem(BaseModel):
     question_id: int
     order_index: int
 
 class ExamReorderRequest(BaseModel):
-    question_orders: List[ExamReorderItem]
+    question_orders: list[ExamReorderItem]
 
 class ExamSubmitItem(BaseModel):
     question_id: int
-    selected_option: Optional[int] = None
-    short_answer: Optional[str] = None
+    selected_option: Any | None = None
+    short_answer: str | None = None
 
 class ExamSubmitRequest(BaseModel):
-    responses: List[ExamSubmitItem]
+    responses: list[ExamSubmitItem]
 
 class ExamSubmitResponse(BaseModel):
     submission_id: int
@@ -649,28 +666,28 @@ class ExamSubmitResponse(BaseModel):
     total_questions: int
     correct_count: int
     evaluated_at: datetime
-    unlocked_badge: Optional[Dict[str, Any]] = None
+    unlocked_badge: dict[str, Any] | None = None
 
 class AISuggestionItem(BaseModel):
     temp_id: str
     question_type: str
     question_text: str
-    options: Optional[List[str]] = None
+    options: list[str] | None = None
     correct_answer: str
     explanation: str
     source_ref: str
-    bloom_level: Optional[str] = None
+    bloom_level: str | None = None
 
 class AISuggestionRequest(BaseModel):
     course_id: int
-    module_id: Optional[int] = None
-    topic: Optional[str] = "General Curriculum"
+    module_id: int | None = None
+    topic: str | None = "General Curriculum"
     count: int = 3
     difficulty: str = "Intermediate"
 
 class AISuggestionResponse(BaseModel):
     topic: str
-    suggestions: List[AISuggestionItem]
+    suggestions: list[AISuggestionItem]
 
 # ==============================================================================
 # GAMIFICATION & VERIFIED BADGES
@@ -680,12 +697,12 @@ class StudentBadgeResponse(BaseModel):
     student_id: int
     course_id: int
     badge_name: str
-    badge_image_url: Optional[str] = None
+    badge_image_url: str | None = None
     difficulty_level: str
     verification_hash: str
     issued_at: datetime
-    student_name: Optional[str] = None
-    course_title: Optional[str] = None
+    student_name: str | None = None
+    course_title: str | None = None
     class Config:
         from_attributes = True
 
@@ -695,15 +712,15 @@ class StudentBadgeResponse(BaseModel):
 class RubricCriterion(BaseModel):
     criterion: str
     max_points: float
-    description: Optional[str] = None
+    description: str | None = None
 
 class AssignmentCreate(BaseModel):
     module_id: int
     title: str
     description: str
     assignment_type: str = "PRACTICAL_PDF"
-    rubric: List[RubricCriterion]
-    model_answer: Optional[str] = None
+    rubric: list[RubricCriterion]
+    model_answer: str | None = None
     max_score: float = 100.0
 
 class AssignmentResponse(BaseModel):
@@ -712,8 +729,8 @@ class AssignmentResponse(BaseModel):
     title: str
     description: str
     assignment_type: str
-    rubric: List[RubricCriterion]
-    model_answer: Optional[str] = None
+    rubric: list[RubricCriterion]
+    model_answer: str | None = None
     max_score: float
     created_at: datetime
     class Config:
@@ -728,18 +745,18 @@ class CriterionScoreItem(BaseModel):
 class AIEvaluationFeedback(BaseModel):
     overall_score: float
     percentage: float
-    criteria_scores: List[CriterionScoreItem]
-    strengths: List[str]
-    weaknesses: List[str]
+    criteria_scores: list[CriterionScoreItem]
+    strengths: list[str]
+    weaknesses: list[str]
     actionable_feedback: str
 
 class AssignmentSubmissionResponse(BaseModel):
     id: int
     assignment_id: int
     student_id: int
-    submitted_file_url: Optional[str] = None
-    ai_score: Optional[float] = None
-    ai_feedback: Optional[AIEvaluationFeedback] = None
+    submitted_file_url: str | None = None
+    ai_score: float | None = None
+    ai_feedback: AIEvaluationFeedback | None = None
     status: str
     submitted_at: datetime
     class Config:
@@ -755,4 +772,17 @@ class PodPasscodeVerifyResponse(BaseModel):
     verified: bool
     is_blacklisted: bool
     message: str
+
+
+class TopicCompleteRequest(BaseModel):
+    is_completed: bool = True
+
+
+class TopicCompleteResponse(BaseModel):
+    status: str
+    topic_id: int
+    is_completed: bool
+    completion_percentage: float
+    completed_topic_ids: list[int]
+
 

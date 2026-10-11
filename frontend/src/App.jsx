@@ -1,19 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import Navbar, { SUPPORTED_LANGUAGES } from './components/Navbar';
 import Sidebar from './components/Sidebar';
-import Login from './pages/Login';
-import DashboardHome from './pages/DashboardHome';
-import StudentPortal from './pages/StudentPortal';
-import SpacedQuizView from './pages/SpacedQuizView';
-import EducatorDashboard from './pages/EducatorDashboard';
-import LearningPods from './pages/LearningPods';
-import CommunityFeed from './pages/CommunityFeed';
-import LearningRoadmapView from './pages/LearningRoadmapView';
-import CoursePlayer from './pages/CoursePlayer';
-import ExamStudio from './pages/ExamStudio';
-import AssignmentView from './pages/AssignmentView';
-import LiveKshetraStudio from './pages/LiveKshetraStudio';
-import LandingPage from './pages/LandingPage';
+import { Suspense, lazy } from 'react';
+
+const Login = lazy(() => import('./pages/Login'));
+const DashboardHome = lazy(() => import('./pages/DashboardHome'));
+const StudentPortal = lazy(() => import('./pages/StudentPortal'));
+const SpacedQuizView = lazy(() => import('./pages/SpacedQuizView'));
+const EducatorDashboard = lazy(() => import('./pages/EducatorDashboard'));
+const LearningPods = lazy(() => import('./pages/LearningPods'));
+const CommunityFeed = lazy(() => import('./pages/CommunityFeed'));
+const LearningRoadmapView = lazy(() => import('./pages/LearningRoadmapView'));
+const ExamStudio = lazy(() => import('./pages/ExamStudio'));
+const AssignmentView = lazy(() => import('./pages/AssignmentView'));
+const LiveKshetraStudio = lazy(() => import('./pages/LiveKshetraStudio'));
+const LandingPage = lazy(() => import('./pages/LandingPage'));
 import CreateCourseModal from './components/CreateCourseModal';
 import AcademicProfileModal from './components/AcademicProfileModal';
 import CourseCatalogModal from './components/CourseCatalogModal';
@@ -42,13 +43,39 @@ export default function App() {
   const [loginRole, setLoginRole] = useState('STUDENT');
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
 
+  const refreshAllCourses = async (currentUser = user) => {
+    let freshList = null;
+    try {
+      freshList = await coursesAPI.list();
+      if (freshList && freshList.length > 0) {
+        setCourses(freshList);
+      }
+    } catch (err) {
+      console.warn('coursesAPI.list notice:', err);
+    }
+
+    if (currentUser) {
+      await fetchEnrolledCourses(currentUser, freshList || courses);
+    }
+  };
+
   const handleCourseCreated = async (newCourse) => {
     setShowCreateCourseModal(false);
-    await fetchCourses();
+    if (newCourse?.id) {
+      try {
+        const key = `cognipath_created_courses_${user?.id || user?.email || 'educator'}`;
+        const existing = JSON.parse(localStorage.getItem(key) || '[]');
+        if (!existing.includes(newCourse.id)) {
+          existing.push(newCourse.id);
+          localStorage.setItem(key, JSON.stringify(existing));
+        }
+      } catch (e) {}
+    }
+    await refreshAllCourses(user);
     if (newCourse?.id) {
       setSelectedCourseId(newCourse.id);
     }
-    setActiveTab('course-player');
+    setActiveTab(user?.role === 'EDUCATOR' ? 'analytics' : 'dashboard');
   };
 
   useEffect(() => {
@@ -136,32 +163,12 @@ export default function App() {
       }
     } catch (e) {}
 
-    // Initial role-based defaults for new sessions
-    if (currentUser.email === 'student@cognipath.edu') {
-      // Alex Kumar default demo enrollments (CS101 + DBMS)
-      const demoEnrolled = available.slice(0, 2).map((c, i) => ({
-        ...c,
-        progress_percentage: i === 0 ? 68 : 45,
-        is_enrolled: true
-      }));
-      setEnrolledCourses(demoEnrolled);
-      localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify(demoEnrolled));
-      if (demoEnrolled.length > 0) {
-        setSelectedCourseId(demoEnrolled[0].id);
-      } else {
-        setSelectedCourseId(null);
-      }
-    } else if (currentUser.role === 'EDUCATOR') {
-      // Educators have all their authored courses
-      const eduCourses = available.map(c => ({ ...c, progress_percentage: 100, is_enrolled: true }));
-      setEnrolledCourses(eduCourses);
-      if (eduCourses.length > 0) setSelectedCourseId(eduCourses[0].id);
-    } else {
-      // Any new student starts with 0 enrolled courses so they can pick their own!
-      setEnrolledCourses([]);
-      setSelectedCourseId(null);
+    // No auto-enrollments: users start with 0 enrolled courses unless they enroll themselves
+    setEnrolledCourses([]);
+    setSelectedCourseId(null);
+    try {
       localStorage.setItem(`cognipath_enrolled_${currentUser.id || currentUser.email}`, JSON.stringify([]));
-    }
+    } catch (e) {}
   };
 
   const handleEnrollCourse = async (courseId) => {
@@ -226,22 +233,37 @@ export default function App() {
   };
 
   const handleDeleteCoursePermanently = async (courseId) => {
+    // 1. Call backend delete API; do not swallow error so that UI can display real failure message if any
+    await coursesAPI.deleteCourse(courseId);
+
+    // 2. Clean up creator tracking in localStorage
     try {
-      await coursesAPI.deleteCourse(courseId);
-    } catch (err) {
-      console.warn('Backend deleteCourse API call failed, removing locally:', err);
+      const keysToClean = [
+        `cognipath_created_courses_${user?.id || user?.email || 'educator'}`,
+        'cognipath_created_courses_educator'
+      ];
+      keysToClean.forEach((key) => {
+        const stored = JSON.parse(localStorage.getItem(key) || '[]');
+        const filtered = stored.filter((id) => Number(id) !== Number(courseId));
+        localStorage.setItem(key, JSON.stringify(filtered));
+      });
+    } catch (e) {}
+
+    // 3. Clean up enrollment cache in localStorage
+    if (user) {
+      try {
+        const enrKey = `cognipath_enrolled_${user.id || user.email}`;
+        const storedEnr = JSON.parse(localStorage.getItem(enrKey) || '[]');
+        const filteredEnr = storedEnr.filter((c) => (c.id || c) !== courseId);
+        localStorage.setItem(enrKey, JSON.stringify(filteredEnr));
+      } catch (e) {}
     }
 
+    // 4. Update memory state
     const updatedAll = courses.filter((c) => c.id !== courseId);
     setCourses(updatedAll);
     const updatedEnrolled = enrolledCourses.filter((c) => c.id !== courseId);
     setEnrolledCourses(updatedEnrolled);
-    if (user) {
-      localStorage.setItem(
-        `cognipath_enrolled_${user.id || user.email}`,
-        JSON.stringify(updatedEnrolled)
-      );
-    }
     if (selectedCourseId === courseId) {
       setSelectedCourseId(updatedEnrolled.length > 0 ? updatedEnrolled[0].id : null);
     }
@@ -269,7 +291,7 @@ export default function App() {
       }
       try {
         const data = await coursesAPI.list();
-        if (data && data.length > 0) {
+        if (data && Array.isArray(data)) {
           setCourses(data);
           if (activeUser) {
             await fetchEnrolledCourses(activeUser, data);
@@ -295,8 +317,9 @@ export default function App() {
     // Persist verified user session
     try {
       localStorage.setItem('cognipath_user', JSON.stringify(validUser));
-      if (!localStorage.getItem('cognipath_token')) {
-        localStorage.setItem('cognipath_token', 'local_jwt_' + (validUser.id || Date.now()));
+      const currToken = localStorage.getItem('cognipath_token');
+      if (currToken && (currToken.startsWith('local_') || currToken.startsWith('mock_'))) {
+        localStorage.removeItem('cognipath_token');
       }
     } catch (e) {}
 
@@ -315,11 +338,11 @@ export default function App() {
     const targetTab = validUser.role === 'EDUCATOR' ? 'analytics' : 'dashboard';
     setActiveTab(targetTab);
 
-    // Fetch personal enrollments in background
+    // Refresh courses and personal enrollments for authenticated user
     try {
-      await fetchEnrolledCourses(validUser);
+      await refreshAllCourses(validUser);
     } catch (err) {
-      console.warn('Enrolled courses background fetch notice:', err);
+      console.warn('Courses background refresh notice:', err);
     }
   };
 
@@ -373,6 +396,9 @@ export default function App() {
       const data = await authAPI.login(demoEmail, 'password123');
       const candidate = (data && typeof data === 'object') ? (data.user || data) : null;
       if (candidate && (candidate.email || candidate.id)) {
+        if (data.access_token) {
+          localStorage.setItem('cognipath_token', data.access_token);
+        }
         handleLoginSuccess({ ...candidate, profile_completed: true });
         return;
       }
@@ -380,7 +406,6 @@ export default function App() {
       console.warn('Backend quick login notice, using demo profile:', err?.message);
     }
 
-    localStorage.setItem('cognipath_token', 'mock_token_sih2026');
     localStorage.setItem('cognipath_user', JSON.stringify(defaultUser));
     handleLoginSuccess(defaultUser);
   };
@@ -415,18 +440,22 @@ export default function App() {
   if (!user) {
     if (isLoginView) {
       return (
-        <Login
-          onLoginSuccess={handleLoginSuccess}
-          onBackToHome={handleBackToHome}
-          initialRole={loginRole}
-        />
+        <Suspense fallback={<div className="min-h-screen bg-[#0b0f19] flex items-center justify-center"><div className="animate-spin rounded-full h-10 w-10 border-t-2 border-indigo-500" /></div>}>
+          <Login
+            onLoginSuccess={handleLoginSuccess}
+            onBackToHome={handleBackToHome}
+            initialRole={loginRole}
+          />
+        </Suspense>
       );
     }
     return (
-      <LandingPage
-        onOpenLogin={handleOpenLogin}
-        onQuickLogin={handleQuickLogin}
-      />
+      <Suspense fallback={<div className="min-h-screen bg-[#0b0f19] flex items-center justify-center"><div className="animate-spin rounded-full h-10 w-10 border-t-2 border-indigo-500" /></div>}>
+        <LandingPage
+          onOpenLogin={handleOpenLogin}
+          onQuickLogin={handleQuickLogin}
+        />
+      </Suspense>
     );
   }
 
@@ -462,11 +491,19 @@ export default function App() {
 
         {/* Dynamic Main Workspace Tab with Ambient Radial Glows */}
         <main className={`flex-1 min-h-0 bg-[#0A0D1C] ambient-canvas ${
-          (activeTab === 'course-player' || activeTab === 'courses' || activeTab === 'tutor')
+          activeTab === 'tutor'
             ? 'overflow-hidden flex flex-col'
             : 'overflow-y-auto'
         }`}>
-          <ErrorBoundary onReset={() => setActiveTab(user.role === 'EDUCATOR' ? 'analytics' : 'dashboard')}>
+          <ErrorBoundary onReset={() => setActiveTab(user?.role === 'EDUCATOR' ? 'analytics' : 'dashboard')}>
+            <Suspense fallback={
+              <div className="min-h-[400px] w-full flex items-center justify-center p-12 text-slate-400">
+                <div className="flex flex-col items-center gap-3">
+                  <div className="w-8 h-8 border-3 border-indigo-500 border-t-transparent rounded-full animate-spin"></div>
+                  <span className="text-xs font-semibold tracking-wide uppercase">Loading Page Component...</span>
+                </div>
+              </div>
+            }>
             {/* Dashboard Home View */}
             {activeTab === 'dashboard' && (
               <DashboardHome
@@ -478,25 +515,8 @@ export default function App() {
                 onEnrollCourse={handleEnrollCourse}
                 onUnenrollCourse={handleUnenrollCourse}
                 onDeleteCoursePermanently={handleDeleteCoursePermanently}
-                onRefreshCourses={() => fetchEnrolledCourses(user)}
+                onRefreshCourses={() => refreshAllCourses(user)}
                 onOpenExploreCatalog={() => setShowCatalogModal(true)}
-              />
-            )}
-
-            {/* Hierarchical Course Delivery & View-Only PDF Player */}
-            {(activeTab === 'course-player' || activeTab === 'courses') && (
-              <CoursePlayer
-                courseId={selectedCourseId}
-                user={user}
-                onNavigateTab={handleNavigate}
-                courses={enrolledCourses.length > 0 ? enrolledCourses : (user?.role === 'EDUCATOR' ? courses : [])}
-                allCourses={courses}
-                enrolledCourses={enrolledCourses}
-                onSelectCourse={setSelectedCourseId}
-                onRefreshCourses={() => fetchEnrolledCourses(user)}
-                onEnrollCourse={handleEnrollCourse}
-                onUnenrollCourse={handleUnenrollCourse}
-                onDeleteCoursePermanently={handleDeleteCoursePermanently}
               />
             )}
 
@@ -506,6 +526,7 @@ export default function App() {
                 courseId={selectedCourseId}
                 user={user}
                 onNavigateTab={handleNavigate}
+                onOpenCreateCourse={() => setShowCreateCourseModal(true)}
               />
             )}
 
@@ -557,7 +578,7 @@ export default function App() {
                 onNavigateTab={handleNavigate}
                 onOpenCreateCourse={() => setShowCreateCourseModal(true)}
                 onDeleteCoursePermanently={handleDeleteCoursePermanently}
-                onRefreshCourses={() => fetchEnrolledCourses(user)}
+                onRefreshCourses={() => refreshAllCourses(user)}
                 user={user}
               />
             )}
@@ -602,7 +623,7 @@ export default function App() {
 
             {/* Robust Fallback in case activeTab is unhandled */}
             {![
-              'dashboard', 'course-player', 'courses', 'exam-studio',
+              'dashboard', 'exam-studio',
               'assignments', 'tutor', 'roadmap', 'quizzes', 'flashcards',
               'analytics', 'kshetra', 'pods', 'community', 'landing'
             ].includes(activeTab) && (
@@ -628,6 +649,7 @@ export default function App() {
                 />
               )
             )}
+          </Suspense>
           </ErrorBoundary>
         </main>
       </div>
@@ -692,9 +714,10 @@ export default function App() {
         onSelectCourse={async (cId) => {
           await handleEnrollCourse(cId);
           setShowCatalogModal(false);
-          setActiveTab('course-player');
+          setActiveTab('dashboard');
         }}
         user={user}
+        enrolledCourses={enrolledCourses}
       />
 
       {/* Global Create & Post Course Modal */}
@@ -713,6 +736,6 @@ export default function App() {
         isOnboarding={false}
       />
     </div>
-    </ErrorBoundary>
+  </ErrorBoundary>
   );
 }

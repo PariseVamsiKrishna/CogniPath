@@ -52,10 +52,49 @@ export default function EnrolledCoursesGrid({
   onSelectRecommendedTopic,
   user
 }) {
-  const isEducator = user?.role === 'EDUCATOR';
-  const createdCourses = (allCourses && allCourses.length > 0 ? allCourses : courses).filter(
-    (c) => c.educator_id === user?.id
+  const isEducator = user?.role === 'EDUCATOR' || user?.role === 'ADMIN';
+
+  // Extract locally stored course IDs created by this user
+  const storedCreatedIds = new Set(
+    (() => {
+      try {
+        const key = `cognipath_created_courses_${user?.id || user?.email || 'educator'}`;
+        return JSON.parse(localStorage.getItem(key) || '[]');
+      } catch (e) {
+        return [];
+      }
+    })()
   );
+
+  const isCourseOwnedByUser = (c) => {
+    if (!user) return false;
+    // 1. Locally tracked created course ID
+    if (storedCreatedIds.has(Number(c.id))) return true;
+    // 2. Direct ID match (loose string comparison)
+    if (c.educator_id != null && user.id != null && String(c.educator_id) === String(user.id)) return true;
+    // 3. Educator Email match (case-insensitive)
+    if (c.educator_email && user.email && c.educator_email.toLowerCase().trim() === user.email.toLowerCase().trim()) return true;
+    // 4. Educator Name match for educator role
+    if (isEducator && c.educator_name && user.full_name && c.educator_name.toLowerCase().trim() === user.full_name.toLowerCase().trim()) return true;
+    return false;
+  };
+
+  // Combine both sources to ensure no courses are missed
+  const sourcePool = [...(allCourses || []), ...(courses || [])];
+  const uniqueCoursesMap = new Map();
+  sourcePool.forEach((c) => {
+    if (c && c.id && !uniqueCoursesMap.has(c.id)) {
+      uniqueCoursesMap.set(c.id, c);
+    }
+  });
+  const allUniqueCourses = Array.from(uniqueCoursesMap.values());
+
+  const createdCourses = allUniqueCourses.filter(isCourseOwnedByUser);
+
+  // For educators, "Continue Learning" should strictly show enrolled courses authored by others
+  const learningCourses = isEducator
+    ? courses.filter((c) => !isCourseOwnedByUser(c))
+    : courses;
 
   return (
     <div className="min-h-full ambient-canvas p-4 sm:p-6 lg:p-8 max-w-7xl mx-auto space-y-10">
@@ -144,9 +183,9 @@ export default function EnrolledCoursesGrid({
         </div>
 
         {/* Elevated Journey Track Cards Grid (Stacks to single column on mobile) */}
-        {courses && courses.length > 0 ? (
+        {learningCourses && learningCourses.length > 0 ? (
           <div className="grid grid-cols-1 lg:grid-cols-2 xl:grid-cols-3 gap-6">
-            {courses.map((course, idx) => (
+            {learningCourses.map((course, idx) => (
               <JourneyTrackCard
                 key={course.id}
                 course={course}

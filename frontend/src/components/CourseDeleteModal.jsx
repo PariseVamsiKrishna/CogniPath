@@ -18,13 +18,11 @@ export default function CourseDeleteModal({
   isEducator = false,
   isCreator = false,
 }) {
-  const [inputValue, setInputValue] = useState('');
   const [isDeleting, setIsDeleting] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
 
   useEffect(() => {
     if (isOpen) {
-      setInputValue('');
       setIsDeleting(false);
       setErrorMsg(null);
     }
@@ -32,11 +30,10 @@ export default function CourseDeleteModal({
 
   if (!isOpen || !course) return null;
 
-  const isPermanentDelete = isEducator || isCreator;
-  const isMatch = inputValue.trim().toLowerCase() === 'delete';
+  const isPermanentDelete = isEducator && isCreator;
 
   const handleConfirm = async () => {
-    if (!isMatch || isDeleting) return;
+    if (isDeleting) return;
 
     try {
       setIsDeleting(true);
@@ -48,13 +45,6 @@ export default function CourseDeleteModal({
       setErrorMsg(err.response?.data?.detail || err.message || 'Failed to delete course');
     } finally {
       setIsDeleting(false);
-    }
-  };
-
-  const handleKeyDown = (e) => {
-    if (e.key === 'Enter' && isMatch && !isDeleting) {
-      e.preventDefault();
-      handleConfirm();
     }
   };
 
@@ -124,23 +114,6 @@ export default function CourseDeleteModal({
           </p>
         </div>
 
-        {/* Instruction & Confirmation Input */}
-        <div className="space-y-2">
-          <label className="block text-xs font-semibold text-[#8A90B4]">
-            Type <span className="text-red-400 font-mono font-bold bg-red-500/10 px-1.5 py-0.5 rounded border border-red-500/20">delete</span> below to confirm:
-          </label>
-          <input
-            type="text"
-            autoFocus
-            value={inputValue}
-            onChange={(e) => setInputValue(e.target.value)}
-            onKeyDown={handleKeyDown}
-            disabled={isDeleting}
-            placeholder='Type "delete"'
-            className="w-full bg-[#171C36] border border-[#262C4C] focus:border-red-500/60 rounded-xl px-3.5 py-2.5 text-sm text-[#ECEDF7] placeholder-[#8A90B4]/50 focus:outline-none transition font-mono"
-          />
-        </div>
-
         {/* Error message if any */}
         {errorMsg && (
           <div className="p-2.5 rounded-lg bg-red-900/30 border border-red-500/40 text-xs text-red-300">
@@ -154,29 +127,29 @@ export default function CourseDeleteModal({
             type="button"
             onClick={onClose}
             disabled={isDeleting}
-            className="px-4 py-2 rounded-xl text-xs font-semibold text-[#8A90B4] hover:text-[#ECEDF7] hover:bg-[#171C36] transition"
+            className="px-4 py-2 rounded-xl text-xs font-semibold text-[#8A90B4] hover:text-[#ECEDF7] hover:bg-[#171C36] transition cursor-pointer"
           >
             Cancel
           </button>
           <button
             type="button"
             onClick={handleConfirm}
-            disabled={!isMatch || isDeleting}
-            className={`px-4 py-2 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-md ${
-              isMatch && !isDeleting
-                ? 'bg-red-600 hover:bg-red-500 text-white shadow-red-600/30 cursor-pointer'
-                : 'bg-[#171C36] text-[#8A90B4]/40 border border-[#262C4C] cursor-not-allowed opacity-60'
+            disabled={isDeleting}
+            className={`px-5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
+              isPermanentDelete
+                ? 'bg-red-600 hover:bg-red-500 text-white shadow-red-600/30'
+                : 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/30'
             }`}
           >
             {isDeleting ? (
               <span className="flex items-center gap-2">
                 <span className="h-3.5 w-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                Deleting...
+                Processing...
               </span>
             ) : (
               <>
                 <Trash2 className="h-3.5 w-3.5" />
-                <span>OK, Delete</span>
+                <span>{isPermanentDelete ? 'Permanently Delete' : 'Confirm Remove'}</span>
               </>
             )}
           </button>

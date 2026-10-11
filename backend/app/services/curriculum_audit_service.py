@@ -1,12 +1,15 @@
 import logging
-from typing import List, Dict, Any
+
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
 from app.models.models import Course, Document
 from app.schemas.schemas import (
-    CurriculumAuditResponse, PrerequisiteGapItem, BloomsQuestionItem
+    BloomsQuestionItem,
+    CurriculumAuditResponse,
+    PrerequisiteGapItem,
 )
+from app.services.ai_helper import gemini_generate
 
 logger = logging.getLogger("cognipath.curriculum_audit")
 
@@ -53,8 +56,9 @@ class CurriculumAuditService:
         # 5. Try real Google Gemini curriculum audit analysis
         try:
             import json
-            from app.services.rag_service import rag_service
+
             from app.core.config import settings
+            from app.services.rag_service import rag_service
 
             if hasattr(rag_service, '_gemini_client') and rag_service._gemini_client and settings.GEMINI_API_KEY:
                 prompt = f"""You are a university academic accreditation reviewer and curriculum auditor.
@@ -104,17 +108,11 @@ Return ONLY a valid JSON object matching this schema:
 }}
 Output strictly pure JSON, without markdown code blocks (no ```json or ```).
 """
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 if (
                     isinstance(parsed, dict)
@@ -159,7 +157,7 @@ Output strictly pure JSON, without markdown code blocks (no ```json or ```).
                 advanced_concept=f"Applied System Architecture using {primary_topic}",
                 missing_prerequisite=f"Concrete Real-World Benchmarking Examples of {primary_topic}",
                 severity="MEDIUM",
-                remediation_suggestion=f"Add interactive code walk-throughs in the next lecture module."
+                remediation_suggestion="Add interactive code walk-throughs in the next lecture module."
             )
         ]
 
@@ -172,8 +170,8 @@ Output strictly pure JSON, without markdown code blocks (no ```json or ```).
 
         recs = [
             f"Introduce hands-on implementation practice sessions for {primary_topic}.",
-            f"Add explicit architectural flow diagrams to illustrate worst-case bounds.",
-            f"Schedule an automated conceptual review broadcast in the community hub."
+            "Add explicit architectural flow diagrams to illustrate worst-case bounds.",
+            "Schedule an automated conceptual review broadcast in the community hub."
         ]
 
         return CurriculumAuditResponse(
@@ -186,13 +184,14 @@ Output strictly pure JSON, without markdown code blocks (no ```json or ```).
         )
 
     @staticmethod
-    def generate_blooms_taxonomy_quiz(topic: str) -> List[BloomsQuestionItem]:
+    async def generate_blooms_taxonomy_quiz(topic: str) -> list[BloomsQuestionItem]:
         """Generates a 4-tier Bloom's cognitive taxonomy question suite."""
         # 1. Prefer live Google Gemini generation if configured
         try:
             import json
-            from app.services.rag_service import rag_service
+
             from app.core.config import settings
+            from app.services.rag_service import rag_service
 
             if hasattr(rag_service, '_gemini_client') and rag_service._gemini_client and settings.GEMINI_API_KEY:
                 prompt = f"""Generate a 4-question Bloom's Taxonomy assessment for the Computer Science topic: "{topic}".
@@ -205,17 +204,11 @@ Return ONLY a valid JSON array with 4 objects. Each object must have:
 - "syllabus_source": source reference string e.g. "CS101 Curriculum: {topic}"
 
 Format strictly as raw JSON, without backticks or markdown."""
-                resp = rag_service._gemini_client.models.generate_content(
-                    model=settings.GEMINI_MODEL_NAME,
-                    contents=prompt
-                )
+                resp = await gemini_generate(rag_service._gemini_client, settings.GEMINI_MODEL_NAME, prompt)
                 raw = resp.text.strip()
-                if raw.startswith("```json"):
-                    raw = raw[7:]
-                if raw.startswith("```"):
-                    raw = raw[3:]
-                if raw.endswith("```"):
-                    raw = raw[:-3]
+                raw = raw.removeprefix("```json")
+                raw = raw.removeprefix("```")
+                raw = raw.removesuffix("```")
                 parsed = json.loads(raw.strip())
                 items = [BloomsQuestionItem(**q) for q in parsed]
                 if len(items) == 4:

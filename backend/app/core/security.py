@@ -1,9 +1,10 @@
-import bcrypt
 from datetime import datetime, timedelta, timezone
-from typing import Optional, Any
-from jose import JWTError, jwt
+from typing import Any
+
+import bcrypt
 from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
+from jose import JWTError, jwt
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -28,7 +29,7 @@ def get_password_hash(password: str) -> str:
     salt = bcrypt.gensalt(rounds=12)
     return bcrypt.hashpw(pwd_bytes, salt).decode('utf-8')
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None) -> str:
+def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     """Create a signed JWT access token."""
     to_encode = data.copy()
     if expires_delta:
@@ -67,9 +68,9 @@ async def get_current_user(
 optional_oauth2_scheme = OAuth2PasswordBearer(tokenUrl=f"{settings.API_V1_STR}/auth/login", auto_error=False)
 
 async def get_optional_current_user(
-    token: Optional[str] = Depends(optional_oauth2_scheme),
+    token: str | None = Depends(optional_oauth2_scheme),
     db: AsyncSession = Depends(get_db)
-) -> Optional[Any]:
+) -> Any | None:
     """Retrieve current user if valid bearer token is present, else None without throwing 401."""
     if not token:
         return None

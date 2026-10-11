@@ -1,4 +1,3 @@
-from typing import List, Dict, Any
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
@@ -6,10 +5,19 @@ from sqlalchemy.future import select
 from app.core.database import get_db
 from app.core.security import get_current_user, require_roles
 from app.models.models import (
-    User, Enrollment, Course, Topic, Module, StudentQuizAttempt, StudentActivityLog
+    Course,
+    Enrollment,
+    Module,
+    StudentActivityLog,
+    StudentQuizAttempt,
+    Topic,
+    User,
 )
 from app.schemas.schemas import (
-    EducatorDashboardOverview, AtRiskStudent, StudentDashboardOverview, StudentRecommendationItem
+    AtRiskStudent,
+    EducatorDashboardOverview,
+    StudentDashboardOverview,
+    StudentRecommendationItem,
 )
 from app.services.analytics_service import analytics_service
 
@@ -126,7 +134,7 @@ async def get_educator_overview(
     """Returns aggregated course analytics, at-risk student flags, and topic difficulty heatmaps."""
     return await analytics_service.compute_dashboard_overview(current_user.id, db)
 
-@router.get("/educator/at-risk", response_model=List[AtRiskStudent])
+@router.get("/educator/at-risk", response_model=list[AtRiskStudent])
 async def get_at_risk_students(
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
@@ -143,6 +151,14 @@ async def trigger_student_intervention(
     db: AsyncSession = Depends(get_db)
 ):
     """Educator action to intervene and send targeted micro-revision packet to an at-risk student."""
+    if current_user.role != "ADMIN":
+        chk = await db.execute(
+            select(Enrollment).join(Course, Enrollment.course_id == Course.id)
+            .where(Enrollment.user_id == student_id, Course.educator_id == current_user.id)
+        )
+        if not chk.scalars().first():
+            raise HTTPException(status_code=403, detail="Student is not enrolled in any of your courses.")
+
     return {
         "status": "success",
         "student_id": student_id,
