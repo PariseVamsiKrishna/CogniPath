@@ -19,7 +19,6 @@ import {
   Compass,
   FileCheck,
   Plus,
-  BookOpen,
   Trash2
 } from 'lucide-react';
 import { analyticsAPI, documentsAPI, curriculumAuditAPI } from '../services/api';
@@ -244,17 +243,6 @@ export default function EducatorDashboard({
             >
               <Plus className="h-4 w-4" />
               <span>Create & Post Course</span>
-            </button>
-          )}
-
-          {onNavigateTab && (
-            <button
-              onClick={() => onNavigateTab('course-player', activeCourse?.id || courseId)}
-              className="flex items-center gap-2 px-4 py-2.5 rounded-xl bg-[#1e2638] hover:bg-slate-700 text-slate-200 text-xs font-bold transition border border-[#2b354d]"
-              title="Open Course Curriculum Player & Editor"
-            >
-              <BookOpen className="h-4 w-4 text-indigo-400" />
-              <span>Curriculum Studio</span>
             </button>
           )}
 

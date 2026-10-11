@@ -11,7 +11,6 @@ const EducatorDashboard = lazy(() => import('./pages/EducatorDashboard'));
 const LearningPods = lazy(() => import('./pages/LearningPods'));
 const CommunityFeed = lazy(() => import('./pages/CommunityFeed'));
 const LearningRoadmapView = lazy(() => import('./pages/LearningRoadmapView'));
-const CoursePlayer = lazy(() => import('./pages/CoursePlayer'));
 const ExamStudio = lazy(() => import('./pages/ExamStudio'));
 const AssignmentView = lazy(() => import('./pages/AssignmentView'));
 const LiveKshetraStudio = lazy(() => import('./pages/LiveKshetraStudio'));
@@ -76,7 +75,7 @@ export default function App() {
     if (newCourse?.id) {
       setSelectedCourseId(newCourse.id);
     }
-    setActiveTab('course-player');
+    setActiveTab(user?.role === 'EDUCATOR' ? 'analytics' : 'dashboard');
   };
 
   useEffect(() => {
@@ -492,7 +491,7 @@ export default function App() {
 
         {/* Dynamic Main Workspace Tab with Ambient Radial Glows */}
         <main className={`flex-1 min-h-0 bg-[#0A0D1C] ambient-canvas ${
-          (activeTab === 'course-player' || activeTab === 'courses' || activeTab === 'tutor')
+          activeTab === 'tutor'
             ? 'overflow-hidden flex flex-col'
             : 'overflow-y-auto'
         }`}>
@@ -518,23 +517,6 @@ export default function App() {
                 onDeleteCoursePermanently={handleDeleteCoursePermanently}
                 onRefreshCourses={() => refreshAllCourses(user)}
                 onOpenExploreCatalog={() => setShowCatalogModal(true)}
-              />
-            )}
-
-            {/* Hierarchical Course Delivery & View-Only PDF Player */}
-            {(activeTab === 'course-player' || activeTab === 'courses') && (
-              <CoursePlayer
-                courseId={selectedCourseId}
-                user={user}
-                onNavigateTab={handleNavigate}
-                courses={enrolledCourses}
-                allCourses={courses}
-                enrolledCourses={enrolledCourses}
-                onSelectCourse={setSelectedCourseId}
-                onRefreshCourses={() => refreshAllCourses(user)}
-                onEnrollCourse={handleEnrollCourse}
-                onUnenrollCourse={handleUnenrollCourse}
-                onDeleteCoursePermanently={handleDeleteCoursePermanently}
               />
             )}
 
@@ -641,7 +623,7 @@ export default function App() {
 
             {/* Robust Fallback in case activeTab is unhandled */}
             {![
-              'dashboard', 'course-player', 'courses', 'exam-studio',
+              'dashboard', 'exam-studio',
               'assignments', 'tutor', 'roadmap', 'quizzes', 'flashcards',
               'analytics', 'kshetra', 'pods', 'community', 'landing'
             ].includes(activeTab) && (
@@ -732,7 +714,7 @@ export default function App() {
         onSelectCourse={async (cId) => {
           await handleEnrollCourse(cId);
           setShowCatalogModal(false);
-          setActiveTab('course-player');
+          setActiveTab('dashboard');
         }}
         user={user}
         enrolledCourses={enrolledCourses}
