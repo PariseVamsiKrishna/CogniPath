@@ -36,6 +36,7 @@ export default function DashboardHome({
   onEnrollCourse,
   onUnenrollCourse,
   onDeleteCoursePermanently,
+  onRefreshCourses,
   onOpenExploreCatalog
 }) {
   const [courseToDelete, setCourseToDelete] = useState(null);
@@ -366,7 +367,20 @@ export default function DashboardHome({
                     course={course}
                     index={idx}
                     onSelectCourse={() => onNavigateTab && onNavigateTab('courses', course.id)}
-                    onDeleteCourse={(c) => setCourseToDelete(c)}
+                    onUnenrollCourse={(cIdOrObj) => {
+                      const resolved =
+                        typeof cIdOrObj === 'object' && cIdOrObj !== null
+                          ? cIdOrObj
+                          : safeEnrolled.find((item) => Number(item.id) === Number(cIdOrObj)) || course;
+                      setCourseToDelete(resolved);
+                    }}
+                    onDeleteCourse={(cIdOrObj) => {
+                      const resolved =
+                        typeof cIdOrObj === 'object' && cIdOrObj !== null
+                          ? cIdOrObj
+                          : safeEnrolled.find((item) => Number(item.id) === Number(cIdOrObj)) || course;
+                      setCourseToDelete(resolved);
+                    }}
                     user={user}
                   />
                 ))}
@@ -719,10 +733,12 @@ export default function DashboardHome({
           isEducator={user?.role === 'EDUCATOR'}
           isCreator={false}
           onConfirm={async (c) => {
+            const targetId = typeof c === 'object' && c !== null ? c.id : c;
             if (onUnenrollCourse) {
-              await onUnenrollCourse(c.id);
+              await onUnenrollCourse(targetId);
+            } else if (onRefreshCourses) {
+              await onRefreshCourses();
             }
-            if (onRefreshCourses) await onRefreshCourses();
           }}
         />
       )}

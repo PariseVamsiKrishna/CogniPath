@@ -730,32 +730,57 @@ export default function CoursePlayer({
   // Confirm Delete or Unenroll
   const handleConfirmDeleteOrUnenroll = async (courseObj) => {
     if (!courseObj) return;
+    const targetCourseId =
+      typeof courseObj === 'object' && courseObj !== null ? courseObj.id : courseObj;
+    const targetCourseTitle =
+      (typeof courseObj === 'object' && courseObj !== null ? courseObj.title : null) || 'Course';
+    if (targetCourseId == null || targetCourseId === '') return;
+
     setDeletingCourse(true);
     try {
       if (deleteMode === 'delete') {
         if (onDeleteCoursePermanently) {
-          await onDeleteCoursePermanently(courseObj.id);
+          await onDeleteCoursePermanently(targetCourseId);
         } else {
-          await coursesAPI.deleteCourse(courseObj.id);
+          await coursesAPI.deleteCourse(targetCourseId);
+          await fetchMyCreatedCourses();
         }
-        showBanner('success', `Course "${courseObj.title}" was permanently deleted.`);
-        await fetchMyCreatedCourses();
+        if (isMountedRef.current) {
+          setCreatedList((prev) => prev.filter((c) => Number(c.id) !== Number(targetCourseId)));
+          setEnrolledList((prev) => prev.filter((c) => Number(c.id) !== Number(targetCourseId)));
+          showBanner('success', `Course "${targetCourseTitle}" was permanently deleted.`);
+        }
       } else {
         if (onUnenrollCourse) {
-          await onUnenrollCourse(courseObj.id);
+          const freshEnrolled = await onUnenrollCourse(targetCourseId);
+          if (isMountedRef.current) {
+            if (Array.isArray(freshEnrolled)) {
+              setEnrolledList(freshEnrolled);
+            } else {
+              await fetchMyEnrolledCourses();
+            }
+          }
         } else {
-          await coursesAPI.unenroll(courseObj.id);
+          await coursesAPI.unenroll(targetCourseId);
+          await fetchMyEnrolledCourses();
         }
-        showBanner('success', `Unenrolled from "${courseObj.title}".`);
-        await fetchMyEnrolledCourses();
+        if (isMountedRef.current) {
+          showBanner('success', `Unenrolled from "${targetCourseTitle}".`);
+        }
       }
-      setCourseToDelete(null);
-      if (Number(selectedCourseIdRef.current) === Number(courseObj.id) && onBackToDashboard) {
+      if (isMountedRef.current) {
+        setCourseToDelete(null);
+      }
+      if (Number(selectedCourseIdRef.current) === Number(targetCourseId) && onBackToDashboard) {
         onBackToDashboard();
       }
-      if (onRefreshCourses) await onRefreshCourses();
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Operation failed. Please try again.');
+      const errMsg =
+        err.response?.data?.detail || err.message || 'Operation failed. Please try again.';
+      if (isMountedRef.current) {
+        showBanner('error', errMsg);
+      }
+      throw err;
     } finally {
       if (isMountedRef.current) {
         setDeletingCourse(false);

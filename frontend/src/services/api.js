@@ -137,15 +137,27 @@ export const coursesAPI = {
     return res.data;
   },
   enroll: async (courseId) => {
-    const res = await apiClient.post(`/courses/${courseId}/enroll`);
+    const id = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
+    if (id == null || id === '' || Number.isNaN(Number(id))) {
+      throw new Error('A valid numeric courseId is required to enroll.');
+    }
+    const res = await apiClient.post(`/courses/${Number(id)}/enroll`);
     return res.data;
   },
   unenroll: async (courseId) => {
-    const res = await apiClient.post(`/courses/${courseId}/unenroll`);
+    const id = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
+    if (id == null || id === '' || Number.isNaN(Number(id))) {
+      throw new Error('A valid numeric courseId is required to unenroll.');
+    }
+    const res = await apiClient.post(`/courses/${Number(id)}/unenroll`);
     return res.data;
   },
   deleteCourse: async (courseId) => {
-    const res = await apiClient.delete(`/courses/${courseId}`);
+    const id = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
+    if (id == null || id === '' || Number.isNaN(Number(id))) {
+      throw new Error('A valid numeric courseId is required to delete a course.');
+    }
+    const res = await apiClient.delete(`/courses/${Number(id)}`);
     return res.data;
   },
   createModule: async (courseId, moduleData) => {

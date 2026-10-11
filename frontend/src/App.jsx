@@ -146,6 +146,7 @@ export default function App() {
       }
     } catch (err) {
       console.warn('API getEnrolled failed:', err);
+      return null;
     }
 
     setEnrolledCourses([]);
@@ -153,36 +154,53 @@ export default function App() {
   };
 
   const handleEnrollCourse = async (courseId) => {
-    await coursesAPI.enroll(courseId);
+    const resolvedId = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
+    await coursesAPI.enroll(resolvedId);
     const fresh = await fetchEnrolledCourses(user);
-    setSelectedCourseId(courseId);
+    setSelectedCourseId(resolvedId);
     setCoursePreviewOnly(false);
     setCourseWorkspaceTab('learn');
     return fresh;
   };
 
   const handleUnenrollCourse = async (courseId) => {
-    await coursesAPI.unenroll(courseId);
-    const updated = enrolledCourses.filter((c) => Number(c.id) !== Number(courseId));
-    setEnrolledCourses(updated);
-    if (user) {
-      localStorage.setItem(
-        `cognipath_enrolled_${user.id || user.email}`,
-        JSON.stringify(updated)
-      );
+    const resolvedId = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
+    if (resolvedId == null || resolvedId === '' || Number.isNaN(Number(resolvedId))) {
+      throw new Error('A valid numeric courseId is required to unenroll.');
     }
-    if (Number(selectedCourseId) === Number(courseId)) {
+    await coursesAPI.unenroll(resolvedId);
+    let updatedList = [];
+    setEnrolledCourses((prev) => {
+      updatedList = (Array.isArray(prev) ? prev : []).filter(
+        (c) => Number(c.id) !== Number(resolvedId)
+      );
+      if (user) {
+        try {
+          localStorage.setItem(
+            `cognipath_enrolled_${user.id || user.email}`,
+            JSON.stringify(updatedList)
+          );
+        } catch (e) {}
+      }
+      return updatedList;
+    });
+    if (Number(selectedCourseId) === Number(resolvedId)) {
       setSelectedCourseId(null);
     }
-    await fetchEnrolledCourses(user);
+    const fresh = await fetchEnrolledCourses(user);
+    return Array.isArray(fresh) ? fresh : updatedList;
   };
 
   const handleDeleteCoursePermanently = async (courseId) => {
-    await coursesAPI.deleteCourse(courseId);
-    setCourses((prev) => prev.filter((c) => Number(c.id) !== Number(courseId)));
-    setMyCreatedCourses((prev) => prev.filter((c) => Number(c.id) !== Number(courseId)));
-    setEnrolledCourses((prev) => prev.filter((c) => Number(c.id) !== Number(courseId)));
-    if (Number(selectedCourseId) === Number(courseId)) {
+    const resolvedId = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
+    if (resolvedId == null || resolvedId === '' || Number.isNaN(Number(resolvedId))) {
+      throw new Error('A valid numeric courseId is required to delete a course.');
+    }
+    await coursesAPI.deleteCourse(resolvedId);
+    setCourses((prev) => prev.filter((c) => Number(c.id) !== Number(resolvedId)));
+    setMyCreatedCourses((prev) => prev.filter((c) => Number(c.id) !== Number(resolvedId)));
+    setEnrolledCourses((prev) => prev.filter((c) => Number(c.id) !== Number(resolvedId)));
+    if (Number(selectedCourseId) === Number(resolvedId)) {
       setSelectedCourseId(null);
     }
     await refreshAllCourses(user);

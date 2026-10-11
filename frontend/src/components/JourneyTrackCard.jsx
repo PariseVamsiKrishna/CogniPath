@@ -114,6 +114,7 @@ export default function JourneyTrackCard({
   onSelectCourse,
   onOpenRateModal,
   onDeleteCourse,
+  onUnenrollCourse,
   user
 }) {
   const accent = COURSE_ACCENTS[index % COURSE_ACCENTS.length];
@@ -359,12 +360,16 @@ export default function JourneyTrackCard({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          {onDeleteCourse && (
+          {(onUnenrollCourse || onDeleteCourse) && (
             <button
               type="button"
               onClick={(e) => {
                 e.stopPropagation();
-                onDeleteCourse(course);
+                if (onUnenrollCourse) {
+                  onUnenrollCourse(course.id);
+                } else if (onDeleteCourse) {
+                  onDeleteCourse(course.id);
+                }
               }}
               className="p-2 rounded-full text-[#8A90B4] hover:text-red-400 hover:bg-red-500/15 border border-[#262C4C] hover:border-red-500/30 transition shadow-sm"
               title={

@@ -86,27 +86,27 @@ export default function CommunityFeed({
   const isCurrentJoined = joinedCommunities.includes(activeCourse.id) || isCommunityOwner;
 
   const handleJoinCommunity = async (cId) => {
-    const updated = [...new Set([...joinedCommunities, cId])];
+    const resolvedId = typeof cId === 'object' && cId !== null ? cId.id : cId;
+    if (onEnrollCourse) {
+      await onEnrollCourse(resolvedId);
+    }
+    const updated = [...new Set([...joinedCommunities, resolvedId])];
     setJoinedCommunities(updated);
     try {
       localStorage.setItem(`cognipath_joined_communities_${user?.id || user?.email}`, JSON.stringify(updated));
     } catch (e) {}
-
-    if (onEnrollCourse) {
-      await onEnrollCourse(cId);
-    }
   };
 
   const handleLeaveCommunity = async (cId) => {
-    const updated = joinedCommunities.filter((id) => id !== cId);
+    const resolvedId = typeof cId === 'object' && cId !== null ? cId.id : cId;
+    if (onUnenrollCourse) {
+      await onUnenrollCourse(resolvedId);
+    }
+    const updated = joinedCommunities.filter((id) => Number(id) !== Number(resolvedId));
     setJoinedCommunities(updated);
     try {
       localStorage.setItem(`cognipath_joined_communities_${user?.id || user?.email}`, JSON.stringify(updated));
     } catch (e) {}
-
-    if (onUnenrollCourse) {
-      await onUnenrollCourse(cId);
-    }
   };
 
 

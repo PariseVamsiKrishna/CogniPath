@@ -192,6 +192,7 @@ export default function EnrolledCoursesGrid({
                 index={idx}
                 onSelectCourse={onSelectCourse}
                 onOpenRateModal={onOpenRateModal}
+                onUnenrollCourse={onUnenrollCourse}
                 onDeleteCourse={onUnenrollCourse}
                 user={user}
               />

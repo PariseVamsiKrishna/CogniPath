@@ -635,3 +635,100 @@ def test_youtube_video_id_extractor_edge_cases():
     assert extract_youtube_video_id("https://youtube.com.evil.com/watch?v=WLvU5EQVZqY") is None
     assert extract_youtube_video_id("not-a-valid-id") is None
 
+
+@pytest.mark.asyncio
+async def test_student_unenrollment_preserves_other_enrollments_and_course_record(client, db_session):
+    """
+    Verifies the complete student unenrollment and educator permanent deletion workflow:
+    1. Student enrolled in Course A and Course B unenrolls from Course A via POST /api/v1/courses/{course_id}/unenroll.
+    2. Course A is removed from GET /api/v1/courses/enrolled while Course B remains enrolled.
+    3. Course A itself is NOT deleted from the database and remains discoverable in GET /api/v1/courses/explore.
+    4. Educator can still permanently delete their own created course via DELETE /api/v1/courses/{course_id}.
+    """
+    educator = User(
+        email="unenroll_edu@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Prof. Tanenbaum",
+        role="EDUCATOR"
+    )
+    student = User(
+        email="unenroll_stu@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Learner A",
+        role="STUDENT"
+    )
+    db_session.add_all([educator, student])
+    await db_session.commit()
+    await db_session.refresh(educator)
+    await db_session.refresh(student)
+
+    course_a = Course(
+        title="Operating Systems Design",
+        code="CS401-OS",
+        description="Kernel architecture and scheduling",
+        educator_id=educator.id,
+        is_published=True
+    )
+    course_b = Course(
+        title="Computer Networks",
+        code="CS402-NET",
+        description="TCP/IP and routing protocols",
+        educator_id=educator.id,
+        is_published=True
+    )
+    db_session.add_all([course_a, course_b])
+    await db_session.commit()
+    await db_session.refresh(course_a)
+    await db_session.refresh(course_b)
+
+    db_session.add_all([
+        Enrollment(user_id=student.id, course_id=course_a.id),
+        Enrollment(user_id=student.id, course_id=course_b.id),
+    ])
+    await db_session.commit()
+
+    login_stu = await client.post("/api/v1/auth/login", data={"username": student.email, "password": "Pass123!"})
+    headers_stu = {"Authorization": f"Bearer {login_stu.json()['access_token']}"}
+
+    login_edu = await client.post("/api/v1/auth/login", data={"username": educator.email, "password": "Pass123!"})
+    headers_edu = {"Authorization": f"Bearer {login_edu.json()['access_token']}"}
+
+    # Verify both courses initially appear in /enrolled
+    initial_enrolled = await client.get("/api/v1/courses/enrolled", headers=headers_stu)
+    assert initial_enrolled.status_code == 200
+    initial_ids = {c["id"] for c in initial_enrolled.json()}
+    assert course_a.id in initial_ids
+    assert course_b.id in initial_ids
+
+    # Student unenrolls from course_a
+    unenroll_res = await client.post(f"/api/v1/courses/{course_a.id}/unenroll", headers=headers_stu)
+    assert unenroll_res.status_code == 200
+    assert unenroll_res.json()["status"] == "success"
+
+    # Refresh enrolled courses: course_a is gone, course_b remains
+    after_enrolled = await client.get("/api/v1/courses/enrolled", headers=headers_stu)
+    assert after_enrolled.status_code == 200
+    remaining_ids = {c["id"] for c in after_enrolled.json()}
+    assert course_a.id not in remaining_ids
+    assert course_b.id in remaining_ids
+
+    # Course A record still exists and is discoverable in /explore with is_enrolled == False
+    course_a_detail = await client.get(f"/api/v1/courses/{course_a.id}", headers=headers_stu)
+    assert course_a_detail.status_code == 200
+    assert course_a_detail.json()["id"] == course_a.id
+    assert course_a_detail.json()["is_enrolled"] is False
+
+    explore_res = await client.get("/api/v1/courses/explore", headers=headers_stu)
+    assert explore_res.status_code == 200
+    explored_a = next((c for c in explore_res.json() if c["id"] == course_a.id), None)
+    assert explored_a is not None
+    assert explored_a["is_enrolled"] is False
+
+    # Educator can still permanently delete course_a
+    del_res = await client.delete(f"/api/v1/courses/{course_a.id}", headers=headers_edu)
+    assert del_res.status_code == 200
+    assert del_res.json()["status"] == "success"
+
+    course_a_after_del = await client.get(f"/api/v1/courses/{course_a.id}", headers=headers_stu)
+    assert course_a_after_del.status_code == 404
+
