@@ -159,10 +159,12 @@ export default function JourneyTrackCard({
   const totalMilestones = milestones.length;
 
   // Derive current milestone index based on progress percentage
-  // e.g. 68% progress across 6 milestones => current index is 3 (milestones 0, 1, 2 completed)
-  const progressPercent = typeof course.progress_percentage === 'number'
-    ? course.progress_percentage
-    : (index === 0 ? 68 : index === 1 ? 45 : 30);
+  const progressPercent =
+    typeof course.completion_percentage === 'number'
+      ? Math.round(course.completion_percentage)
+      : typeof course.progress_percentage === 'number'
+      ? Math.round(course.progress_percentage)
+      : 0;
 
   const activeMilestoneIndex = Math.min(
     totalMilestones - 1,
@@ -214,7 +216,11 @@ export default function JourneyTrackCard({
               title="Course Rating & Reviews"
             >
               <Star className="h-3.5 w-3.5 fill-[#FFC15E] text-[#FFC15E]" />
-              <span>{course.average_rating ? course.average_rating.toFixed(1) : '4.9'}</span>
+              <span>
+                {Number(course.total_ratings || 0) > 0
+                  ? Number(course.average_rating || 0).toFixed(1)
+                  : 'New'}
+              </span>
             </button>
 
             {/* Course Code Tag */}
@@ -233,7 +239,10 @@ export default function JourneyTrackCard({
             {course.description || `${course.category || 'Computer Science'} comprehensive curriculum.`}
           </p>
           <div className="text-[11px] text-[#8A90B4] mt-2">
-            Created by <span className="font-semibold text-[#ECEDF7]">{course.educator_name || 'Prof. Rajesh Ramanujan'}</span>
+            Created by <span className="font-semibold text-[#ECEDF7]">{course.educator_name || 'Course Instructor'}</span>
+            {(course.university || course.educator_university) && (
+              <span className="text-[#8A90B4]"> • {course.university || course.educator_university}</span>
+            )}
           </div>
         </div>
 

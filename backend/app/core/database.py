@@ -26,15 +26,39 @@ async def get_db():
         yield session
 
 async def init_db():
-    """Initialize database tables for local SQLite development. Production uses Alembic migrations."""
+    """Initialize database tables and apply safe additive column migrations without modifying existing data."""
+    from sqlalchemy import text
     from app.models.models import Base as ModelsBase
     try:
+        async with engine.begin() as conn:
+            await conn.run_sync(ModelsBase.metadata.create_all)
+        logger.info("Database tables verified/initialized successfully.")
+
+        # Safe non-destructive additive column migrations for existing databases
         if database_url.startswith("sqlite"):
-            async with engine.begin() as conn:
-                await conn.run_sync(ModelsBase.metadata.create_all)
-            logger.info("SQLite database schema initialized successfully.")
+            sqlite_migrations = [
+                "ALTER TABLE courses ADD COLUMN target_branch VARCHAR(255) DEFAULT 'Computer Science & Engineering (CSE)'",
+                "ALTER TABLE courses ADD COLUMN is_published BOOLEAN DEFAULT 1 NOT NULL",
+                "ALTER TABLE courses ADD COLUMN updated_at TIMESTAMP",
+            ]
+            for stmt in sqlite_migrations:
+                try:
+                    async with engine.begin() as conn:
+                        await conn.execute(text(stmt))
+                except Exception:
+                    pass
         else:
-            logger.info("Production database detected. Using existing tables & Alembic migrations.")
+            pg_migrations = [
+                "ALTER TABLE courses ADD COLUMN IF NOT EXISTS target_branch VARCHAR(255) DEFAULT 'Computer Science & Engineering (CSE)'",
+                "ALTER TABLE courses ADD COLUMN IF NOT EXISTS is_published BOOLEAN DEFAULT TRUE NOT NULL",
+                "ALTER TABLE courses ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+            ]
+            for stmt in pg_migrations:
+                try:
+                    async with engine.begin() as conn:
+                        await conn.execute(text(stmt))
+                except Exception as mig_err:
+                    logger.debug(f"Additive column migration notice: {mig_err}")
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise

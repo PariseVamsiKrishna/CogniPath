@@ -9,7 +9,7 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, or_, update
+from sqlalchemy import delete, func, or_, update
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
@@ -54,9 +54,11 @@ from app.schemas.schemas import (
     CourseRatingResponse,
     CourseRatingsSummary,
     CourseResponse,
+    CourseUpdate,
     ExamResponse,
     ModuleCreate,
     ModuleExamCreateRequest,
+    ModuleReorderRequest,
     ModuleResourceResponse,
     ModuleResponse,
     ModuleUpdate,
@@ -71,6 +73,7 @@ from app.schemas.schemas import (
     TopicRatingCreate,
     TopicRatingResponse,
     TopicRatingSummary,
+    TopicReorderRequest,
     TopicResponse,
     TopicUpdate,
 )
@@ -82,6 +85,29 @@ logger = logging.getLogger("cognipath.courses")
 
 router = APIRouter(prefix="/courses", tags=["Courses & Hierarchical Content Delivery"])
 module_router = APIRouter(tags=["Module End Assessments"])
+
+CANONICAL_DIFFICULTY_MAP = {
+    "easy": "Easy",
+    "medium": "Medium",
+    "hard": "Hard",
+    "beginner": "Beginner",
+    "intermediate": "Intermediate",
+    "advanced": "Advanced",
+}
+
+
+def normalize_difficulty(val: str | None) -> str:
+    """Validate and normalize course difficulty level."""
+    if val is None or not str(val).strip():
+        return "Intermediate"
+    key = str(val).strip().lower()
+    if key not in CANONICAL_DIFFICULTY_MAP:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid difficulty level. Allowed values: Easy, Medium, Hard (or Beginner, Intermediate, Advanced)."
+        )
+    return CANONICAL_DIFFICULTY_MAP[key]
+
 
 def extract_youtube_video_id(url: str | None) -> str | None:
     """Extract standard 11-character YouTube video ID from supported YouTube link formats.
@@ -152,22 +178,61 @@ def invalidate_course_hierarchy_cache(course_id: int):
     ttl_cache.invalidate(f"hierarchy_{course_id}_student")
 
 
-async def _check_course_ownership(course_id: int, current_user: User, db: AsyncSession):
+async def _is_user_course_owner(course: Course, current_user: User | None, db: AsyncSession) -> bool:
+    if not current_user:
+        return False
+    if current_user.role == "ADMIN":
+        return True
+    if course.educator_id == current_user.id:
+        return True
+    if course.educator_id and current_user.email:
+        ed_res = await db.execute(select(User).where(User.id == course.educator_id))
+        ed_user = ed_res.scalars().first()
+        if ed_user and ed_user.email and ed_user.email.strip().lower() == current_user.email.strip().lower():
+            return True
+    return False
+
+
+async def _check_course_ownership(course_id: int, current_user: User, db: AsyncSession) -> Course:
     course_res = await db.execute(select(Course).where(Course.id == course_id))
     course = course_res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    is_owner = (course.educator_id == current_user.id)
-    if not is_owner and course.educator_id and current_user.email:
-        ed_res = await db.execute(select(User).where(User.id == course.educator_id))
-        ed_user = ed_res.scalars().first()
-        if ed_user and ed_user.email and ed_user.email.strip().lower() == current_user.email.strip().lower():
-            is_owner = True
-
-    if not is_owner and current_user.role != "ADMIN":
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Only the educator who created this course can modify or delete it.")
+    if not await _is_user_course_owner(course, current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only the educator who created this course can modify or delete it."
+        )
     return course
+
+
+async def _validate_course_curriculum_for_publication(course_id: int, db: AsyncSession):
+    """Ensure a course has at least 1 module and at least 1 topic with a valid YouTube video before publishing."""
+    mod_res = await db.execute(select(Module).where(Module.course_id == course_id).order_by(Module.order_index.asc()))
+    modules = mod_res.scalars().all()
+    if not modules:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Course cannot be published without at least one module."
+        )
+
+    mod_ids = [m.id for m in modules]
+    top_res = await db.execute(select(Topic).where(Topic.module_id.in_(mod_ids)))
+    topics = top_res.scalars().all()
+    if not topics:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Course cannot be published without at least one topic inside a module."
+        )
+
+    for t in topics:
+        vid = extract_youtube_video_id(t.youtube_url) or extract_youtube_video_id(t.youtube_video_id)
+        if not vid:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Topic '{t.title}' does not have a valid YouTube video URL."
+            )
 
 
 # ==============================================================================
@@ -178,7 +243,7 @@ async def get_course_rating_stats(course: Course, db: AsyncSession):
     """Calculates creator name, creator email, aggregated star rating, and review count."""
     educator_res = await db.execute(select(User).where(User.id == course.educator_id))
     educator = educator_res.scalars().first()
-    educator_name = educator.full_name if educator else "Prof. Rajesh Ramanujan"
+    educator_name = (educator.full_name.strip() if educator and educator.full_name and educator.full_name.strip() else "Course Educator")
     educator_email = educator.email if educator else None
 
     c_ratings_res = await db.execute(select(CourseRating).where(CourseRating.course_id == course.id))
@@ -203,6 +268,104 @@ async def get_course_rating_stats(course: Course, db: AsyncSession):
         total_count = 0
 
     return educator_name, educator_email, avg_rating, total_count
+
+
+async def build_enriched_course_dict(
+    course: Course,
+    db: AsyncSession,
+    current_user: User | None = None
+) -> dict:
+    """Builds complete authoritative metadata dictionary for a course from the database."""
+    educator_res = await db.execute(select(User).where(User.id == course.educator_id))
+    educator = educator_res.scalars().first()
+    educator_name = (
+        educator.full_name.strip()
+        if educator and educator.full_name and educator.full_name.strip()
+        else "Course Educator"
+    )
+    educator_email = educator.email if educator else None
+    university = (
+        educator.university.strip()
+        if educator and educator.university and educator.university.strip()
+        else None
+    )
+    educator_department = (
+        educator.department.strip()
+        if educator and educator.department and educator.department.strip()
+        else None
+    )
+
+    _, _, avg_rating, total_ratings = await get_course_rating_stats(course, db)
+
+    mod_res = await db.execute(
+        select(Module).where(Module.course_id == course.id).order_by(Module.order_index.asc())
+    )
+    mods = mod_res.scalars().all()
+    modules_count = len(mods)
+
+    t_res = await db.execute(
+        select(Topic)
+        .join(Module, Topic.module_id == Module.id)
+        .where(Module.course_id == course.id)
+        .order_by(Module.order_index.asc(), Topic.order_index.asc())
+    )
+    topics = t_res.scalars().all()
+    topics_count = len(topics)
+    next_t_title = topics[0].title if topics else "Overview & Introduction"
+
+    enr_all_res = await db.execute(select(Enrollment).where(Enrollment.course_id == course.id))
+    all_enrollments = enr_all_res.scalars().all()
+    enrolled_count = len(all_enrollments)
+
+    user_enr = None
+    if current_user:
+        for e in all_enrollments:
+            if e.user_id == current_user.id:
+                user_enr = e
+                break
+
+    is_enrolled = user_enr is not None
+    progress_percentage = user_enr.completion_percentage if user_enr else 0.0
+    enrolled_at = user_enr.enrolled_at if user_enr else None
+
+    raw_pub = getattr(course, "is_published", True)
+    is_published = True if raw_pub is None else bool(raw_pub)
+    publication_status = "PUBLISHED" if is_published else "DRAFT"
+
+    cat_val = (course.category or "Computer Science").strip() or "Computer Science"
+    branch_val = (getattr(course, "target_branch", None) or cat_val or "Computer Science & Engineering (CSE)").strip()
+    diff_val = (course.difficulty or "Intermediate").strip()
+
+    return {
+        "id": course.id,
+        "title": course.title or "Untitled Course",
+        "code": course.code or f"CP{course.id}",
+        "description": course.description,
+        "category": cat_val,
+        "target_branch": branch_val,
+        "difficulty": diff_val,
+        "thumbnail_url": course.thumbnail_url,
+        "is_published": is_published,
+        "publication_status": publication_status,
+        "educator_id": course.educator_id,
+        "educator_name": educator_name,
+        "educator_email": educator_email,
+        "university": university,
+        "educator_university": university,
+        "educator_department": educator_department,
+        "average_rating": avg_rating,
+        "total_ratings": total_ratings,
+        "enrolled_count": enrolled_count,
+        "modules_count": modules_count,
+        "topics_count": topics_count,
+        "progress_percentage": progress_percentage,
+        "enrolled_at": enrolled_at,
+        "next_topic_title": next_t_title,
+        "is_enrolled": is_enrolled,
+        "created_at": course.created_at,
+        "updated_at": getattr(course, "updated_at", None) or course.created_at,
+    }
+
 
 async def get_course_ratings_summary(course_id: int, user_id: int | None, db: AsyncSession):
     """Summarizes course reviews and current user rating."""
@@ -250,18 +413,26 @@ async def get_course_ratings_summary(course_id: int, user_id: int | None, db: As
         reviews=reviews_out
     )
 
+
 @router.get("/explore", response_model=list[CourseExploreItem])
 async def explore_courses(
     q: str | None = None,
     category: str | None = None,
+    target_branch: str | None = None,
+    difficulty: str | None = None,
     sort_by: str = "rating",  # "rating" | "popular" | "newest"
+    include_enrolled: bool = False,
     current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
     """
-    Search and explore all courses available in the app.
-    Supports real-time search across course title, code, category, description, and creator name.
-    Prioritizes highest-rated courses first.
+    Search and explore published courses available in the platform.
+    - Excludes unpublished (draft) courses.
+    - Excludes courses in which the current authenticated user is already enrolled (unless include_enrolled=True).
+    - Supports sorting by:
+      * 'newest': most recently created/published courses first
+      * 'popular': highest student enrollment count first (tie-broken by rating and ID)
+      * 'rating' / 'highest_rated': highest genuine rating first (unrated courses have 0.0 and sort after rated ones)
     """
     courses_res = await db.execute(select(Course).order_by(Course.id.asc()))
     all_courses = courses_res.scalars().all()
@@ -271,27 +442,49 @@ async def explore_courses(
         enr_res = await db.execute(select(Enrollment.course_id).where(Enrollment.user_id == current_user.id))
         user_enrolled_ids = set(enr_res.scalars().all())
 
-    items = []
+    items: list[CourseExploreItem] = []
     for c in all_courses:
-        educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(c, db)
+        raw_pub = getattr(c, "is_published", True)
+        is_pub = True if raw_pub is None else bool(raw_pub)
+        if not is_pub:
+            continue
 
-        # Count modules and topics
-        mod_res = await db.execute(select(Module).where(Module.course_id == c.id))
-        mods = mod_res.scalars().all()
-        modules_count = len(mods)
+        if current_user and not include_enrolled and c.id in user_enrolled_ids:
+            continue
 
-        t_count_res = await db.execute(
-            select(Topic).join(Module, Topic.module_id == Module.id).where(Module.course_id == c.id)
-        )
-        topics_count = len(t_count_res.scalars().all())
+        enriched = await build_enriched_course_dict(c, db, current_user)
 
         # Category Filter (null-safe)
-        cat_val = (c.category or "").strip()
         if category and category.strip().lower() != "all":
-            if cat_val.lower() != category.strip().lower():
+            cat_filter = category.strip().lower()
+            raw_cat = (c.category or "").strip().lower()
+            raw_branch = (getattr(c, "target_branch", None) or "").strip().lower()
+            if cat_filter != raw_cat and cat_filter != raw_branch and cat_filter not in raw_branch:
                 continue
 
-        # Text Query Search (Title, Code, Description, Category, Creator Name, Creator Email)
+        # Target Branch Filter
+        if target_branch and target_branch.strip().lower() != "all":
+            tb_filter = target_branch.strip().lower()
+            if tb_filter not in enriched["target_branch"].lower() and tb_filter not in enriched["category"].lower():
+                continue
+
+        # Difficulty Filter
+        if difficulty and difficulty.strip().lower() != "all":
+            diff_filter = difficulty.strip().lower()
+            c_diff = enriched["difficulty"].lower()
+            equiv_map = {
+                "easy": {"easy", "beginner"},
+                "beginner": {"easy", "beginner"},
+                "medium": {"medium", "intermediate"},
+                "intermediate": {"medium", "intermediate"},
+                "hard": {"hard", "advanced"},
+                "advanced": {"hard", "advanced"},
+            }
+            allowed_diffs = equiv_map.get(diff_filter, {diff_filter})
+            if c_diff not in allowed_diffs:
+                continue
+
+        # Text Query Search (Title, Code, Description, Category, Target Branch, Educator Name, University)
         if q and q.strip():
             query_str = q.strip().lower()
             matches = (
@@ -299,112 +492,107 @@ async def explore_courses(
                 query_str in (c.code or "").lower() or
                 query_str in (c.description or "").lower() or
                 query_str in (c.category or "").lower() or
-                query_str in (educator_name or "").lower() or
-                query_str in (educator_email or "").lower()
+                query_str in enriched["target_branch"].lower() or
+                query_str in (enriched["educator_name"] or "").lower() or
+                query_str in (enriched["educator_email"] or "").lower() or
+                query_str in (enriched["university"] or "").lower()
             )
             if not matches:
                 continue
 
-        items.append(CourseExploreItem(
-            id=c.id,
-            title=c.title or "Untitled Course",
-            code=c.code or "CS101",
-            description=c.description,
-            category=c.category or "Computer Science",
-            difficulty=c.difficulty or "Intermediate",
-            thumbnail_url=c.thumbnail_url,
-            educator_id=c.educator_id,
-            educator_name=educator_name,
-            educator_email=educator_email,
-            average_rating=avg_rating,
-            total_ratings=total_count,
-            modules_count=modules_count,
-            topics_count=topics_count,
-            is_enrolled=(c.id in user_enrolled_ids),
-            created_at=c.created_at
-        ))
+        items.append(CourseExploreItem(**enriched))
 
-    # High Rating Priority Sorting
-    if sort_by == "rating":
-        items.sort(key=lambda x: (x.average_rating, x.total_ratings), reverse=True)
-    elif sort_by == "popular":
-        items.sort(key=lambda x: x.total_ratings, reverse=True)
-    elif sort_by == "newest":
-        items.sort(key=lambda x: x.id, reverse=True)
+    sort_key = (sort_by or "rating").strip().lower()
+    if sort_key in ("rating", "highest_rated"):
+        # Genuine ratings prioritized; unrated courses (total_ratings == 0) sort after rated ones
+        items.sort(
+            key=lambda x: (
+                1 if x.total_ratings > 0 else 0,
+                x.average_rating,
+                x.total_ratings,
+                x.enrolled_count,
+                x.id
+            ),
+            reverse=True
+        )
+    elif sort_key in ("popular", "popularity"):
+        # Popularity based on actual unique student enrollment count, tie-broken by rating and ID
+        items.sort(
+            key=lambda x: (
+                x.enrolled_count,
+                x.average_rating,
+                x.total_ratings,
+                x.id
+            ),
+            reverse=True
+        )
+    elif sort_key == "newest":
+        items.sort(
+            key=lambda x: (
+                x.created_at.timestamp() if x.created_at else 0.0,
+                x.id
+            ),
+            reverse=True
+        )
 
     return items
 
-@router.get("/enrolled", response_model=list[CourseResponse])
+
 @router.get("/my-courses", response_model=list[CourseResponse])
+async def get_my_created_courses(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Retrieve ONLY courses created by the currently authenticated educator.
+    Never returns courses created by other educators or general student enrollments.
+    Includes both DRAFT and PUBLISHED courses owned by this educator.
+    """
+    matching_educator_ids = {current_user.id}
+    if current_user.email:
+        ed_res = await db.execute(
+            select(User.id).where(User.email.ilike(current_user.email.strip()))
+        )
+        matching_educator_ids.update(ed_res.scalars().all())
+
+    res = await db.execute(
+        select(Course)
+        .where(Course.educator_id.in_(matching_educator_ids))
+        .order_by(Course.id.desc())
+    )
+    courses = res.scalars().all()
+
+    out = []
+    for c in courses:
+        enriched = await build_enriched_course_dict(c, db, current_user)
+        out.append(CourseResponse(**enriched))
+    return out
+
+
+@router.get("/enrolled", response_model=list[CourseResponse])
 async def get_enrolled_courses(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Retrieve ONLY courses the logged-in student has enrolled in (or educator has created/enrolled in)."""
-    if current_user.role in ("EDUCATOR", "ADMIN"):
-        res = await db.execute(
-            select(Course).where(
-                or_(
-                    Course.educator_id == current_user.id,
-                    Course.id.in_(
-                        select(Enrollment.course_id).where(Enrollment.user_id == current_user.id)
-                    )
-                )
-            ).order_by(Course.id.asc())
-        )
-        courses = res.scalars().all()
-    else:
-        res = await db.execute(
-            select(Course).join(Enrollment, Course.id == Enrollment.course_id).where(
-                Enrollment.user_id == current_user.id
-            ).order_by(Course.id.asc())
-        )
-        courses = res.scalars().all()
+    """
+    Retrieve ONLY courses in which the currently authenticated user has an active Enrollment record.
+    Kept strictly separate from educator-created courses.
+    """
+    res = await db.execute(
+        select(Course)
+        .join(Enrollment, Course.id == Enrollment.course_id)
+        .where(Enrollment.user_id == current_user.id)
+        .order_by(Enrollment.enrolled_at.desc(), Course.id.asc())
+    )
+    courses = res.scalars().all()
 
     out = []
     for c in courses:
-        educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(c, db)
-
-        # Get student's personal completion percentage for this course
-        enr_res = await db.execute(
-            select(Enrollment).where(
-                Enrollment.user_id == current_user.id,
-                Enrollment.course_id == c.id
-            )
-        )
-        enr = enr_res.scalars().first()
-        prog = enr.completion_percentage if enr else (100.0 if current_user.role in ("EDUCATOR", "ADMIN") and c.educator_id == current_user.id else 0.0)
-
-        # Find first topic as next topic
-        next_t_title = "Overview & Introduction"
-        t_res = await db.execute(
-            select(Topic).join(Module, Topic.module_id == Module.id).where(
-                Module.course_id == c.id
-            ).order_by(Module.order_index.asc(), Topic.order_index.asc())
-        )
-        first_t = t_res.scalars().first()
-        if first_t:
-            next_t_title = first_t.title
-
-        out.append(CourseResponse(
-            id=c.id,
-            title=c.title,
-            code=c.code,
-            description=c.description,
-            category=c.category or "Computer Science",
-            difficulty=c.difficulty or "Intermediate",
-            thumbnail_url=c.thumbnail_url,
-            educator_id=c.educator_id,
-            educator_name=educator_name,
-            educator_email=educator_email,
-            average_rating=avg_rating,
-            total_ratings=total_count,
-            progress_percentage=prog,
-            next_topic_title=next_t_title,
-            is_enrolled=True,
-            created_at=c.created_at
-        ))
+        enriched = await build_enriched_course_dict(c, db, current_user)
+        enriched["is_enrolled"] = True
+        out.append(CourseResponse(**enriched))
     return out
+
 
 @router.get("", response_model=list[CourseResponse])
 async def list_courses(
@@ -412,58 +600,22 @@ async def list_courses(
     current_user: User | None = Depends(get_optional_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """List courses with enriched creator name, star ratings, and student enrollment flag."""
-    enrolled_ids = set()
-    if current_user:
-        enr_res = await db.execute(
-            select(Enrollment.course_id).where(Enrollment.user_id == current_user.id)
-        )
-        enrolled_ids = set(enr_res.scalars().all())
-        if current_user.role in ("EDUCATOR", "ADMIN"):
-            c_res = await db.execute(select(Course.id).where(Course.educator_id == current_user.id))
-            enrolled_ids.update(c_res.scalars().all())
-
+    """List published courses (plus the current educator's own drafts) with enriched metadata."""
     if enrolled_only and current_user:
-        result = await db.execute(select(Course).where(Course.id.in_(enrolled_ids)).order_by(Course.id.asc()))
-    else:
-        result = await db.execute(select(Course).order_by(Course.id.asc()))
-    
+        return await get_enrolled_courses(current_user=current_user, db=db)
+
+    result = await db.execute(select(Course).order_by(Course.id.asc()))
     courses = result.scalars().all()
     out = []
     for c in courses:
-        educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(c, db)
-        is_enr = c.id in enrolled_ids
-        
-        # Get progress if enrolled
-        prog = 0.0
-        if is_enr and current_user:
-            enr_res = await db.execute(
-                select(Enrollment).where(
-                    Enrollment.user_id == current_user.id,
-                    Enrollment.course_id == c.id
-                )
-            )
-            enr = enr_res.scalars().first()
-            if enr:
-                prog = enr.completion_percentage
-
-        out.append(CourseResponse(
-            id=c.id,
-            title=c.title,
-            code=c.code,
-            description=c.description,
-            category=c.category or "Computer Science",
-            difficulty=c.difficulty or "Intermediate",
-            thumbnail_url=c.thumbnail_url,
-            educator_id=c.educator_id,
-            educator_name=educator_name,
-            educator_email=educator_email,
-            average_rating=avg_rating,
-            total_ratings=total_count,
-            progress_percentage=prog,
-            is_enrolled=is_enr,
-            created_at=c.created_at
-        ))
+        raw_pub = getattr(c, "is_published", True)
+        is_pub = True if raw_pub is None else bool(raw_pub)
+        if not is_pub:
+            is_owner = await _is_user_course_owner(c, current_user, db)
+            if not is_owner:
+                continue
+        enriched = await build_enriched_course_dict(c, db, current_user)
+        out.append(CourseResponse(**enriched))
     return out
 
 
@@ -473,7 +625,92 @@ async def create_course(
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
 ):
-    """Create a new course with difficulty, thumbnail, auto-provisioned community channels, and atomic nested curriculum."""
+    """
+    Create a new course with validated metadata, difficulty, target branch,
+    auto-provisioned community channels, and atomic nested curriculum.
+    Enforces that initial curriculum contains at least 1 module, 1 topic, and a valid YouTube video URL.
+    """
+    title_clean = (course_in.title or "").strip()
+    if len(title_clean) < 2:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Course title is required and must contain at least 2 characters."
+        )
+    if len(title_clean) > 255:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Course title must not exceed 255 characters."
+        )
+
+    difficulty_val = normalize_difficulty(course_in.difficulty)
+
+    cat_clean = (course_in.category or course_in.target_branch or "Computer Science").strip()
+    branch_clean = (course_in.target_branch or course_in.category or "Computer Science & Engineering (CSE)").strip()
+    if not cat_clean or not branch_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Target student branch / category is required."
+        )
+
+    desc_clean = (course_in.description or "").strip()
+    if not desc_clean:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Course description is required."
+        )
+
+    # Validate initial curriculum requirements: at least 1 module, 1 topic, and valid YouTube URLs
+    if not course_in.modules or len(course_in.modules) == 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="A course must include at least one initial module and one topic with a valid YouTube URL."
+        )
+
+    validated_modules = []
+    for m_idx, mod_in in enumerate(course_in.modules):
+        mod_title = (mod_in.title or "").strip()
+        if not mod_title:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Module {m_idx + 1} title is required and must not be empty."
+            )
+        if not mod_in.topics or len(mod_in.topics) == 0:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail=f"Module '{mod_title}' must contain at least one topic."
+            )
+
+        validated_topics = []
+        for t_idx, top_in in enumerate(mod_in.topics):
+            top_title = (top_in.title or "").strip()
+            if not top_title:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Topic {t_idx + 1} in module '{mod_title}' requires a title."
+                )
+            yt_url = (top_in.youtube_url or "").strip()
+            vid_id = extract_youtube_video_id(yt_url)
+            if not vid_id:
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Invalid YouTube video URL for topic '{top_title}'. Please provide a valid YouTube watch, youtu.be, embed, or shorts link."
+                )
+            validated_topics.append({
+                "title": top_title,
+                "description": (top_in.description or "").strip() or "Video lecture and conceptual walkthrough.",
+                "youtube_url": yt_url if yt_url.startswith("http") else f"https://www.youtube.com/watch?v={vid_id}",
+                "youtube_video_id": vid_id,
+                "order_index": t_idx + 1,
+            })
+
+        validated_modules.append({
+            "title": mod_title,
+            "description": (mod_in.description or "").strip() or f"Module {m_idx + 1} syllabus.",
+            "order_index": m_idx + 1,
+            "has_module_exam": bool(mod_in.has_module_exam),
+            "topics": validated_topics,
+        })
+
     code_candidate = (course_in.code or "").strip()
     if not code_candidate:
         code_candidate = f"CP{uuid.uuid4().hex[:6].upper()}"
@@ -481,14 +718,19 @@ async def create_course(
     if existing.scalars().first():
         code_candidate = f"{code_candidate}-{uuid.uuid4().hex[:4].upper()}"
 
+    now = datetime.now(timezone.utc)
     new_course = Course(
-        title=course_in.title,
+        title=title_clean,
         code=code_candidate,
-        description=course_in.description,
-        category=course_in.category or "Computer Science",
-        difficulty=course_in.difficulty or "Intermediate",
-        thumbnail_url=course_in.thumbnail_url,
-        educator_id=current_user.id
+        description=desc_clean,
+        category=cat_clean[:100],
+        target_branch=branch_clean[:255],
+        difficulty=difficulty_val,
+        thumbnail_url=(course_in.thumbnail_url or "").strip() or None,
+        is_published=bool(course_in.is_published) if course_in.is_published is not None else True,
+        educator_id=current_user.id,
+        created_at=now,
+        updated_at=now,
     )
     db.add(new_course)
     await db.flush()
@@ -501,62 +743,123 @@ async def create_course(
     ]
     db.add_all(channels)
 
-    # Atomically provision nested modules and topics if provided
-    if course_in.modules:
-        for m_idx, mod_in in enumerate(course_in.modules):
-            if not mod_in.title or not mod_in.title.strip():
-                continue
-            module_obj = Module(
-                course_id=new_course.id,
-                title=mod_in.title.strip(),
-                description=mod_in.description.strip() if mod_in.description else f"Module {m_idx + 1} syllabus.",
-                order_index=m_idx + 1,
-                has_module_exam=bool(mod_in.has_module_exam)
-            )
-            db.add(module_obj)
-            await db.flush()
+    # Atomically persist validated modules and topics
+    for mod_data in validated_modules:
+        module_obj = Module(
+            course_id=new_course.id,
+            title=mod_data["title"],
+            description=mod_data["description"],
+            order_index=mod_data["order_index"],
+            has_module_exam=mod_data["has_module_exam"]
+        )
+        db.add(module_obj)
+        await db.flush()
 
-            if mod_in.topics:
-                for t_idx, top_in in enumerate(mod_in.topics):
-                    if not top_in.title or not top_in.title.strip():
-                        continue
-                    yt_url = (top_in.youtube_url or "").strip()
-                    vid_id = extract_youtube_video_id(yt_url)
-                    if not vid_id:
-                        vid_id = "dQw4w9WgXcQ" if not yt_url else extract_youtube_video_id(yt_url)
-                    if not vid_id:
-                        vid_id = "qH6clASSS54"
-                    topic_obj = Topic(
-                        module_id=module_obj.id,
-                        title=top_in.title.strip(),
-                        description=top_in.description.strip() if top_in.description else "Video lecture and conceptual walkthrough.",
-                        youtube_url=yt_url or f"https://www.youtube.com/watch?v={vid_id}",
-                        youtube_video_id=vid_id,
-                        order_index=t_idx + 1
-                    )
-                    db.add(topic_obj)
+        for top_data in mod_data["topics"]:
+            topic_obj = Topic(
+                module_id=module_obj.id,
+                title=top_data["title"],
+                description=top_data["description"],
+                youtube_url=top_data["youtube_url"],
+                youtube_video_id=top_data["youtube_video_id"],
+                order_index=top_data["order_index"]
+            )
+            db.add(topic_obj)
 
     await db.commit()
     await db.refresh(new_course)
     invalidate_course_hierarchy_cache(new_course.id)
 
-    educator_name = current_user.full_name or "Prof. Rajesh Ramanujan"
-    educator_email = current_user.email
-    return CourseResponse(
-        id=new_course.id,
-        title=new_course.title,
-        code=new_course.code,
-        description=new_course.description,
-        category=new_course.category or "Computer Science",
-        difficulty=new_course.difficulty or "Intermediate",
-        thumbnail_url=new_course.thumbnail_url,
-        educator_id=new_course.educator_id,
-        educator_name=educator_name,
-        educator_email=educator_email,
-        average_rating=5.0,
-        total_ratings=0,
-        created_at=new_course.created_at
-    )
+    enriched = await build_enriched_course_dict(new_course, db, current_user)
+    return CourseResponse(**enriched)
+
+
+@router.put("/{course_id}", response_model=CourseResponse)
+async def update_course(
+    course_id: int,
+    course_in: CourseUpdate,
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update course metadata, difficulty, target branch, or publication status."""
+    course = await _check_course_ownership(course_id, current_user, db)
+
+    if course_in.title is not None:
+        title_clean = course_in.title.strip()
+        if len(title_clean) < 2:
+            raise HTTPException(status_code=400, detail="Course title must contain at least 2 characters.")
+        course.title = title_clean
+
+    if course_in.description is not None:
+        desc_clean = course_in.description.strip()
+        if not desc_clean:
+            raise HTTPException(status_code=400, detail="Course description cannot be empty.")
+        course.description = desc_clean
+
+    if course_in.difficulty is not None:
+        course.difficulty = normalize_difficulty(course_in.difficulty)
+
+    if course_in.category is not None and course_in.category.strip():
+        course.category = course_in.category.strip()[:100]
+
+    if course_in.target_branch is not None and course_in.target_branch.strip():
+        course.target_branch = course_in.target_branch.strip()[:255]
+        if course_in.category is None:
+            course.category = course_in.target_branch.strip()[:100]
+
+    if course_in.thumbnail_url is not None:
+        course.thumbnail_url = course_in.thumbnail_url.strip() or None
+
+    if course_in.is_published is not None:
+        if course_in.is_published:
+            await _validate_course_curriculum_for_publication(course.id, db)
+        course.is_published = bool(course_in.is_published)
+
+    course.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(course)
+    invalidate_course_hierarchy_cache(course.id)
+
+    enriched = await build_enriched_course_dict(course, db, current_user)
+    return CourseResponse(**enriched)
+
+
+@router.post("/{course_id}/publish", response_model=CourseResponse)
+async def publish_course(
+    course_id: int,
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Publish a draft course after verifying all required curriculum rules (at least 1 module, 1 topic, valid YouTube video)."""
+    course = await _check_course_ownership(course_id, current_user, db)
+    await _validate_course_curriculum_for_publication(course.id, db)
+
+    course.is_published = True
+    course.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(course)
+    invalidate_course_hierarchy_cache(course.id)
+
+    enriched = await build_enriched_course_dict(course, db, current_user)
+    return CourseResponse(**enriched)
+
+
+@router.post("/{course_id}/unpublish", response_model=CourseResponse)
+async def unpublish_course(
+    course_id: int,
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Revert a published course to DRAFT status."""
+    course = await _check_course_ownership(course_id, current_user, db)
+    course.is_published = False
+    course.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(course)
+    invalidate_course_hierarchy_cache(course.id)
+
+    enriched = await build_enriched_course_dict(course, db, current_user)
+    return CourseResponse(**enriched)
 
 
 # ==============================================================================
@@ -672,28 +975,21 @@ async def get_course(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Get single course basic details enriched with creator name and star ratings."""
+    """Get single course basic details enriched with creator name, university, counts, and star ratings."""
     result = await db.execute(select(Course).where(Course.id == course_id))
     course = result.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    educator_name, educator_email, avg_rating, total_count = await get_course_rating_stats(course, db)
-    return CourseResponse(
-        id=course.id,
-        title=course.title,
-        code=course.code,
-        description=course.description,
-        category=course.category or "Computer Science",
-        difficulty=course.difficulty or "Intermediate",
-        thumbnail_url=course.thumbnail_url,
-        educator_id=course.educator_id,
-        educator_name=educator_name,
-        educator_email=educator_email,
-        average_rating=avg_rating,
-        total_ratings=total_count,
-        created_at=course.created_at
-    )
+    is_pub = bool(getattr(course, "is_published", True))
+    if not is_pub and not await _is_user_course_owner(course, current_user, db):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This course is currently in draft status and is not available to students."
+        )
+
+    enriched = await build_enriched_course_dict(course, db, current_user)
+    return CourseResponse(**enriched)
 
 
 @router.post("/{course_id}/rate", response_model=CourseRatingResponse)
@@ -745,6 +1041,7 @@ async def rate_course(
 
     await db.commit()
     await db.refresh(rating_obj)
+    invalidate_course_hierarchy_cache(course_id)
 
     return CourseRatingResponse(
         id=rating_obj.id,
@@ -785,16 +1082,17 @@ async def get_course_hierarchy(
     if not course:
         raise HTTPException(status_code=404, detail="Course not found")
 
-    is_educator = (current_user.role == "ADMIN" or (current_user.role == "EDUCATOR" and course.educator_id == current_user.id))
-    cache_role = "educator" if is_educator else "student"
-    cache_key = f"hierarchy_{course_id}_{cache_role}"
-    cached = ttl_cache.get(cache_key)
-    if cached:
-        return cached
+    is_owner_or_admin = await _is_user_course_owner(course, current_user, db)
+    is_pub = bool(getattr(course, "is_published", True))
+    if not is_pub and not is_owner_or_admin:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This course is currently in draft status and is not available to students."
+        )
 
     # Fetch modules ordered by order_index
     m_res = await db.execute(
-        select(Module).where(Module.course_id == course_id).order_by(Module.order_index.asc())
+        select(Module).where(Module.course_id == course_id).order_by(Module.order_index.asc(), Module.id.asc())
     )
     modules = m_res.scalars().all()
     module_ids = [m.id for m in modules]
@@ -807,7 +1105,7 @@ async def get_course_hierarchy(
         t_res = await db.execute(
             select(Topic)
             .where(Topic.module_id.in_(module_ids))
-            .order_by(Topic.module_id.asc(), Topic.order_index.asc())
+            .order_by(Topic.module_id.asc(), Topic.order_index.asc(), Topic.id.asc())
         )
         for t in t_res.scalars().all():
             if t.module_id in topics_map:
@@ -865,29 +1163,42 @@ async def get_course_hierarchy(
                     "question_type": q.question_type,
                     "question_text": q.question_text,
                     "options": json.loads(q.options) if isinstance(q.options, str) else q.options,
-                    "correct_answer": q.correct_answer if is_educator else None,
-                    "explanation": q.explanation if is_educator else None,
-                    "source_ref": q.source_ref if is_educator else None,
+                    "correct_answer": q.correct_answer if is_owner_or_admin else None,
+                    "explanation": q.explanation if is_owner_or_admin else None,
+                    "source_ref": q.source_ref if is_owner_or_admin else None,
                     "order_index": q.order_index
                 }
                 for q in fe_questions
             ]
         }
 
+    enriched = await build_enriched_course_dict(course, db, current_user)
     response = CourseHierarchyResponse(
         id=course.id,
         title=course.title,
         code=course.code,
         description=course.description,
-        category=course.category or "Computer Science",
-        difficulty=getattr(course, "difficulty", "Intermediate") or "Intermediate",
-        thumbnail_url=getattr(course, "thumbnail_url", None),
+        category=enriched["category"],
+        target_branch=enriched["target_branch"],
+        difficulty=enriched["difficulty"],
+        is_published=enriched["is_published"],
+        publication_status=enriched["publication_status"],
+        thumbnail_url=enriched["thumbnail_url"],
         educator_id=course.educator_id,
+        educator_name=enriched["educator_name"],
+        educator_email=enriched["educator_email"],
+        university=enriched["university"],
+        educator_university=enriched["educator_university"],
+        educator_department=enriched["educator_department"],
+        average_rating=enriched["average_rating"],
+        total_ratings=enriched["total_ratings"],
+        enrolled_count=enriched["enrolled_count"],
+        is_enrolled=enriched["is_enrolled"],
         created_at=course.created_at,
+        updated_at=enriched["updated_at"],
         modules=module_responses,
         final_exam=final_exam_data
     )
-    ttl_cache.set(cache_key, response)
     return response
 
 
@@ -897,11 +1208,24 @@ async def enroll_in_course(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Enroll student into course."""
+    """Enroll student into a published course."""
     c_res = await db.execute(select(Course).where(Course.id == course_id))
     course = c_res.scalars().first()
     if not course:
         raise HTTPException(status_code=404, detail="Course not found or has been deleted.")
+
+    is_pub = bool(getattr(course, "is_published", True))
+    if not is_pub:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Cannot enroll in a course that is currently in draft status."
+        )
+
+    if course.educator_id == current_user.id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="You are the creator of this course and manage it from 'My Created Courses'."
+        )
 
     existing = await db.execute(
         select(Enrollment).where(
@@ -914,7 +1238,13 @@ async def enroll_in_course(
 
     enrollment = Enrollment(user_id=current_user.id, course_id=course_id, completion_percentage=0.0)
     db.add(enrollment)
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError:
+        await db.rollback()
+        return {"status": "already_enrolled", "message": "You are already enrolled in this course."}
+
+    invalidate_course_hierarchy_cache(course_id)
     return {"status": "success", "message": "Successfully enrolled in course."}
 
 
@@ -936,6 +1266,7 @@ async def unenroll_from_course(
     if enrollment:
         await db.delete(enrollment)
         await db.commit()
+        invalidate_course_hierarchy_cache(course_id)
         return {"status": "success", "message": "Successfully unenrolled from course."}
     return {"status": "not_enrolled", "message": "You are not enrolled in this course."}
 
@@ -1047,19 +1378,24 @@ async def create_module(
     db: AsyncSession = Depends(get_db)
 ):
     """Educator adds a new curriculum module to a course."""
-    await _check_course_ownership(course_id, current_user, db)
+    course = await _check_course_ownership(course_id, current_user, db)
+
+    title_clean = (req.title or "").strip()
+    if not title_clean:
+        raise HTTPException(status_code=400, detail="Module title cannot be empty.")
 
     count_res = await db.execute(select(Module).where(Module.course_id == course_id))
     existing_count = len(count_res.scalars().all())
 
     module = Module(
         course_id=course_id,
-        title=req.title,
-        description=req.description,
+        title=title_clean,
+        description=(req.description or "").strip() or None,
         order_index=existing_count + 1,
         has_module_exam=bool(req.has_module_exam) if req.has_module_exam is not None else False
     )
     db.add(module)
+    course.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(module)
     invalidate_course_hierarchy_cache(course_id)
@@ -1091,12 +1427,15 @@ async def update_module(
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
-    await _check_course_ownership(module.course_id, current_user, db)
+    course = await _check_course_ownership(module.course_id, current_user, db)
 
     if req.title is not None:
-        module.title = req.title
+        title_clean = req.title.strip()
+        if not title_clean:
+            raise HTTPException(status_code=400, detail="Module title cannot be empty.")
+        module.title = title_clean
     if req.description is not None:
-        module.description = req.description
+        module.description = req.description.strip() or None
     if req.order_index is not None:
         module.order_index = req.order_index
     if req.has_module_exam is not None:
@@ -1104,6 +1443,7 @@ async def update_module(
     if req.module_exam_id is not None:
         module.module_exam_id = req.module_exam_id
 
+    course.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(module)
     invalidate_course_hierarchy_cache(module.course_id)
@@ -1125,25 +1465,88 @@ async def update_module(
     )
 
 
+@router.put("/{course_id}/modules/reorder")
+async def reorder_modules(
+    course_id: int,
+    req: ModuleReorderRequest,
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Reorder modules within a course."""
+    course = await _check_course_ownership(course_id, current_user, db)
+    m_res = await db.execute(select(Module).where(Module.course_id == course_id))
+    modules_by_id = {m.id: m for m in m_res.scalars().all()}
+
+    for idx, mod_id in enumerate(req.module_ids, start=1):
+        if mod_id in modules_by_id:
+            modules_by_id[mod_id].order_index = idx
+
+    course.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    invalidate_course_hierarchy_cache(course_id)
+    return {"status": "success", "message": "Modules reordered successfully"}
+
+
 @router.delete("/modules/{module_id}")
 async def delete_module(
     module_id: int,
     current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete a module and all nested topics and resources."""
+    """Delete a module and all nested topics, assignments, exams, and resources."""
     res = await db.execute(select(Module).where(Module.id == module_id))
     module = res.scalars().first()
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
-    await _check_course_ownership(module.course_id, current_user, db)
+    course = await _check_course_ownership(module.course_id, current_user, db)
     course_id_to_invalidate = module.course_id
 
+    # Break module_exam_id link and clean up module exams
+    module.module_exam_id = None
+    await db.flush()
+
+    e_res = await db.execute(select(Exam).where(Exam.module_id == module.id))
+    for ex in e_res.scalars().all():
+        await db.execute(delete(ExamSubmission).where(ExamSubmission.exam_id == ex.id))
+        await db.execute(delete(ExamQuestion).where(ExamQuestion.exam_id == ex.id))
+        await db.delete(ex)
+
+    a_res = await db.execute(select(Assignment).where(Assignment.module_id == module.id))
+    for a in a_res.scalars().all():
+        await db.execute(delete(AssignmentSubmission).where(AssignmentSubmission.assignment_id == a.id))
+        await db.delete(a)
+
+    t_res = await db.execute(select(Topic).where(Topic.module_id == module.id))
+    for t in t_res.scalars().all():
+        await db.execute(delete(TopicRating).where(TopicRating.topic_id == t.id))
+        await db.delete(t)
+
+    await db.execute(delete(ModuleResource).where(ModuleResource.module_id == module.id))
     await db.delete(module)
+    await db.flush()
+
+    # Re-index remaining modules and ensure course without valid curriculum reverts to draft
+    rem_mods_res = await db.execute(
+        select(Module).where(Module.course_id == course_id_to_invalidate).order_by(Module.order_index.asc(), Module.id.asc())
+    )
+    rem_mods = rem_mods_res.scalars().all()
+    for idx, m in enumerate(rem_mods, start=1):
+        m.order_index = idx
+
+    rem_mod_ids = [m.id for m in rem_mods]
+    rem_topics_count = 0
+    if rem_mod_ids:
+        t_cnt = await db.execute(select(func.count(Topic.id)).where(Topic.module_id.in_(rem_mod_ids)))
+        rem_topics_count = int(t_cnt.scalar() or 0)
+
+    if not rem_mods or rem_topics_count == 0:
+        course.is_published = False
+
+    course.updated_at = datetime.now(timezone.utc)
     await db.commit()
     invalidate_course_hierarchy_cache(course_id_to_invalidate)
-    return {"status": "success", "message": "Module deleted successfully"}
+    return {"status": "success", "message": "Module deleted successfully", "is_published": course.is_published}
 
 
 # ==============================================================================
@@ -1163,10 +1566,11 @@ async def create_topic(
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
-    await _check_course_ownership(module.course_id, current_user, db)
+    course = await _check_course_ownership(module.course_id, current_user, db)
 
-    count_res = await db.execute(select(Topic).where(Topic.module_id == module_id))
-    existing_count = len(count_res.scalars().all())
+    title_clean = (req.title or "").strip()
+    if not title_clean:
+        raise HTTPException(status_code=400, detail="Topic title cannot be empty.")
 
     video_id = extract_youtube_video_id(req.youtube_url)
     if not video_id:
@@ -1175,15 +1579,19 @@ async def create_topic(
             detail="Invalid YouTube URL. Please provide a valid YouTube watch, embed, shorts, or youtu.be link."
         )
 
+    count_res = await db.execute(select(Topic).where(Topic.module_id == module_id))
+    existing_count = len(count_res.scalars().all())
+
     topic = Topic(
         module_id=module_id,
-        title=req.title,
-        description=req.description,
-        youtube_url=req.youtube_url,
+        title=title_clean,
+        description=(req.description or "").strip() or None,
+        youtube_url=req.youtube_url.strip(),
         youtube_video_id=video_id,
         order_index=existing_count + 1
     )
     db.add(topic)
+    course.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(topic)
     invalidate_course_hierarchy_cache(module.course_id)
@@ -1206,13 +1614,17 @@ async def update_topic(
 
     mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
     module = mod_res.scalars().first()
+    course = None
     if module:
-        await _check_course_ownership(module.course_id, current_user, db)
+        course = await _check_course_ownership(module.course_id, current_user, db)
 
     if req.title is not None:
-        topic.title = req.title
+        title_clean = req.title.strip()
+        if not title_clean:
+            raise HTTPException(status_code=400, detail="Topic title cannot be empty.")
+        topic.title = title_clean
     if req.description is not None:
-        topic.description = req.description
+        topic.description = req.description.strip() or None
     if req.order_index is not None:
         topic.order_index = req.order_index
     if req.youtube_url is not None:
@@ -1222,14 +1634,44 @@ async def update_topic(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid YouTube URL. Please provide a valid YouTube watch, embed, shorts, or youtu.be link."
             )
-        topic.youtube_url = req.youtube_url
+        topic.youtube_url = req.youtube_url.strip()
         topic.youtube_video_id = video_id
 
+    if course:
+        course.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(topic)
     if module:
         invalidate_course_hierarchy_cache(module.course_id)
     return TopicResponse.model_validate(topic)
+
+
+@router.put("/modules/{module_id}/topics/reorder")
+async def reorder_topics(
+    module_id: int,
+    req: TopicReorderRequest,
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Reorder topics within a module."""
+    mod_res = await db.execute(select(Module).where(Module.id == module_id))
+    module = mod_res.scalars().first()
+    if not module:
+        raise HTTPException(status_code=404, detail="Module not found")
+
+    course = await _check_course_ownership(module.course_id, current_user, db)
+
+    t_res = await db.execute(select(Topic).where(Topic.module_id == module_id))
+    topics_by_id = {t.id: t for t in t_res.scalars().all()}
+
+    for idx, top_id in enumerate(req.topic_ids, start=1):
+        if top_id in topics_by_id:
+            topics_by_id[top_id].order_index = idx
+
+    course.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    invalidate_course_hierarchy_cache(module.course_id)
+    return {"status": "success", "message": "Topics reordered successfully"}
 
 
 @router.delete("/topics/{topic_id}")
@@ -1246,15 +1688,41 @@ async def delete_topic(
 
     mod_res = await db.execute(select(Module).where(Module.id == topic.module_id))
     module = mod_res.scalars().first()
+    course = None
     if module:
-        await _check_course_ownership(module.course_id, current_user, db)
+        course = await _check_course_ownership(module.course_id, current_user, db)
     target_course_id = module.course_id if module else None
 
+    await db.execute(delete(TopicRating).where(TopicRating.topic_id == topic.id))
     await db.delete(topic)
+    await db.flush()
+
+    if module:
+        rem_t_res = await db.execute(
+            select(Topic).where(Topic.module_id == module.id).order_by(Topic.order_index.asc(), Topic.id.asc())
+        )
+        for idx, t in enumerate(rem_t_res.scalars().all(), start=1):
+            t.order_index = idx
+
+    if course and target_course_id:
+        m_ids_res = await db.execute(select(Module.id).where(Module.course_id == target_course_id))
+        m_ids = [r[0] for r in m_ids_res.all()]
+        rem_topics_count = 0
+        if m_ids:
+            t_cnt = await db.execute(select(func.count(Topic.id)).where(Topic.module_id.in_(m_ids)))
+            rem_topics_count = int(t_cnt.scalar() or 0)
+        if rem_topics_count == 0:
+            course.is_published = False
+        course.updated_at = datetime.now(timezone.utc)
+
     await db.commit()
     if target_course_id:
         invalidate_course_hierarchy_cache(target_course_id)
-    return {"status": "success", "message": "Topic deleted successfully"}
+    return {
+        "status": "success",
+        "message": "Topic deleted successfully",
+        "is_published": course.is_published if course else True
+    }
 
 
 # ==============================================================================
@@ -1275,15 +1743,16 @@ async def upload_module_resource(
     if not module:
         raise HTTPException(status_code=404, detail="Module not found")
 
-    await _check_course_ownership(module.course_id, current_user, db)
+    course = await _check_course_ownership(module.course_id, current_user, db)
 
-    filename = file.filename
+    filename = file.filename or "notes.pdf"
     ext = os.path.splitext(filename)[1].lower().replace(".", "")
     if ext != "pdf":
         raise HTTPException(status_code=400, detail="Only PDF notes can be attached as module resources.")
 
     os.makedirs(settings.UPLOAD_DIR, exist_ok=True)
-    saved_name = f"mod_{module_id}_{filename}"
+    safe_base = re.sub(r"[^a-zA-Z0-9._-]", "_", filename)
+    saved_name = f"mod_{module_id}_{int(datetime.now(timezone.utc).timestamp())}_{safe_base}"
     file_path = os.path.join(settings.UPLOAD_DIR, saved_name)
 
     with open(file_path, "wb") as buffer:
@@ -1296,7 +1765,7 @@ async def upload_module_resource(
             file_path=file_path,
             course_id=module.course_id,
             doc_id=module_id,
-            doc_title=title,
+            doc_title=title.strip() or filename,
             topic=module.title,
             module_id=module_id
         )
@@ -1305,18 +1774,56 @@ async def upload_module_resource(
 
     resource = ModuleResource(
         module_id=module_id,
-        title=title,
+        title=(title or "").strip() or filename,
         file_url=f"/uploads/{saved_name}",
         file_type="pdf",
         is_view_only=True,
         chunk_count=chunk_count
     )
     db.add(resource)
+    course.updated_at = datetime.now(timezone.utc)
     await db.commit()
     await db.refresh(resource)
     invalidate_course_hierarchy_cache(module.course_id)
 
     return ModuleResourceResponse.model_validate(resource)
+
+
+@router.delete("/resources/{resource_id}")
+async def delete_module_resource(
+    resource_id: int,
+    current_user: User = Depends(require_roles("EDUCATOR", "ADMIN")),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete an uploaded PDF resource from a module."""
+    res = await db.execute(select(ModuleResource).where(ModuleResource.id == resource_id))
+    resource = res.scalars().first()
+    if not resource:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    mod_res = await db.execute(select(Module).where(Module.id == resource.module_id))
+    module = mod_res.scalars().first()
+    course = None
+    if module:
+        course = await _check_course_ownership(module.course_id, current_user, db)
+
+    file_name = os.path.basename(resource.file_url or "")
+    if file_name:
+        disk_path = os.path.join(settings.UPLOAD_DIR, file_name)
+        if os.path.exists(disk_path):
+            try:
+                os.remove(disk_path)
+            except OSError:
+                pass
+
+    await db.delete(resource)
+    if course:
+        course.updated_at = datetime.now(timezone.utc)
+    await db.commit()
+    if module:
+        invalidate_course_hierarchy_cache(module.course_id)
+
+    return {"status": "success", "message": "Module PDF notes removed successfully"}
 
 
 @router.get("/resources/{resource_id}/view")
@@ -1325,12 +1832,12 @@ async def view_module_resource(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Secure endpoint streaming PDF bytes for in-browser canvas rendering with watermarks."""
+    """Secure endpoint streaming PDF bytes for in-browser rendering."""
     res = await db.execute(select(ModuleResource).where(ModuleResource.id == resource_id))
     resource = res.scalars().first()
     if not resource:
         raise HTTPException(status_code=404, detail="Resource not found")
-        
+
     # Check course enrollment or ownership
     mod_res = await db.execute(select(Module).where(Module.id == resource.module_id))
     module = mod_res.scalars().first()
@@ -1353,10 +1860,11 @@ async def view_module_resource(
 
     if not os.path.exists(disk_path):
         # Fallback check if it was saved directly in uploads without prefix
-        for candidate in os.listdir(settings.UPLOAD_DIR):
-            if file_name in candidate or candidate in file_name:
-                disk_path = os.path.join(settings.UPLOAD_DIR, candidate)
-                break
+        if os.path.exists(settings.UPLOAD_DIR):
+            for candidate in os.listdir(settings.UPLOAD_DIR):
+                if file_name in candidate or candidate in file_name:
+                    disk_path = os.path.join(settings.UPLOAD_DIR, candidate)
+                    break
 
     if not os.path.exists(disk_path):
         raise HTTPException(status_code=404, detail="PDF resource file not found on server storage")

@@ -236,30 +236,8 @@ export default function DashboardHome({
     }
   };
 
-  // Curated quick-enroll preview courses for students with 0 enrollments
-  const fallbackPreviewCourses = [
-    {
-      id: 1,
-      title: 'Data Structures & Algorithms',
-      code: 'CS101',
-      description: 'Comprehensive study of linear and hierarchical data structures, sorting, and graph algorithms.'
-    },
-    {
-      id: 2,
-      title: 'Database Management Systems',
-      code: 'DBMS',
-      description: 'Relational database architecture, relational algebra, SQL optimization, and normalization.'
-    },
-    {
-      id: 3,
-      title: 'Web Development Fundamentals',
-      code: 'WEB',
-      description: 'Modern front-end architecture, semantic HTML5, responsive CSS Grid/Flexbox, and asynchronous JavaScript.'
-    }
-  ];
-
-  const quickEnrollCourses = (safeAllCourses.length > 0 ? safeAllCourses : fallbackPreviewCourses)
-    .filter((c) => !safeEnrolled.some((e) => e?.id === c.id))
+  const quickEnrollCourses = safeAllCourses
+    .filter((c) => c.is_published !== false && !safeEnrolled.some((e) => Number(e?.id) === Number(c.id)))
     .slice(0, 3);
 
   // Recommendations list
@@ -387,7 +365,7 @@ export default function DashboardHome({
                     key={course.id || idx}
                     course={course}
                     index={idx}
-                    onSelectCourse={() => onNavigateTab && onNavigateTab('tutor', course.id)}
+                    onSelectCourse={() => onNavigateTab && onNavigateTab('courses', course.id)}
                     onDeleteCourse={(c) => setCourseToDelete(c)}
                     user={user}
                   />
@@ -403,7 +381,7 @@ export default function DashboardHome({
                 </div>
                 <div className="max-w-md mx-auto space-y-2">
                   <h3 className="font-heading text-lg font-bold text-[#ECEDF7]">
-                    You haven't enrolled in any courses yet
+                    You haven&apos;t enrolled in any courses yet.
                   </h3>
                   <p className="text-xs text-[#8A90B4] leading-relaxed">
                     Build your personalized curriculum. Explore courses from our university catalog and start tracking your topics, quizzes, and learning roadmaps.
@@ -417,7 +395,7 @@ export default function DashboardHome({
                       onClick={onOpenExploreCatalog}
                       className="px-6 py-3 rounded-full bg-gradient-to-r from-[#8B7CFF] to-[#FF6F9C] hover:from-[#9d91ff] hover:to-[#ff8cb1] text-[#0A0D1C] font-bold text-xs uppercase tracking-wider shadow-[0_4px_16px_rgba(139,124,255,0.3)] transition cursor-pointer"
                     >
-                      Browse Course Catalog & Enroll
+                      Find New Courses
                     </button>
                   </div>
                 )}

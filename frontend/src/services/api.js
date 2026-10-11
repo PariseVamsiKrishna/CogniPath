@@ -124,6 +124,18 @@ export const coursesAPI = {
     const res = await apiClient.post('/courses', courseData);
     return res.data;
   },
+  update: async (courseId, courseData) => {
+    const res = await apiClient.put(`/courses/${courseId}`, courseData);
+    return res.data;
+  },
+  publish: async (courseId) => {
+    const res = await apiClient.post(`/courses/${courseId}/publish`);
+    return res.data;
+  },
+  unpublish: async (courseId) => {
+    const res = await apiClient.post(`/courses/${courseId}/unpublish`);
+    return res.data;
+  },
   enroll: async (courseId) => {
     const res = await apiClient.post(`/courses/${courseId}/enroll`);
     return res.data;
@@ -144,6 +156,10 @@ export const coursesAPI = {
     const res = await apiClient.put(`/courses/modules/${moduleId}`, moduleData);
     return res.data;
   },
+  reorderModules: async (courseId, moduleIds) => {
+    const res = await apiClient.put(`/courses/${courseId}/modules/reorder`, { module_ids: moduleIds });
+    return res.data;
+  },
   deleteModule: async (moduleId) => {
     const res = await apiClient.delete(`/courses/modules/${moduleId}`);
     return res.data;
@@ -156,6 +172,10 @@ export const coursesAPI = {
     const res = await apiClient.put(`/courses/topics/${topicId}`, topicData);
     return res.data;
   },
+  reorderTopics: async (moduleId, topicIds) => {
+    const res = await apiClient.put(`/courses/modules/${moduleId}/topics/reorder`, { topic_ids: topicIds });
+    return res.data;
+  },
   deleteTopic: async (topicId) => {
     const res = await apiClient.delete(`/courses/topics/${topicId}`);
     return res.data;
@@ -164,6 +184,10 @@ export const coursesAPI = {
     const res = await apiClient.post(`/courses/modules/${moduleId}/resources`, formData, {
       headers: { 'Content-Type': 'multipart/form-data' }
     });
+    return res.data;
+  },
+  deleteResource: async (resourceId) => {
+    const res = await apiClient.delete(`/courses/resources/${resourceId}`);
     return res.data;
   },
   generateExamRAG: async (moduleId, params = {}) => {

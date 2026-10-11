@@ -62,10 +62,13 @@ class Course(Base):
     code = Column(String(50), unique=True, index=True, nullable=False)
     description = Column(Text, nullable=True)
     category = Column(String(100), default="Computer Science")
+    target_branch = Column(String(255), default="Computer Science & Engineering (CSE)", nullable=True)
     difficulty = Column(String(50), default="Intermediate")
     thumbnail_url = Column(String(512), nullable=True)
+    is_published = Column(Boolean, default=True, server_default="1", nullable=False)
     educator_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     created_at = Column(DateTime(timezone=True), default=utcnow)
+    updated_at = Column(DateTime(timezone=True), default=utcnow, onupdate=utcnow, nullable=True)
 
     # Relationships
     educator = relationship("User", back_populates="courses_taught")
@@ -81,6 +84,9 @@ class Course(Base):
 
 class Enrollment(Base):
     __tablename__ = "enrollments"
+    __table_args__ = (
+        UniqueConstraint("user_id", "course_id", name="uq_user_course_enrollment"),
+    )
 
     id = Column(Integer, primary_key=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)

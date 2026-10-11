@@ -70,12 +70,23 @@ class ModuleCreateNested(BaseModel):
 
 class CourseCreate(BaseModel):
     title: str
-    code: str
+    code: str | None = None
     description: str | None = None
     category: str | None = "Computer Science"
+    target_branch: str | None = None
     difficulty: str | None = "Intermediate"
     thumbnail_url: str | None = None
-    modules: list[ModuleCreateNested] = []
+    is_published: bool = True
+    modules: list[ModuleCreateNested] | None = None
+
+class CourseUpdate(BaseModel):
+    title: str | None = None
+    description: str | None = None
+    category: str | None = None
+    target_branch: str | None = None
+    difficulty: str | None = None
+    thumbnail_url: str | None = None
+    is_published: bool | None = None
 
 class CourseResponse(BaseModel):
     id: int
@@ -83,17 +94,28 @@ class CourseResponse(BaseModel):
     code: str
     description: str | None = None
     category: str
+    target_branch: str = "Computer Science & Engineering (CSE)"
     difficulty: str | None = "Intermediate"
     thumbnail_url: str | None = None
+    is_published: bool = True
+    publication_status: str = "PUBLISHED"
     educator_id: int
-    educator_name: str | None = "Prof. Rajesh Ramanujan"
+    educator_name: str | None = "Course Educator"
     educator_email: str | None = None
-    average_rating: float | None = 4.9
-    total_ratings: int | None = 0
+    university: str | None = None
+    educator_university: str | None = None
+    educator_department: str | None = None
+    average_rating: float = 0.0
+    total_ratings: int = 0
+    enrolled_count: int = 0
+    modules_count: int = 0
+    topics_count: int = 0
     progress_percentage: float | None = 0.0
+    enrolled_at: datetime | None = None
     next_topic_title: str | None = None
     is_enrolled: bool | None = False
     created_at: datetime
+    updated_at: datetime | None = None
 
     class Config:
         from_attributes = True
@@ -104,17 +126,25 @@ class CourseExploreItem(BaseModel):
     code: str
     description: str | None = None
     category: str
+    target_branch: str = "Computer Science & Engineering (CSE)"
     difficulty: str = "Intermediate"
     thumbnail_url: str | None = None
+    is_published: bool = True
+    publication_status: str = "PUBLISHED"
     educator_id: int
     educator_name: str
     educator_email: str | None = None
-    average_rating: float = 4.9
+    university: str | None = None
+    educator_university: str | None = None
+    educator_department: str | None = None
+    average_rating: float = 0.0
     total_ratings: int = 0
+    enrolled_count: int = 0
     modules_count: int = 0
     topics_count: int = 0
     is_enrolled: bool = False
     created_at: datetime
+    updated_at: datetime | None = None
 
 class CourseRatingCreate(BaseModel):
     rating: float = Field(..., ge=1.0, le=5.0)
@@ -533,16 +563,35 @@ class TopicUpdate(BaseModel):
     youtube_url: str | None = None
     order_index: int | None = None
 
+class ModuleReorderRequest(BaseModel):
+    module_ids: list[int]
+
+class TopicReorderRequest(BaseModel):
+    topic_ids: list[int]
+
 class CourseHierarchyResponse(BaseModel):
     id: int
     title: str
     code: str
     description: str | None = None
     category: str
+    target_branch: str = "Computer Science & Engineering (CSE)"
     difficulty: str | None = "Intermediate"
     thumbnail_url: str | None = None
+    is_published: bool = True
+    publication_status: str = "PUBLISHED"
     educator_id: int
+    educator_name: str | None = "Course Educator"
+    educator_email: str | None = None
+    university: str | None = None
+    educator_university: str | None = None
+    educator_department: str | None = None
+    average_rating: float = 0.0
+    total_ratings: int = 0
+    enrolled_count: int = 0
+    is_enrolled: bool = False
     created_at: datetime
+    updated_at: datetime | None = None
     modules: list[ModuleResponse] = []
     final_exam: Optional[Any] = None
 
