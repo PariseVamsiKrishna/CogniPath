@@ -9,7 +9,8 @@ from urllib.parse import parse_qs, urlparse
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
-from sqlalchemy import delete, func, or_, update
+from sqlalchemy import delete, func, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 
