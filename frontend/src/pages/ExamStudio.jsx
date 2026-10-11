@@ -83,25 +83,40 @@ export default function ExamStudio({
   const [timeLeftSecs, setTimeLeftSecs] = useState(900);
   const [testActive, setTestActive] = useState(false);
 
-  // 1. Fetch all available courses for dropdown
+  // 1. Fetch all available courses for dropdown (enrolled, created, and published catalog)
   useEffect(() => {
+    let cancelled = false;
     async function loadCourses() {
       try {
-        const list = await coursesAPI.explore();
-        if (list && list.length > 0) {
+        const [enrolledRes, createdRes, exploreRes] = await Promise.all([
+          coursesAPI.getMyEnrolled().catch(() => []),
+          isEducator || user?.role === 'ADMIN' ? coursesAPI.getMyCreated().catch(() => []) : Promise.resolve([]),
+          coursesAPI.explore({ include_enrolled: true }).catch(() => []),
+        ]);
+        if (cancelled) return;
+
+        const mergedMap = new Map();
+        for (const item of [...(Array.isArray(createdRes) ? createdRes : []), ...(Array.isArray(enrolledRes) ? enrolledRes : []), ...(Array.isArray(exploreRes) ? exploreRes : [])]) {
+          if (item && item.id != null && !mergedMap.has(Number(item.id))) {
+            mergedMap.set(Number(item.id), item);
+          }
+        }
+        const list = Array.from(mergedMap.values());
+        if (list.length > 0) {
           setCourses(list);
-          if (courseId && list.some((c) => c.id === Number(courseId))) {
+          if (courseId && list.some((c) => Number(c.id) === Number(courseId))) {
             setSelectedCourseId(Number(courseId));
           } else if (isEducator) {
             const myCourse = list.find((c) => String(c.educator_id) === String(user?.id));
             if (myCourse) {
               setSelectedCourseId(myCourse.id);
-            } else if (!selectedCourseId || !list.some((c) => c.id === selectedCourseId)) {
+            } else if (!selectedCourseId || !list.some((c) => Number(c.id) === Number(selectedCourseId))) {
               setSelectedCourseId(list[0].id);
             }
           } else {
-            if (!selectedCourseId || !list.some((c) => c.id === selectedCourseId)) {
-              setSelectedCourseId(list[0].id);
+            const enrolledCourse = list.find((c) => c.is_enrolled);
+            if (!selectedCourseId || !list.some((c) => Number(c.id) === Number(selectedCourseId))) {
+              setSelectedCourseId(enrolledCourse ? enrolledCourse.id : list[0].id);
             }
           }
         }
@@ -110,7 +125,10 @@ export default function ExamStudio({
       }
     }
     loadCourses();
-  }, [courseId, user?.id, isEducator]);
+    return () => {
+      cancelled = true;
+    };
+  }, [courseId, user?.id, user?.role, isEducator]);
 
   const handleOpenCreateModal = () => {
     if (isEducator && authoredCourses.length === 0 && user?.role !== 'ADMIN') {

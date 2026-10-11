@@ -30,15 +30,20 @@ export default function CourseRatingModal({
 
   useEffect(() => {
     if (isOpen && courseId) {
-      loadRatings();
+      setRatingsSummary(null);
+      setSelectedRating(5);
+      setReviewText('');
+      setSuccessMsg('');
+      setErrorMsg('');
+      loadRatings(courseId);
     }
   }, [isOpen, courseId]);
 
-  const loadRatings = async () => {
+  const loadRatings = async (targetCourseId = courseId) => {
     setLoading(true);
     setErrorMsg('');
     try {
-      const data = await coursesAPI.getCourseRatings(courseId);
+      const data = await coursesAPI.getCourseRatings(targetCourseId);
       setRatingsSummary(data);
       if (data?.user_rating) {
         setSelectedRating(data.user_rating);
@@ -122,7 +127,7 @@ export default function CourseRatingModal({
             <div className="flex items-center gap-4">
               <div className="text-3xl font-black text-white flex items-center gap-1.5">
                 <span className="text-amber-400">★</span>
-                <span>{ratingsSummary ? ratingsSummary.average_rating.toFixed(1) : '4.9'}</span>
+                <span>{ratingsSummary ? Number(ratingsSummary.average_rating || 0).toFixed(1) : '0.0'}</span>
               </div>
               <div className="space-y-0.5">
                 <div className="text-xs font-bold text-slate-200">Overall Student Rating</div>

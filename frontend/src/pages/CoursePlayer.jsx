@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import {
   BookOpen,
   Plus,
@@ -78,6 +78,20 @@ export default function CoursePlayer({
 }) {
   const isEducatorRole = user?.role === 'EDUCATOR' || user?.role === 'ADMIN';
 
+  // Lifecycle & Stale-Response Protection Refs
+  const isMountedRef = useRef(true);
+  const selectedCourseIdRef = useRef(selectedCourseId);
+  const workspaceReqIdRef = useRef(0);
+  const progressReqIdRef = useRef(0);
+  const toggleReqIdRef = useRef(0);
+  const createdReqIdRef = useRef(0);
+  const enrolledReqIdRef = useRef(0);
+  const pdfReqIdRef = useRef(0);
+  const activePdfUrlRef = useRef(null);
+  const bannerTimeoutRef = useRef(null);
+  const activeModuleIdRef = useRef(null);
+  const activeTopicIdRef = useRef(null);
+
   // Independent Dashboard Section States
   const [createdList, setCreatedList] = useState(myCreatedCourses || []);
   const [createdLoading, setCreatedLoading] = useState(false);
@@ -96,12 +110,15 @@ export default function CoursePlayer({
   const [activeModuleId, setActiveModuleId] = useState(null);
   const [activeTopicId, setActiveTopicId] = useState(null);
   const [completedTopicIds, setCompletedTopicIds] = useState(new Set());
+  const [progressLoading, setProgressLoading] = useState(false);
+  const [progressError, setProgressError] = useState('');
   const [togglingComplete, setTogglingComplete] = useState(false);
   const [enrollingInPreview, setEnrollingInPreview] = useState(false);
 
   // PDF Viewer State
   const [activePdfUrl, setActivePdfUrl] = useState(null);
   const [activePdfTitle, setActivePdfTitle] = useState('');
+  const [activePdfResourceId, setActivePdfResourceId] = useState(null);
   const [pdfLoading, setPdfLoading] = useState(false);
   const [pdfError, setPdfError] = useState('');
 
@@ -135,6 +152,43 @@ export default function CoursePlayer({
   // PDF Upload State per Module
   const [uploadingModuleId, setUploadingModuleId] = useState(null);
 
+  useEffect(() => {
+    activeModuleIdRef.current = activeModuleId;
+  }, [activeModuleId]);
+
+  useEffect(() => {
+    activeTopicIdRef.current = activeTopicId;
+  }, [activeTopicId]);
+
+  const clearActivePdf = useCallback(() => {
+    if (activePdfUrlRef.current) {
+      URL.revokeObjectURL(activePdfUrlRef.current);
+      activePdfUrlRef.current = null;
+    }
+    setActivePdfUrl(null);
+    setActivePdfTitle('');
+    setActivePdfResourceId(null);
+  }, []);
+
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      workspaceReqIdRef.current += 1;
+      progressReqIdRef.current += 1;
+      createdReqIdRef.current += 1;
+      enrolledReqIdRef.current += 1;
+      pdfReqIdRef.current += 1;
+      if (bannerTimeoutRef.current) {
+        clearTimeout(bannerTimeoutRef.current);
+      }
+      if (activePdfUrlRef.current) {
+        URL.revokeObjectURL(activePdfUrlRef.current);
+        activePdfUrlRef.current = null;
+      }
+    };
+  }, []);
+
   // Sync props when parent updates
   useEffect(() => {
     setCreatedList(myCreatedCourses || []);
@@ -153,39 +207,49 @@ export default function CoursePlayer({
   // Independent Dashboard Fetchers
   const fetchMyCreatedCourses = useCallback(async () => {
     if (!isEducatorRole) return;
+    const reqId = ++createdReqIdRef.current;
     setCreatedLoading(true);
     setCreatedError('');
     try {
       const data = await coursesAPI.getMyCourses();
+      if (!isMountedRef.current || reqId !== createdReqIdRef.current) return;
       const filtered = (Array.isArray(data) ? data : []).filter(
         (c) => Number(c.educator_id) === Number(user?.id)
       );
       setCreatedList(filtered);
     } catch (err) {
+      if (!isMountedRef.current || reqId !== createdReqIdRef.current) return;
       console.error('Failed to load educator created courses:', err);
       setCreatedError(
         err.response?.data?.detail ||
           'Failed to load your created courses. Please try again.'
       );
     } finally {
-      setCreatedLoading(false);
+      if (isMountedRef.current && reqId === createdReqIdRef.current) {
+        setCreatedLoading(false);
+      }
     }
   }, [isEducatorRole, user?.id]);
 
   const fetchMyEnrolledCourses = useCallback(async () => {
+    const reqId = ++enrolledReqIdRef.current;
     setEnrolledLoading(true);
     setEnrolledError('');
     try {
       const data = await coursesAPI.getEnrolled();
+      if (!isMountedRef.current || reqId !== enrolledReqIdRef.current) return;
       setEnrolledList(Array.isArray(data) ? data : []);
     } catch (err) {
+      if (!isMountedRef.current || reqId !== enrolledReqIdRef.current) return;
       console.error('Failed to load enrolled courses:', err);
       setEnrolledError(
         err.response?.data?.detail ||
           'Failed to load your enrolled courses. Please try again.'
       );
     } finally {
-      setEnrolledLoading(false);
+      if (isMountedRef.current && reqId === enrolledReqIdRef.current) {
+        setEnrolledLoading(false);
+      }
     }
   }, []);
 
@@ -196,81 +260,212 @@ export default function CoursePlayer({
     }
   }, [selectedCourseId, fetchMyCreatedCourses, fetchMyEnrolledCourses]);
 
-  // Cleanup PDF object URL on unmount or change
-  useEffect(() => {
-    return () => {
-      if (activePdfUrl) {
-        URL.revokeObjectURL(activePdfUrl);
-      }
-    };
-  }, [activePdfUrl]);
-
-  // Load Course Hierarchy when a course is selected
-  const loadCourseWorkspace = useCallback(async (courseId, preserveSelection = false) => {
-    if (!courseId) return;
-    setHierarchyLoading(true);
-    setHierarchyError('');
+  // Fetch Course Completion Progress with Stale-Response Protection
+  const fetchCourseProgress = useCallback(async (courseId, { preserveOnError = true } = {}) => {
+    if (!courseId || Number(selectedCourseIdRef.current) !== Number(courseId)) return;
+    const reqId = ++progressReqIdRef.current;
+    setProgressLoading(true);
+    setProgressError('');
     try {
-      const data = await coursesAPI.getHierarchy(courseId);
-      setHierarchy(data);
-
-      const mods = data?.modules || [];
-      const initialExpanded = {};
-      mods.forEach((m) => {
-        initialExpanded[m.id] = true;
-      });
-      setExpandedModules((prev) => (preserveSelection ? { ...initialExpanded, ...prev } : initialExpanded));
-
-      if (!preserveSelection) {
-        if (mods.length > 0) {
-          setActiveModuleId(mods[0].id);
-          const firstTopic = mods[0].topics?.[0] || null;
-          setActiveTopicId(firstTopic ? firstTopic.id : null);
-        } else {
-          setActiveModuleId(null);
-          setActiveTopicId(null);
-        }
-      } else {
-        setActiveModuleId((prevModId) => {
-          const stillExists = mods.some((m) => m.id === prevModId);
-          return stillExists ? prevModId : mods[0]?.id || null;
-        });
-        setActiveTopicId((prevTopId) => {
-          const allTopics = mods.flatMap((m) => m.topics || []);
-          const stillExists = allTopics.some((t) => t.id === prevTopId);
-          return stillExists ? prevTopId : allTopics[0]?.id || null;
-        });
+      const comp = await coursesAPI.getCompletedTopics(courseId);
+      if (
+        !isMountedRef.current ||
+        reqId !== progressReqIdRef.current ||
+        Number(selectedCourseIdRef.current) !== Number(courseId)
+      ) {
+        return;
       }
-
-      try {
-        const comp = await coursesAPI.getCompletedTopics(courseId);
-        if (comp && Array.isArray(comp.completed_topic_ids)) {
-          setCompletedTopicIds(new Set(comp.completed_topic_ids));
-        }
-      } catch {
-        setCompletedTopicIds(new Set());
+      if (comp && Array.isArray(comp.completed_topic_ids)) {
+        const normalizedIds = comp.completed_topic_ids
+          .map((id) => Number(id))
+          .filter((id) => !Number.isNaN(id));
+        setCompletedTopicIds(new Set(normalizedIds));
       }
     } catch (err) {
-      console.error('Failed to load course hierarchy:', err);
-      setHierarchyError(
-        err.response?.data?.detail ||
-          'Failed to load course details from the server. Please try reloading.'
-      );
+      if (
+        !isMountedRef.current ||
+        reqId !== progressReqIdRef.current ||
+        Number(selectedCourseIdRef.current) !== Number(courseId)
+      ) {
+        return;
+      }
+      console.warn('Failed to fetch course progress:', err);
+      setProgressError('Could not sync progress from server.');
+      if (!preserveOnError) {
+        setCompletedTopicIds(new Set());
+      }
     } finally {
-      setHierarchyLoading(false);
+      if (
+        isMountedRef.current &&
+        reqId === progressReqIdRef.current &&
+        Number(selectedCourseIdRef.current) === Number(courseId)
+      ) {
+        setProgressLoading(false);
+      }
     }
   }, []);
 
+  // Load Course Hierarchy when a course is selected
+  const loadCourseWorkspace = useCallback(
+    async (courseId, preserveSelection = false) => {
+      if (!courseId || Number(selectedCourseIdRef.current) !== Number(courseId)) return;
+      const reqId = ++workspaceReqIdRef.current;
+      setHierarchyLoading(true);
+      setHierarchyError('');
+      try {
+        const data = await coursesAPI.getHierarchy(courseId);
+        if (
+          !isMountedRef.current ||
+          reqId !== workspaceReqIdRef.current ||
+          Number(selectedCourseIdRef.current) !== Number(courseId)
+        ) {
+          return;
+        }
+        setHierarchy(data);
+
+        const mods = data?.modules || [];
+        const initialExpanded = {};
+        mods.forEach((m) => {
+          initialExpanded[m.id] = true;
+        });
+        setExpandedModules((prev) => {
+          if (!preserveSelection) return initialExpanded;
+          const nextExpanded = { ...initialExpanded };
+          Object.keys(prev).forEach((modKey) => {
+            if (Object.prototype.hasOwnProperty.call(nextExpanded, modKey)) {
+              nextExpanded[modKey] = prev[modKey];
+            }
+          });
+          return nextExpanded;
+        });
+
+        if (!preserveSelection) {
+          if (mods.length > 0) {
+            const firstModWithTopic = mods.find((m) => (m.topics || []).length > 0) || mods[0];
+            const firstTopic = firstModWithTopic.topics?.[0] || null;
+            setActiveModuleId(firstModWithTopic.id);
+            activeModuleIdRef.current = firstModWithTopic.id;
+            setActiveTopicId(firstTopic ? firstTopic.id : null);
+            activeTopicIdRef.current = firstTopic ? firstTopic.id : null;
+          } else {
+            setActiveModuleId(null);
+            activeModuleIdRef.current = null;
+            setActiveTopicId(null);
+            activeTopicIdRef.current = null;
+          }
+        } else {
+          const prevModId = activeModuleIdRef.current;
+          const prevTopId = activeTopicIdRef.current;
+          const modContainingPrevTopic =
+            prevTopId != null
+              ? mods.find((m) =>
+                  (m.topics || []).some((t) => Number(t.id) === Number(prevTopId))
+                )
+              : null;
+
+          if (modContainingPrevTopic) {
+            setActiveModuleId(modContainingPrevTopic.id);
+            activeModuleIdRef.current = modContainingPrevTopic.id;
+            setActiveTopicId(prevTopId);
+            activeTopicIdRef.current = prevTopId;
+          } else {
+            const prevModStillExists =
+              prevModId != null
+                ? mods.find((m) => Number(m.id) === Number(prevModId)) || null
+                : null;
+
+            if (prevModStillExists && (prevTopId == null || (prevModStillExists.topics || []).length > 0)) {
+              const nextTop = prevModStillExists.topics?.[0] || null;
+              setActiveModuleId(prevModStillExists.id);
+              activeModuleIdRef.current = prevModStillExists.id;
+              setActiveTopicId(nextTop ? nextTop.id : null);
+              activeTopicIdRef.current = nextTop ? nextTop.id : null;
+            } else {
+              const fallbackMod =
+                mods.find((m) => (m.topics || []).length > 0) ||
+                prevModStillExists ||
+                mods[0] ||
+                null;
+              const fallbackTop = fallbackMod?.topics?.[0] || null;
+              setActiveModuleId(fallbackMod ? fallbackMod.id : null);
+              activeModuleIdRef.current = fallbackMod ? fallbackMod.id : null;
+              setActiveTopicId(fallbackTop ? fallbackTop.id : null);
+              activeTopicIdRef.current = fallbackTop ? fallbackTop.id : null;
+            }
+          }
+        }
+
+        const isOwnerOrAdmin =
+          user?.role === 'ADMIN' ||
+          (isEducatorRole && Number(data?.educator_id) === Number(user?.id));
+        const isUserEnrolled = Boolean(data?.is_enrolled);
+
+        if (isOwnerOrAdmin || (isUserEnrolled && !previewOnly)) {
+          await fetchCourseProgress(courseId, { preserveOnError: preserveSelection });
+        } else {
+          setCompletedTopicIds(new Set());
+          setProgressError('');
+          setProgressLoading(false);
+        }
+      } catch (err) {
+        if (
+          !isMountedRef.current ||
+          reqId !== workspaceReqIdRef.current ||
+          Number(selectedCourseIdRef.current) !== Number(courseId)
+        ) {
+          return;
+        }
+        console.error('Failed to load course hierarchy:', err);
+        setHierarchyError(
+          err.response?.data?.detail ||
+            'Failed to load course details from the server. Please try reloading.'
+        );
+      } finally {
+        if (
+          isMountedRef.current &&
+          reqId === workspaceReqIdRef.current &&
+          Number(selectedCourseIdRef.current) === Number(courseId)
+        ) {
+          setHierarchyLoading(false);
+        }
+      }
+    },
+    [fetchCourseProgress, isEducatorRole, previewOnly, user?.id, user?.role]
+  );
+
   useEffect(() => {
+    selectedCourseIdRef.current = selectedCourseId;
+    workspaceReqIdRef.current += 1;
+    progressReqIdRef.current += 1;
+    toggleReqIdRef.current += 1;
+    pdfReqIdRef.current += 1;
+    clearActivePdf();
+    setPdfError('');
+    setPdfLoading(false);
+    setProgressLoading(false);
+    setTogglingComplete(false);
+    setEnrollingInPreview(false);
+    setModuleModal(null);
+    setTopicModal(null);
+    setEditingCourse(null);
+    setActiveModuleId(null);
+    setActiveTopicId(null);
+    activeModuleIdRef.current = null;
+    activeTopicIdRef.current = null;
+
     if (selectedCourseId) {
-      setActivePdfUrl(null);
-      setActivePdfTitle('');
+      setHierarchy(null);
+      setHierarchyError('');
+      setCompletedTopicIds(new Set());
+      setProgressError('');
       loadCourseWorkspace(selectedCourseId, false);
     } else {
       setHierarchy(null);
       setHierarchyError('');
+      setCompletedTopicIds(new Set());
+      setProgressError('');
     }
-  }, [selectedCourseId, loadCourseWorkspace]);
+  }, [selectedCourseId, loadCourseWorkspace, clearActivePdf]);
 
   const isCourseOwner = useMemo(() => {
     if (!hierarchy || !user) return false;
@@ -287,86 +482,164 @@ export default function CoursePlayer({
   const activeModule = useMemo(() => {
     if (!hierarchy?.modules) return null;
     return (
-      hierarchy.modules.find((m) => m.id === activeModuleId) ||
+      hierarchy.modules.find((m) => Number(m.id) === Number(activeModuleId)) ||
       hierarchy.modules[0] ||
       null
     );
   }, [hierarchy, activeModuleId]);
 
   const activeTopic = useMemo(() => {
-    if (!hierarchy?.modules) return null;
-    for (const mod of hierarchy.modules) {
-      const found = (mod.topics || []).find((t) => t.id === activeTopicId);
-      if (found) return found;
+    if (!activeModule) return null;
+    const topics = activeModule.topics || [];
+    const foundInActiveMod = topics.find((t) => Number(t.id) === Number(activeTopicId));
+    if (foundInActiveMod) return foundInActiveMod;
+    return topics[0] || null;
+  }, [activeModule, activeTopicId]);
+
+  const activeTopicModule = useMemo(() => {
+    return activeModule;
+  }, [activeModule]);
+
+  // Clear active PDF viewer if the user switches to a module that does not own the currently open PDF resource
+  useEffect(() => {
+    if (!activeModule || !activePdfResourceId) return;
+    const belongsToActiveMod = (activeModule.resources || []).some(
+      (r) => Number(r.id) === Number(activePdfResourceId)
+    );
+    if (!belongsToActiveMod) {
+      pdfReqIdRef.current += 1;
+      clearActivePdf();
+      setPdfLoading(false);
+      setPdfError('');
     }
-    return activeModule?.topics?.[0] || null;
-  }, [hierarchy, activeTopicId, activeModule]);
+  }, [activeModule, activePdfResourceId, clearActivePdf]);
 
   const totalTopicsCount = useMemo(() => {
     if (!hierarchy?.modules) return 0;
     return hierarchy.modules.reduce((acc, m) => acc + (m.topics?.length || 0), 0);
   }, [hierarchy]);
 
-  const completionPercent = useMemo(() => {
-    if (totalTopicsCount === 0) return 0;
+  const completedTopicsCount = useMemo(() => {
+    if (!hierarchy?.modules || totalTopicsCount === 0) return 0;
     const validTopicIds = new Set(
-      (hierarchy?.modules || []).flatMap((m) => (m.topics || []).map((t) => t.id))
+      (hierarchy.modules || []).flatMap((m) => (m.topics || []).map((t) => Number(t.id)))
     );
     let done = 0;
     completedTopicIds.forEach((id) => {
-      if (validTopicIds.has(id)) done += 1;
+      if (validTopicIds.has(Number(id))) done += 1;
     });
-    return Math.min(100, Math.round((done / totalTopicsCount) * 100));
+    return done;
   }, [hierarchy, totalTopicsCount, completedTopicIds]);
 
-  const showBanner = (type, text) => {
+  const completionPercent = useMemo(() => {
+    if (totalTopicsCount === 0) return 0;
+    return Math.min(100, Math.round((completedTopicsCount / totalTopicsCount) * 100));
+  }, [totalTopicsCount, completedTopicsCount]);
+
+  const showBanner = useCallback((type, text) => {
     setActionBanner({ type, text });
-    setTimeout(() => {
-      setActionBanner((prev) => (prev?.text === text ? null : prev));
+    if (bannerTimeoutRef.current) {
+      clearTimeout(bannerTimeoutRef.current);
+    }
+    bannerTimeoutRef.current = setTimeout(() => {
+      if (isMountedRef.current) {
+        setActionBanner((prev) => (prev?.text === text ? null : prev));
+      }
     }, 5000);
-  };
+  }, []);
 
   // Toggle Topic Completion
   const handleToggleTopicComplete = async (topic) => {
-    if (!topic || togglingComplete) return;
-    const currentlyDone = completedTopicIds.has(topic.id);
+    if (!topic || togglingComplete || !hierarchy?.id) return;
+    const targetCourseId = hierarchy.id;
+    if (Number(selectedCourseIdRef.current) !== Number(targetCourseId)) return;
+
+    const topicIdNum = Number(topic.id);
+    const currentlyDone = completedTopicIds.has(topicIdNum);
     const nextState = !currentlyDone;
+    const reqId = ++progressReqIdRef.current;
+    const toggleReqId = ++toggleReqIdRef.current;
     setTogglingComplete(true);
+    setProgressError('');
     try {
-      const res = await coursesAPI.completeTopic(topic.id, { is_completed: nextState });
+      const res = await coursesAPI.completeTopic(topicIdNum, { is_completed: nextState });
+      if (
+        !isMountedRef.current ||
+        reqId !== progressReqIdRef.current ||
+        Number(selectedCourseIdRef.current) !== Number(targetCourseId)
+      ) {
+        return;
+      }
       if (res && Array.isArray(res.completed_topic_ids)) {
-        setCompletedTopicIds(new Set(res.completed_topic_ids));
+        setCompletedTopicIds(
+          new Set(
+            res.completed_topic_ids
+              .map((id) => Number(id))
+              .filter((id) => !Number.isNaN(id))
+          )
+        );
       } else {
         setCompletedTopicIds((prev) => {
           const next = new Set(prev);
-          if (nextState) next.add(topic.id);
-          else next.delete(topic.id);
+          if (nextState) next.add(topicIdNum);
+          else next.delete(topicIdNum);
           return next;
         });
       }
+      setProgressError('');
       if (onRefreshCourses) onRefreshCourses();
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Could not update topic completion status.');
+      if (
+        !isMountedRef.current ||
+        reqId !== progressReqIdRef.current ||
+        Number(selectedCourseIdRef.current) !== Number(targetCourseId)
+      ) {
+        return;
+      }
+      const errMsg = err.response?.data?.detail || 'Could not update topic completion status.';
+      setProgressError(errMsg);
+      showBanner('error', errMsg);
     } finally {
-      setTogglingComplete(false);
+      if (
+        isMountedRef.current &&
+        reqId === progressReqIdRef.current &&
+        Number(selectedCourseIdRef.current) === Number(targetCourseId)
+      ) {
+        setProgressLoading(false);
+      }
+      if (
+        isMountedRef.current &&
+        toggleReqId === toggleReqIdRef.current &&
+        Number(selectedCourseIdRef.current) === Number(targetCourseId)
+      ) {
+        setTogglingComplete(false);
+      }
     }
   };
 
   // Enroll from Course Preview
   const handleEnrollFromPreview = async () => {
     if (!hierarchy || enrollingInPreview) return;
+    const targetCourseId = hierarchy.id;
+    const targetCourseTitle = hierarchy.title;
     setEnrollingInPreview(true);
     try {
-      await coursesAPI.enroll(hierarchy.id);
-      await loadCourseWorkspace(hierarchy.id, true);
+      await coursesAPI.enroll(targetCourseId);
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        await loadCourseWorkspace(targetCourseId, true);
+        setActiveTab('learn');
+        showBanner('success', `Successfully enrolled in "${targetCourseTitle}"!`);
+      }
       await fetchMyEnrolledCourses();
       if (onRefreshCourses) await onRefreshCourses();
-      setActiveTab('learn');
-      showBanner('success', `Successfully enrolled in "${hierarchy.title}"!`);
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to enroll in this course.');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('error', err.response?.data?.detail || 'Failed to enroll in this course.');
+      }
     } finally {
-      setEnrollingInPreview(false);
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        setEnrollingInPreview(false);
+      }
     }
   };
 
@@ -383,7 +656,7 @@ export default function CoursePlayer({
         await coursesAPI.publish(targetId);
         showBanner('success', `Course "${courseObj.title}" is now PUBLISHED and live for students!`);
       }
-      if (selectedCourseId === targetId) {
+      if (Number(selectedCourseIdRef.current) === Number(targetId)) {
         await loadCourseWorkspace(targetId, true);
       }
       await fetchMyCreatedCourses();
@@ -423,9 +696,10 @@ export default function CoursePlayer({
       return;
     }
 
+    const targetCourseId = editingCourse.id;
     setSavingCourseMeta(true);
     try {
-      await coursesAPI.update(editingCourse.id, {
+      await coursesAPI.update(targetCourseId, {
         title: editCourseForm.title.trim(),
         description: editCourseForm.description.trim(),
         difficulty: editCourseForm.difficulty,
@@ -433,17 +707,23 @@ export default function CoursePlayer({
         category: editCourseForm.target_branch,
         thumbnail_url: editCourseForm.thumbnail_url.trim() || null
       });
-      setEditingCourse(null);
-      showBanner('success', 'Course details updated successfully.');
-      if (selectedCourseId === editingCourse.id) {
-        await loadCourseWorkspace(editingCourse.id, true);
+      if (isMountedRef.current) {
+        setEditingCourse(null);
+        showBanner('success', 'Course details updated successfully.');
+      }
+      if (Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        await loadCourseWorkspace(targetCourseId, true);
       }
       await fetchMyCreatedCourses();
       if (onRefreshCourses) await onRefreshCourses();
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to update course metadata.');
+      if (isMountedRef.current) {
+        showBanner('error', err.response?.data?.detail || 'Failed to update course metadata.');
+      }
     } finally {
-      setSavingCourseMeta(false);
+      if (isMountedRef.current) {
+        setSavingCourseMeta(false);
+      }
     }
   };
 
@@ -470,14 +750,16 @@ export default function CoursePlayer({
         await fetchMyEnrolledCourses();
       }
       setCourseToDelete(null);
-      if (selectedCourseId === courseObj.id && onBackToDashboard) {
+      if (Number(selectedCourseIdRef.current) === Number(courseObj.id) && onBackToDashboard) {
         onBackToDashboard();
       }
       if (onRefreshCourses) await onRefreshCourses();
     } catch (err) {
       showBanner('error', err.response?.data?.detail || 'Operation failed. Please try again.');
     } finally {
-      setDeletingCourse(false);
+      if (isMountedRef.current) {
+        setDeletingCourse(false);
+      }
     }
   };
 
@@ -489,48 +771,76 @@ export default function CoursePlayer({
       showBanner('error', 'Module title is required.');
       return;
     }
+    const targetCourseId = hierarchy.id;
+    const modalSnapshot = moduleModal;
     setSavingModule(true);
     try {
-      if (moduleModal.mode === 'create') {
-        const created = await coursesAPI.createModule(hierarchy.id, {
+      let created = null;
+      if (modalSnapshot.mode === 'create') {
+        created = await coursesAPI.createModule(targetCourseId, {
           title: moduleForm.title.trim(),
           description: moduleForm.description.trim() || undefined
         });
-        setActiveModuleId(created.id);
-        showBanner('success', `Module "${created.title}" added.`);
-      } else if (moduleModal.module) {
-        await coursesAPI.updateModule(moduleModal.module.id, {
+      } else if (modalSnapshot.module) {
+        await coursesAPI.updateModule(modalSnapshot.module.id, {
           title: moduleForm.title.trim(),
           description: moduleForm.description.trim() || undefined
         });
-        showBanner('success', 'Module updated.');
       }
-      setModuleModal(null);
-      await loadCourseWorkspace(hierarchy.id, true);
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        if (created) {
+          setActiveModuleId(created.id);
+          activeModuleIdRef.current = created.id;
+          setActiveTopicId(null);
+          activeTopicIdRef.current = null;
+          showBanner('success', `Module "${created.title}" added.`);
+        } else {
+          showBanner('success', 'Module updated.');
+        }
+        setModuleModal(null);
+        await loadCourseWorkspace(targetCourseId, true);
+      }
       await fetchMyCreatedCourses();
       if (onRefreshCourses) await onRefreshCourses();
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to save module.');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('error', err.response?.data?.detail || 'Failed to save module.');
+      }
     } finally {
-      setSavingModule(false);
+      if (isMountedRef.current) {
+        setSavingModule(false);
+      }
     }
   };
 
   const handleDeleteModule = async (mod) => {
     if (!mod || !hierarchy) return;
     if (!window.confirm(`Delete module "${mod.title}" and all topics inside it?`)) return;
+    const targetCourseId = hierarchy.id;
     try {
       await coursesAPI.deleteModule(mod.id);
-      showBanner('success', `Module "${mod.title}" deleted.`);
-      await loadCourseWorkspace(hierarchy.id, false);
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        if (
+          (mod.resources || []).some((r) => Number(r.id) === Number(activePdfResourceId))
+        ) {
+          pdfReqIdRef.current += 1;
+          clearActivePdf();
+        }
+        showBanner('success', `Module "${mod.title}" deleted.`);
+        await loadCourseWorkspace(targetCourseId, true);
+      }
       await fetchMyCreatedCourses();
       if (onRefreshCourses) await onRefreshCourses();
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to delete module.');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('error', err.response?.data?.detail || 'Failed to delete module.');
+      }
     }
   };
 
   const handleMoveModule = async (modIndex, direction) => {
+    const targetCourseId = hierarchy?.id;
+    if (!targetCourseId) return;
     const mods = [...(hierarchy?.modules || [])];
     const targetIndex = modIndex + direction;
     if (targetIndex < 0 || targetIndex >= mods.length) return;
@@ -539,12 +849,16 @@ export default function CoursePlayer({
     mods[targetIndex] = temp;
     try {
       await coursesAPI.reorderModules(
-        hierarchy.id,
+        targetCourseId,
         mods.map((m) => m.id)
       );
-      await loadCourseWorkspace(hierarchy.id, true);
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        await loadCourseWorkspace(targetCourseId, true);
+      }
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to reorder modules.');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('error', err.response?.data?.detail || 'Failed to reorder modules.');
+      }
     }
   };
 
@@ -565,51 +879,72 @@ export default function CoursePlayer({
       return;
     }
 
+    const targetCourseId = hierarchy.id;
+    const modalSnapshot = topicModal;
     setSavingTopic(true);
     try {
-      if (topicModal.mode === 'create') {
-        const created = await coursesAPI.createTopic(topicModal.moduleId, {
+      let created = null;
+      if (modalSnapshot.mode === 'create') {
+        created = await coursesAPI.createTopic(modalSnapshot.moduleId, {
           title: topicForm.title.trim(),
           description: topicForm.description.trim() || undefined,
           youtube_url: topicForm.youtube_url.trim()
         });
-        setActiveModuleId(topicModal.moduleId);
-        setActiveTopicId(created.id);
-        showBanner('success', `Topic "${created.title}" added.`);
-      } else if (topicModal.topic) {
-        await coursesAPI.updateTopic(topicModal.topic.id, {
+      } else if (modalSnapshot.topic) {
+        await coursesAPI.updateTopic(modalSnapshot.topic.id, {
           title: topicForm.title.trim(),
           description: topicForm.description.trim() || undefined,
           youtube_url: topicForm.youtube_url.trim()
         });
-        showBanner('success', 'Topic updated.');
       }
-      setTopicModal(null);
-      await loadCourseWorkspace(hierarchy.id, true);
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        if (created) {
+          setActiveModuleId(modalSnapshot.moduleId);
+          activeModuleIdRef.current = modalSnapshot.moduleId;
+          setActiveTopicId(created.id);
+          activeTopicIdRef.current = created.id;
+          showBanner('success', `Topic "${created.title}" added.`);
+        } else {
+          showBanner('success', 'Topic updated.');
+        }
+        setTopicModal(null);
+        await loadCourseWorkspace(targetCourseId, true);
+      }
       await fetchMyCreatedCourses();
       if (onRefreshCourses) await onRefreshCourses();
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to save topic.');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('error', err.response?.data?.detail || 'Failed to save topic.');
+      }
     } finally {
-      setSavingTopic(false);
+      if (isMountedRef.current) {
+        setSavingTopic(false);
+      }
     }
   };
 
   const handleDeleteTopic = async (topic) => {
     if (!topic || !hierarchy) return;
     if (!window.confirm(`Delete topic "${topic.title}"?`)) return;
+    const targetCourseId = hierarchy.id;
     try {
       await coursesAPI.deleteTopic(topic.id);
-      showBanner('success', `Topic "${topic.title}" deleted.`);
-      await loadCourseWorkspace(hierarchy.id, false);
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('success', `Topic "${topic.title}" deleted.`);
+        await loadCourseWorkspace(targetCourseId, true);
+      }
       await fetchMyCreatedCourses();
       if (onRefreshCourses) await onRefreshCourses();
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to delete topic.');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('error', err.response?.data?.detail || 'Failed to delete topic.');
+      }
     }
   };
 
   const handleMoveTopic = async (moduleObj, topicIndex, direction) => {
+    const targetCourseId = hierarchy?.id;
+    if (!targetCourseId) return;
     const topics = [...(moduleObj.topics || [])];
     const targetIndex = topicIndex + direction;
     if (targetIndex < 0 || targetIndex >= topics.length) return;
@@ -621,9 +956,13 @@ export default function CoursePlayer({
         moduleObj.id,
         topics.map((t) => t.id)
       );
-      await loadCourseWorkspace(hierarchy.id, true);
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        await loadCourseWorkspace(targetCourseId, true);
+      }
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to reorder topics.');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('error', err.response?.data?.detail || 'Failed to reorder topics.');
+      }
     }
   };
 
@@ -634,60 +973,135 @@ export default function CoursePlayer({
       showBanner('error', 'Only PDF files are supported for module notes.');
       return;
     }
+    const targetCourseId = hierarchy.id;
     setUploadingModuleId(moduleId);
     try {
       const fd = new FormData();
       fd.append('title', file.name.replace(/\.pdf$/i, ''));
       fd.append('file', file);
       await coursesAPI.uploadResource(moduleId, fd);
-      showBanner('success', `Uploaded PDF notes "${file.name}".`);
-      await loadCourseWorkspace(hierarchy.id, true);
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('success', `Uploaded PDF notes "${file.name}".`);
+        await loadCourseWorkspace(targetCourseId, true);
+      }
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to upload PDF notes.');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('error', err.response?.data?.detail || 'Failed to upload PDF notes.');
+      }
     } finally {
-      setUploadingModuleId(null);
+      if (isMountedRef.current) {
+        setUploadingModuleId(null);
+      }
     }
   };
 
-  const handleViewModulePdf = async (resource) => {
+  const handleViewModulePdf = async (resource, moduleId = null) => {
     if (!resource) return;
+    const reqId = ++pdfReqIdRef.current;
+    const targetCourseId = selectedCourseIdRef.current;
+    const resolvedModuleId =
+      moduleId ??
+      resource.module_id ??
+      hierarchy?.modules?.find((m) =>
+        (m.resources || []).some((r) => Number(r.id) === Number(resource.id))
+      )?.id ??
+      null;
+
+    if (resolvedModuleId != null) {
+      const currentModId = activeModuleIdRef.current ?? activeModule?.id ?? null;
+      const isSwitchingModule = Number(currentModId) !== Number(resolvedModuleId);
+      setActiveModuleId(resolvedModuleId);
+      activeModuleIdRef.current = resolvedModuleId;
+      if (isSwitchingModule) {
+        const targetMod = (hierarchy?.modules || []).find(
+          (m) => Number(m.id) === Number(resolvedModuleId)
+        );
+        if (targetMod) {
+          const currentTopInTarget = (targetMod.topics || []).some(
+            (t) => Number(t.id) === Number(activeTopicIdRef.current)
+          );
+          if (!currentTopInTarget) {
+            const firstTop = targetMod.topics?.[0] || null;
+            const nextTopId = firstTop ? firstTop.id : null;
+            setActiveTopicId(nextTopId);
+            activeTopicIdRef.current = nextTopId;
+          }
+        }
+        setExpandedModules((prev) => ({
+          ...prev,
+          [resolvedModuleId]: true
+        }));
+      }
+    }
+
+    clearActivePdf();
     setPdfLoading(true);
     setPdfError('');
+    setActivePdfResourceId(resource.id);
     setActivePdfTitle(resource.title || 'Module Lecture Notes');
     setActiveTab('notes');
     try {
       const blob = await coursesAPI.viewResource(resource.id);
-      if (activePdfUrl) {
-        URL.revokeObjectURL(activePdfUrl);
+      if (
+        !isMountedRef.current ||
+        reqId !== pdfReqIdRef.current ||
+        Number(selectedCourseIdRef.current) !== Number(targetCourseId) ||
+        (resolvedModuleId != null &&
+          Number(activeModuleIdRef.current) !== Number(resolvedModuleId))
+      ) {
+        return;
       }
       const pdfBlob = new Blob([blob], { type: 'application/pdf' });
       const url = URL.createObjectURL(pdfBlob);
+      activePdfUrlRef.current = url;
       setActivePdfUrl(url);
     } catch (err) {
+      if (
+        !isMountedRef.current ||
+        reqId !== pdfReqIdRef.current ||
+        Number(selectedCourseIdRef.current) !== Number(targetCourseId) ||
+        (resolvedModuleId != null &&
+          Number(activeModuleIdRef.current) !== Number(resolvedModuleId))
+      ) {
+        return;
+      }
       console.error('Failed to load PDF resource:', err);
       setPdfError(
         err.response?.data?.detail ||
           'Unable to load the PDF document from the server.'
       );
     } finally {
-      setPdfLoading(false);
+      if (
+        isMountedRef.current &&
+        reqId === pdfReqIdRef.current &&
+        Number(selectedCourseIdRef.current) === Number(targetCourseId) &&
+        (resolvedModuleId == null ||
+          Number(activeModuleIdRef.current) === Number(resolvedModuleId))
+      ) {
+        setPdfLoading(false);
+      }
     }
   };
 
   const handleDeleteModulePdf = async (resource) => {
     if (!resource || !hierarchy) return;
     if (!window.confirm(`Remove PDF notes "${resource.title}"?`)) return;
+    const targetCourseId = hierarchy.id;
     try {
       await coursesAPI.deleteResource(resource.id);
-      if (activePdfTitle === resource.title && activePdfUrl) {
-        URL.revokeObjectURL(activePdfUrl);
-        setActivePdfUrl(null);
-        setActivePdfTitle('');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        if (Number(activePdfResourceId) === Number(resource.id)) {
+          pdfReqIdRef.current += 1;
+          clearActivePdf();
+          setPdfError('');
+        }
+        showBanner('success', 'PDF notes removed.');
+        await loadCourseWorkspace(targetCourseId, true);
       }
-      showBanner('success', 'PDF notes removed.');
-      await loadCourseWorkspace(hierarchy.id, true);
     } catch (err) {
-      showBanner('error', err.response?.data?.detail || 'Failed to remove PDF notes.');
+      if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
+        showBanner('error', err.response?.data?.detail || 'Failed to remove PDF notes.');
+      }
     }
   };
 
@@ -739,7 +1153,8 @@ export default function CoursePlayer({
     const difficultyClass = getDifficultyBadgeClass(hierarchy.difficulty);
     const hasRatings = Number(hierarchy.total_ratings || 0) > 0;
     const activeVideoId = activeTopic
-      ? activeTopic.youtube_video_id || extractYoutubeVideoId(activeTopic.youtube_url)
+      ? extractYoutubeVideoId(activeTopic.youtube_video_id) ||
+        extractYoutubeVideoId(activeTopic.youtube_url)
       : null;
 
     return (
@@ -796,17 +1211,42 @@ export default function CoursePlayer({
                       </>
                     )}
                   </button>
+
+                  <button
+                    onClick={() => {
+                      setDeleteMode('delete');
+                      setCourseToDelete(hierarchy);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-rose-500/10 hover:bg-rose-500/20 text-rose-400 border border-rose-500/25 text-xs font-bold transition flex items-center gap-1.5"
+                    title="Delete Course Permanently"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Delete</span>
+                  </button>
                 </>
               )}
 
               {isEnrolledInSelected && !isCourseOwner && (
-                <button
-                  onClick={() => onOpenRateModal && onOpenRateModal(hierarchy)}
-                  className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-bold transition flex items-center gap-1.5"
-                >
-                  <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
-                  <span>Rate Course</span>
-                </button>
+                <>
+                  <button
+                    onClick={() => onOpenRateModal && onOpenRateModal(hierarchy)}
+                    className="px-3.5 py-1.5 rounded-xl bg-amber-500/15 hover:bg-amber-500/25 text-amber-300 border border-amber-500/30 text-xs font-bold transition flex items-center gap-1.5"
+                  >
+                    <Star className="h-3.5 w-3.5 fill-amber-400 text-amber-400" />
+                    <span>Rate Course</span>
+                  </button>
+                  <button
+                    onClick={() => {
+                      setDeleteMode('unenroll');
+                      setCourseToDelete(hierarchy);
+                    }}
+                    className="px-3 py-1.5 rounded-xl bg-[#0b0f19] hover:bg-rose-500/15 text-slate-400 hover:text-rose-400 border border-[#1e2638] text-xs font-bold transition flex items-center gap-1.5"
+                    title="Unenroll from Course"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    <span>Unenroll</span>
+                  </button>
+                </>
               )}
             </div>
           </div>
@@ -902,9 +1342,24 @@ export default function CoursePlayer({
                     style={{ width: `${completionPercent}%` }}
                   />
                 </div>
-                <p className="text-[11px] text-slate-500">
-                  {completedTopicIds.size} of {totalTopicsCount} topics completed
-                </p>
+                <div className="flex items-center justify-between gap-2">
+                  <p className="text-[11px] text-slate-500">
+                    {progressLoading
+                      ? 'Syncing progress...'
+                      : `${completedTopicsCount} of ${totalTopicsCount} topics completed`}
+                  </p>
+                  {progressError && (
+                    <button
+                      type="button"
+                      onClick={() => fetchCourseProgress(hierarchy.id, { preserveOnError: true })}
+                      className="text-[10px] font-bold text-amber-400 hover:text-amber-300 flex items-center gap-1"
+                      title={progressError}
+                    >
+                      <RefreshCw className="h-3 w-3" />
+                      <span>Retry</span>
+                    </button>
+                  )}
+                </div>
               </div>
             ) : (
               <div className="bg-[#0b0f19] border border-indigo-500/40 rounded-2xl p-5 min-w-[250px] space-y-3 text-center">
@@ -1210,7 +1665,9 @@ export default function CoursePlayer({
                                   type="button"
                                   onClick={() => {
                                     setActiveModuleId(mod.id);
+                                    activeModuleIdRef.current = mod.id;
                                     setActiveTopicId(top.id);
+                                    activeTopicIdRef.current = top.id;
                                     setActiveTab('learn');
                                   }}
                                   className="px-2.5 py-1 rounded-lg bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 text-xs font-bold border border-emerald-500/30 flex items-center gap-1"
@@ -1298,7 +1755,7 @@ export default function CoursePlayer({
                               <div className="flex items-center gap-1.5 shrink-0">
                                 <button
                                   type="button"
-                                  onClick={() => handleViewModulePdf(res)}
+                                  onClick={() => handleViewModulePdf(res, mod.id)}
                                   className="px-2.5 py-1 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 text-[11px] font-bold"
                                 >
                                   View PDF
@@ -1364,11 +1821,24 @@ export default function CoursePlayer({
                       <button
                         type="button"
                         onClick={() => {
+                          const switchingModule = Number(activeModule?.id) !== Number(mod.id);
                           setActiveModuleId(mod.id);
-                          setExpandedModules((prev) => ({
-                            ...prev,
-                            [mod.id]: !isExpanded
-                          }));
+                          activeModuleIdRef.current = mod.id;
+                          if (switchingModule) {
+                            const firstModTopic = mod.topics?.[0] || null;
+                            const nextTopicId = firstModTopic ? firstModTopic.id : null;
+                            setActiveTopicId(nextTopicId);
+                            activeTopicIdRef.current = nextTopicId;
+                            setExpandedModules((prev) => ({
+                              ...prev,
+                              [mod.id]: true
+                            }));
+                          } else {
+                            setExpandedModules((prev) => ({
+                              ...prev,
+                              [mod.id]: !isExpanded
+                            }));
+                          }
                         }}
                         className="w-full p-3.5 text-left flex items-center justify-between gap-2"
                       >
@@ -1390,15 +1860,18 @@ export default function CoursePlayer({
                       {isExpanded && (
                         <div className="px-2.5 pb-3 space-y-1.5 border-t border-[#1e2638]/70 pt-2">
                           {(mod.topics || []).map((top, tIdx) => {
-                            const isSelected = activeTopic?.id === top.id && activeTab === 'learn';
-                            const isDone = completedTopicIds.has(top.id);
+                            const isSelected =
+                              Number(activeTopic?.id) === Number(top.id) && activeTab === 'learn';
+                            const isDone = completedTopicIds.has(Number(top.id));
                             return (
                               <button
                                 key={top.id}
                                 type="button"
                                 onClick={() => {
                                   setActiveModuleId(mod.id);
+                                  activeModuleIdRef.current = mod.id;
                                   setActiveTopicId(top.id);
+                                  activeTopicIdRef.current = top.id;
                                   setActiveTab('learn');
                                 }}
                                 className={`w-full px-3 py-2 rounded-xl text-left text-xs transition flex items-center justify-between gap-2 ${
@@ -1426,10 +1899,7 @@ export default function CoursePlayer({
                             <button
                               key={`res_${res.id}`}
                               type="button"
-                              onClick={() => {
-                                setActiveModuleId(mod.id);
-                                handleViewModulePdf(res);
-                              }}
+                              onClick={() => handleViewModulePdf(res, mod.id)}
                               className="w-full px-3 py-2 rounded-xl text-left text-xs bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-300 border border-cyan-500/20 transition flex items-center gap-2"
                             >
                               <FileText className="h-3.5 w-3.5 shrink-0" />
@@ -1486,9 +1956,9 @@ export default function CoursePlayer({
                           <div key={res.id} className="flex items-center gap-1">
                             <button
                               type="button"
-                              onClick={() => handleViewModulePdf(res)}
+                              onClick={() => handleViewModulePdf(res, activeModule.id)}
                               className={`px-3.5 py-2 rounded-xl text-xs font-bold border transition flex items-center gap-2 ${
-                                activePdfTitle === res.title
+                                Number(activePdfResourceId) === Number(res.id)
                                   ? 'bg-cyan-600 text-white border-cyan-500'
                                   : 'bg-[#0b0f19] text-slate-300 border-[#1e2638] hover:border-cyan-500/40'
                               }`}
@@ -1551,7 +2021,7 @@ export default function CoursePlayer({
                   <div className="aspect-video w-full bg-black relative">
                     {activeVideoId ? (
                       <iframe
-                        key={activeVideoId}
+                        key={`${activeTopic.id}_${activeVideoId}`}
                         title={activeTopic.title}
                         src={`https://www.youtube.com/embed/${activeVideoId}?rel=0&modestbranding=1`}
                         className="w-full h-full"
@@ -1574,7 +2044,7 @@ export default function CoursePlayer({
                               });
                               setTopicModal({
                                 mode: 'edit',
-                                moduleId: activeModule?.id,
+                                moduleId: activeTopicModule?.id || activeModule?.id,
                                 topic: activeTopic
                               });
                             }}
@@ -1592,7 +2062,7 @@ export default function CoursePlayer({
                     <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                       <div>
                         <span className="text-[11px] font-extrabold uppercase text-indigo-400">
-                          {activeModule?.title}
+                          {activeTopicModule?.title || activeModule?.title}
                         </span>
                         <h2 className="text-xl font-black text-white mt-0.5">
                           {activeTopic.title}
@@ -1617,14 +2087,14 @@ export default function CoursePlayer({
                           onClick={() => handleToggleTopicComplete(activeTopic)}
                           disabled={togglingComplete}
                           className={`px-4 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 ${
-                            completedTopicIds.has(activeTopic.id)
+                            completedTopicIds.has(Number(activeTopic.id))
                               ? 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
                               : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-lg shadow-indigo-600/25'
                           }`}
                         >
                           <Check className="h-4 w-4" />
                           <span>
-                            {completedTopicIds.has(activeTopic.id)
+                            {completedTopicIds.has(Number(activeTopic.id))
                               ? 'Completed'
                               : 'Mark as Complete'}
                           </span>
@@ -1939,6 +2409,17 @@ export default function CoursePlayer({
             </div>
           </div>
         )}
+
+        {/* Delete / Unenroll Confirmation Modal in Workspace */}
+        <CourseDeleteModal
+          isOpen={Boolean(courseToDelete)}
+          course={courseToDelete}
+          isCreator={deleteMode === 'delete'}
+          isEducator={isEducatorRole}
+          loading={deletingCourse}
+          onClose={() => setCourseToDelete(null)}
+          onConfirm={handleConfirmDeleteOrUnenroll}
+        />
       </div>
     );
   }
@@ -2556,6 +3037,7 @@ export default function CoursePlayer({
         isOpen={Boolean(courseToDelete)}
         course={courseToDelete}
         isCreator={deleteMode === 'delete'}
+        isEducator={isEducatorRole}
         loading={deletingCourse}
         onClose={() => setCourseToDelete(null)}
         onConfirm={handleConfirmDeleteOrUnenroll}

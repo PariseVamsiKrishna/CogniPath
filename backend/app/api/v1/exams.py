@@ -48,6 +48,21 @@ async def _assert_exam_owner(exam_id: int, current_user: User, db: AsyncSession)
         raise HTTPException(status_code=403, detail="Only the course educator can modify this exam")
     return exam
 
+def _safe_parse_options(raw_options):
+    if not raw_options:
+        return None
+    if isinstance(raw_options, list):
+        return [str(o) for o in raw_options]
+    if isinstance(raw_options, str):
+        try:
+            parsed = json.loads(raw_options)
+            if isinstance(parsed, list):
+                return [str(o) for o in parsed]
+        except Exception:
+            return [s.strip() for s in raw_options.split(",") if s.strip()]
+    return None
+
+
 async def _check_course_ownership_or_enrolment(course_id: int, user: User, db: AsyncSession, write: bool = False) -> Course:
     c_res = await db.execute(select(Course).where(Course.id == course_id))
     course = c_res.scalars().first()
@@ -65,6 +80,13 @@ async def _check_course_ownership_or_enrolment(course_id: int, user: User, db: A
     # Read access
     if user.role == "EDUCATOR" and course.educator_id == user.id:
         return course
+
+    is_pub = bool(getattr(course, "is_published", True))
+    if not is_pub:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="This course is currently in draft status and is not available to students."
+        )
 
     enrol_res = await db.execute(
         select(Enrollment).where(Enrollment.course_id == course_id, Enrollment.user_id == user.id)
@@ -139,7 +161,9 @@ async def get_exam_details(exam_id: int, db: AsyncSession, is_educator: bool = F
         raise HTTPException(status_code=404, detail="Exam not found")
 
     q_res = await db.execute(
-        select(ExamQuestion).where(ExamQuestion.exam_id == exam_id).order_by(ExamQuestion.order_index.asc())
+        select(ExamQuestion)
+        .where(ExamQuestion.exam_id == exam_id)
+        .order_by(ExamQuestion.order_index.asc(), ExamQuestion.id.asc())
     )
     questions = q_res.scalars().all()
 
@@ -149,10 +173,10 @@ async def get_exam_details(exam_id: int, db: AsyncSession, is_educator: bool = F
             id=q.id,
             question_type=q.question_type,
             question_text=q.question_text,
-            options=json.loads(q.options) if q.options else None,
+            options=_safe_parse_options(q.options),
             correct_answer=q.correct_answer if is_educator else None,
             explanation=q.explanation if is_educator else None,
-            source_ref=q.source_ref,
+            source_ref=q.source_ref if is_educator else None,
             order_index=q.order_index
         ))
 
@@ -178,7 +202,9 @@ async def list_course_exams(
     course = await _check_course_ownership_or_enrolment(course_id, current_user, db, write=False)
     is_educator = (current_user.role == "ADMIN" or (current_user.role == "EDUCATOR" and course.educator_id == current_user.id))
 
-    res = await db.execute(select(Exam).where(Exam.course_id == course_id))
+    res = await db.execute(
+        select(Exam).where(Exam.course_id == course_id).order_by(Exam.id.asc())
+    )
     exams = res.scalars().all()
     results = []
     for e in exams:
@@ -219,7 +245,7 @@ async def add_question(
         id=q_obj.id,
         question_type=q_obj.question_type,
         question_text=q_obj.question_text,
-        options=json.loads(q_obj.options) if q_obj.options else None,
+        options=_safe_parse_options(q_obj.options),
         correct_answer=q_obj.correct_answer,
         explanation=q_obj.explanation,
         source_ref=q_obj.source_ref,
@@ -270,7 +296,7 @@ async def reorder_questions(
 async def update_exam(
     exam_id: int,
     req: ExamCreate,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles('EDUCATOR', 'ADMIN')),
     db: AsyncSession = Depends(get_db)
 ):
     """Educator updates exam metadata and syncs question list."""
@@ -305,15 +331,16 @@ async def update_exam(
     ttl_cache.invalidate(f"hierarchy_{exam.course_id}")
     ttl_cache.invalidate(f"hierarchy_{exam.course_id}_educator")
     ttl_cache.invalidate(f"hierarchy_{exam.course_id}_student")
-    return await get_exam_details(exam.id, db)
+    return await get_exam_details(exam.id, db, is_educator=True)
 
 @router.post("/ai-suggest", response_model=AISuggestionResponse)
 async def get_ai_suggestions(
     req: AISuggestionRequest,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(require_roles('EDUCATOR', 'ADMIN')),
     db: AsyncSession = Depends(get_db)
 ):
     """Generates AI question suggestions grounded in course video concepts and notes."""
+    await _check_course_ownership_or_enrolment(req.course_id, current_user, db, write=True)
     suggestions = await exam_service.generate_ai_suggestions(
         course_id=req.course_id,
         module_id=req.module_id,

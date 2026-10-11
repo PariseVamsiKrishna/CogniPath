@@ -31,6 +31,52 @@ from app.services.chroma_service import chroma_service
 
 logger = logging.getLogger("cognipath.exams")
 
+
+def check_mcq_answer(selected: Any, correct: Any, options_raw: Any) -> bool:
+    """Robust MCQ answer checker that normalizes between 0-based indices, letters (A-E), and option text."""
+    if selected is None or correct is None:
+        return False
+    sel_str = str(selected).strip().lower()
+    cor_str = str(correct).strip().lower()
+    if sel_str == cor_str:
+        return True
+
+    letter_to_idx = {"a": "0", "b": "1", "c": "2", "d": "3", "e": "4"}
+    idx_to_letter = {"0": "a", "1": "b", "2": "c", "3": "d", "4": "e"}
+
+    # Direct letter <-> index cross-mapping
+    if letter_to_idx.get(sel_str) == cor_str or idx_to_letter.get(sel_str) == cor_str:
+        return True
+    if letter_to_idx.get(cor_str) == sel_str or idx_to_letter.get(cor_str) == sel_str:
+        return True
+
+    # Option text matching if options exist
+    if options_raw:
+        try:
+            opts = json.loads(options_raw) if isinstance(options_raw, str) else options_raw
+            if isinstance(opts, list):
+                if sel_str.isdigit():
+                    s_idx = int(sel_str)
+                    if 0 <= s_idx < len(opts) and str(opts[s_idx]).strip().lower() == cor_str:
+                        return True
+                if cor_str.isdigit():
+                    c_idx = int(cor_str)
+                    if 0 <= c_idx < len(opts) and str(opts[c_idx]).strip().lower() == sel_str:
+                        return True
+                if sel_str in letter_to_idx:
+                    s_idx = int(letter_to_idx[sel_str])
+                    if 0 <= s_idx < len(opts) and str(opts[s_idx]).strip().lower() == cor_str:
+                        return True
+                if cor_str in letter_to_idx:
+                    c_idx = int(letter_to_idx[cor_str])
+                    if 0 <= c_idx < len(opts) and str(opts[c_idx]).strip().lower() == sel_str:
+                        return True
+        except Exception:
+            pass
+
+    return False
+
+
 class ExamService:
     """Handles Dual-Engine Exam & Quiz building, AI Suggestions, DnD Ordering, and Verified Badging."""
 
@@ -183,51 +229,6 @@ Each object must have EXACTLY these fields:
             )
         ]
 
-def check_mcq_answer(selected: Any, correct: Any, options_raw: Any) -> bool:
-    """Robust MCQ answer checker that normalizes between 0-based indices, letters (A-E), and option text."""
-    if selected is None or correct is None:
-        return False
-    sel_str = str(selected).strip().lower()
-    cor_str = str(correct).strip().lower()
-    if sel_str == cor_str:
-        return True
-
-    letter_to_idx = {"a": "0", "b": "1", "c": "2", "d": "3", "e": "4"}
-    idx_to_letter = {"0": "a", "1": "b", "2": "c", "3": "d", "4": "e"}
-
-    # Direct letter <-> index cross-mapping
-    if letter_to_idx.get(sel_str) == cor_str or idx_to_letter.get(sel_str) == cor_str:
-        return True
-    if letter_to_idx.get(cor_str) == sel_str or idx_to_letter.get(cor_str) == sel_str:
-        return True
-
-    # Option text matching if options exist
-    if options_raw:
-        try:
-            opts = json.loads(options_raw) if isinstance(options_raw, str) else options_raw
-            if isinstance(opts, list):
-                if sel_str.isdigit():
-                    s_idx = int(sel_str)
-                    if 0 <= s_idx < len(opts) and str(opts[s_idx]).strip().lower() == cor_str:
-                        return True
-                if cor_str.isdigit():
-                    c_idx = int(cor_str)
-                    if 0 <= c_idx < len(opts) and str(opts[c_idx]).strip().lower() == sel_str:
-                        return True
-                if sel_str in letter_to_idx:
-                    s_idx = int(letter_to_idx[sel_str])
-                    if 0 <= s_idx < len(opts) and str(opts[s_idx]).strip().lower() == cor_str:
-                        return True
-                if cor_str in letter_to_idx:
-                    c_idx = int(letter_to_idx[cor_str])
-                    if 0 <= c_idx < len(opts) and str(opts[c_idx]).strip().lower() == sel_str:
-                        return True
-        except Exception:
-            pass
-
-    return False
-
-
     async def evaluate_submission(
         self,
         exam_id: int,
@@ -243,7 +244,9 @@ def check_mcq_answer(selected: Any, correct: Any, options_raw: Any) -> bool:
             raise ValueError(f"Exam #{exam_id} not found")
 
         q_res = await db.execute(
-            select(ExamQuestion).where(ExamQuestion.exam_id == exam_id).order_by(ExamQuestion.order_index)
+            select(ExamQuestion)
+            .where(ExamQuestion.exam_id == exam_id)
+            .order_by(ExamQuestion.order_index.asc(), ExamQuestion.id.asc())
         )
         questions = q_res.scalars().all()
         q_map = {q.id: q for q in questions}
@@ -252,14 +255,16 @@ def check_mcq_answer(selected: Any, correct: Any, options_raw: Any) -> bool:
         if total_questions == 0:
             raise ValueError("Exam has no questions configured.")
 
-        # 2. Grade responses
+        # 2. Grade responses (deduplicating by question_id so duplicate entries cannot inflate score)
         correct_count = 0
         evaluated_responses = []
+        seen_question_ids: set[int] = set()
 
         for resp in responses:
             q = q_map.get(resp.question_id)
-            if not q:
+            if not q or q.id in seen_question_ids:
                 continue
+            seen_question_ids.add(q.id)
 
             is_correct = False
             if q.question_type == "MCQ":
@@ -268,11 +273,11 @@ def check_mcq_answer(selected: Any, correct: Any, options_raw: Any) -> bool:
             else:
                 # Short Answer heuristic check
                 ans_text = (resp.short_answer or "").strip().lower()
-                model_text = q.correct_answer.strip().lower()
+                model_text = (q.correct_answer or "").strip().lower()
                 # Check for significant keyword overlap
                 keywords = [w for w in model_text.split() if len(w) > 4]
                 match_count = sum(1 for kw in keywords if kw in ans_text)
-                is_correct = match_count >= max(1, len(keywords) // 3)
+                is_correct = bool(ans_text) and match_count >= max(1, len(keywords) // 3)
 
             if is_correct:
                 correct_count += 1
@@ -286,7 +291,7 @@ def check_mcq_answer(selected: Any, correct: Any, options_raw: Any) -> bool:
             })
 
         score = float(correct_count * 10)  # 10 points per question
-        percentage = round((correct_count / total_questions) * 100.0, 2)
+        percentage = min(100.0, round((correct_count / total_questions) * 100.0, 2))
         passed = percentage >= exam.passing_score
 
         # 3. Save Submission Record

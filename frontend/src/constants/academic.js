@@ -62,16 +62,57 @@ export function extractYoutubeVideoId(url) {
     return cleaned;
   }
 
-  const patterns = [
-    /(?:youtube(?:-nocookie)?\.com\/(?:[^/\n\s]+\/\S+\/|(?:v|e(?:mbed)?|shorts|live)\/|\S*?[?&]v=))([a-zA-Z0-9_-]{11})/,
-    /(?:youtu\.be\/)([a-zA-Z0-9_-]{11})/,
-  ];
-
-  for (const pattern of patterns) {
-    const match = cleaned.match(pattern);
-    if (match && match[1]) {
-      return match[1];
+  let candidateUrl = cleaned;
+  if (!/^https?:\/\//i.test(candidateUrl)) {
+    if (/^(?:(?:www|m|music)\.)?(?:youtube(?:-nocookie)?\.com|youtu\.be)\//i.test(candidateUrl)) {
+      candidateUrl = `https://${candidateUrl}`;
+    } else {
+      return null;
     }
   }
+
+  try {
+    const parsed = new URL(candidateUrl);
+    const host = parsed.hostname.toLowerCase();
+    const validYoutubeHosts = new Set([
+      'youtube.com',
+      'www.youtube.com',
+      'm.youtube.com',
+      'music.youtube.com',
+      'youtube-nocookie.com',
+      'www.youtube-nocookie.com',
+    ]);
+
+    if (host === 'youtu.be' || host === 'www.youtu.be') {
+      const segments = parsed.pathname.split('/').filter(Boolean);
+      if (segments.length !== 1) return null;
+      const vid = segments[0];
+      return /^[a-zA-Z0-9_-]{11}$/.test(vid) ? vid : null;
+    }
+
+    if (!validYoutubeHosts.has(host)) {
+      return null;
+    }
+
+    if (parsed.pathname === '/watch' || parsed.pathname === '/watch/') {
+      const vParam = parsed.searchParams.get('v');
+      if (vParam && /^[a-zA-Z0-9_-]{11}$/.test(vParam)) {
+        return vParam;
+      }
+      return null;
+    }
+
+    const segments = parsed.pathname.split('/').filter(Boolean);
+    if (segments.length === 2 && ['embed', 'shorts', 'v', 'e', 'live'].includes(segments[0])) {
+      const vid = segments[1];
+      if (/^[a-zA-Z0-9_-]{11}$/.test(vid)) {
+        return vid;
+      }
+    }
+  } catch {
+    return null;
+  }
+
   return null;
 }
+
