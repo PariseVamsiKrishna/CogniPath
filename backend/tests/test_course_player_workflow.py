@@ -1,8 +1,12 @@
+import json
 import pytest
+from sqlalchemy.future import select
 from app.models.models import (
     User,
     Course,
     Enrollment,
+    Module,
+    Topic,
     ModuleResource,
     StudentActivityLog,
 )
@@ -731,4 +735,365 @@ async def test_student_unenrollment_preserves_other_enrollments_and_course_recor
 
     course_a_after_del = await client.get(f"/api/v1/courses/{course_a.id}", headers=headers_stu)
     assert course_a_after_del.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_unenrollment_validation_auth_and_isolation(client, db_session):
+    """
+    Verifies unenrollment boundary conditions and protections:
+    1. Unauthenticated unenroll request returns 401.
+    2. Invalid course ID (<= 0) returns 400 Client Error.
+    3. Non-existent course ID returns 404 Not Found.
+    4. Student 1 and Student 2 enrolled in Course C; Student 2 unenrolls.
+    5. Student 2 repeated unenrollment returns 'not_enrolled' with 200 without HTTP 500.
+    6. Student 1's enrollment in Course C remains completely intact (cannot delete another's enrollment).
+    7. Topic completion activity logs for Student 2 are safely cleaned up.
+    """
+    edu = User(
+        email="iso_edu@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Prof. Dijkstra",
+        role="EDUCATOR"
+    )
+    stu1 = User(
+        email="stu1_iso@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Alice Student",
+        role="STUDENT"
+    )
+    stu2 = User(
+        email="stu2_iso@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Bob Student",
+        role="STUDENT"
+    )
+    db_session.add_all([edu, stu1, stu2])
+    await db_session.commit()
+    await db_session.refresh(edu)
+    await db_session.refresh(stu1)
+    await db_session.refresh(stu2)
+
+    course = Course(
+        title="Algorithms and Data Structures",
+        code="CS201-ALGO",
+        description="Core algorithmic analysis",
+        educator_id=edu.id,
+        is_published=True
+    )
+    db_session.add(course)
+    await db_session.commit()
+    await db_session.refresh(course)
+
+    mod = Module(course_id=course.id, title="Module 1: Graphs", order_index=1)
+    db_session.add(mod)
+    await db_session.commit()
+    await db_session.refresh(mod)
+
+    top = Topic(
+        module_id=mod.id,
+        title="Topic 1: BFS & DFS",
+        youtube_url="https://www.youtube.com/watch?v=pcKY4hjOdMQ",
+        youtube_video_id="pcKY4hjOdMQ",
+        order_index=1
+    )
+    db_session.add(top)
+    await db_session.commit()
+    await db_session.refresh(top)
+
+    # Both students enroll
+    db_session.add_all([
+        Enrollment(user_id=stu1.id, course_id=course.id),
+        Enrollment(user_id=stu2.id, course_id=course.id),
+        # Student 2 completes Topic 1
+        StudentActivityLog(
+            user_id=stu2.id,
+            course_id=course.id,
+            action_type="TOPIC_COMPLETE",
+            activity_type="PROGRESS",
+            metadata_info=json.dumps({"topic_id": top.id, "is_completed": True})
+        ),
+        # Student 1 also completes Topic 1
+        StudentActivityLog(
+            user_id=stu1.id,
+            course_id=course.id,
+            action_type="TOPIC_COMPLETE",
+            activity_type="PROGRESS",
+            metadata_info=json.dumps({"topic_id": top.id, "is_completed": True})
+        )
+    ])
+    await db_session.commit()
+
+    login2 = await client.post("/api/v1/auth/login", data={"username": stu2.email, "password": "Pass123!"})
+    headers2 = {"Authorization": f"Bearer {login2.json()['access_token']}"}
+
+    # 1. Unauthenticated request -> 401
+    unauth_res = await client.post(f"/api/v1/courses/{course.id}/unenroll")
+    assert unauth_res.status_code == 401
+
+    # 2. Invalid course ID <= 0 -> 400
+    invalid_res = await client.post("/api/v1/courses/0/unenroll", headers=headers2)
+    assert invalid_res.status_code == 400
+    assert "Invalid course ID" in invalid_res.json()["detail"]
+
+    # 3. Non-existent course ID -> 404
+    notfound_res = await client.post("/api/v1/courses/999999/unenroll", headers=headers2)
+    assert notfound_res.status_code == 404
+    assert "Course not found" in notfound_res.json()["detail"]
+
+    # 4. Student 2 unenrolls -> 200 success
+    unenroll2_res = await client.post(f"/api/v1/courses/{course.id}/unenroll", headers=headers2)
+    assert unenroll2_res.status_code == 200
+    assert unenroll2_res.json()["status"] == "success"
+
+    # 5. Repeated unenrollment by Student 2 -> 200 with status 'not_enrolled' (no 500 error)
+    repeat_res = await client.post(f"/api/v1/courses/{course.id}/unenroll", headers=headers2)
+    assert repeat_res.status_code == 200
+    assert repeat_res.json()["status"] == "not_enrolled"
+
+    # 6. Student 1's enrollment is still active (Student 2 cannot affect Student 1)
+    login1 = await client.post("/api/v1/auth/login", data={"username": stu1.email, "password": "Pass123!"})
+    headers1 = {"Authorization": f"Bearer {login1.json()['access_token']}"}
+    enrolled1 = await client.get("/api/v1/courses/enrolled", headers=headers1)
+    assert enrolled1.status_code == 200
+    enrolled1_ids = [c["id"] for c in enrolled1.json()]
+    assert course.id in enrolled1_ids
+
+    # Student 1's progress logs are still intact
+    res_logs = await db_session.execute(
+        select(StudentActivityLog).where(
+            StudentActivityLog.user_id == stu1.id,
+            StudentActivityLog.course_id == course.id,
+            StudentActivityLog.action_type == "TOPIC_COMPLETE"
+        )
+    )
+    assert len(res_logs.scalars().all()) == 1
+
+    # Student 2's progress logs were cleaned up
+    res_logs2 = await db_session.execute(
+        select(StudentActivityLog).where(
+            StudentActivityLog.user_id == stu2.id,
+            StudentActivityLog.course_id == course.id,
+            StudentActivityLog.action_type == "TOPIC_COMPLETE"
+        )
+    )
+    assert len(res_logs2.scalars().all()) == 0
+
+
+@pytest.mark.asyncio
+async def test_unenrollment_database_failure_rollback(client, db_session):
+    """
+    Verifies that when an unexpected database/transaction failure occurs during unenrollment:
+    1. The endpoint catches the exception and executes a transaction rollback.
+    2. Server returns sanitized HTTP 500 ("A database error occurred while processing unenrollment.").
+    3. The student's enrollment record is preserved (rollback integrity).
+    """
+    stu = User(
+        email="rollback_stu@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Rollback Student",
+        role="STUDENT"
+    )
+    edu = User(
+        email="rollback_edu@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Rollback Educator",
+        role="EDUCATOR"
+    )
+    db_session.add_all([stu, edu])
+    await db_session.commit()
+    await db_session.refresh(stu)
+    await db_session.refresh(edu)
+
+    course = Course(
+        title="Database Systems",
+        code="CS303-DBS",
+        description="Database internals",
+        educator_id=edu.id,
+        is_published=True
+    )
+    db_session.add(course)
+    await db_session.commit()
+    await db_session.refresh(course)
+
+    stu_id = stu.id
+    target_course_id = course.id
+    enr = Enrollment(user_id=stu_id, course_id=target_course_id)
+    db_session.add(enr)
+    await db_session.commit()
+
+    login = await client.post("/api/v1/auth/login", data={"username": stu.email, "password": "Pass123!"})
+    headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+    # Intercept commit on this active session to simulate engine/transaction failure
+    orig_commit = db_session.commit
+    async def failing_commit():
+        raise RuntimeError("Simulated database serialization / commit error")
+
+    db_session.commit = failing_commit
+
+    try:
+        res = await client.post(f"/api/v1/courses/{target_course_id}/unenroll", headers=headers)
+        assert res.status_code == 500
+        assert "A database error occurred while processing unenrollment" in res.json()["detail"]
+    finally:
+        db_session.commit = orig_commit
+
+    # Verify enrollment still exists after rollback
+    chk = await db_session.execute(
+        select(Enrollment).where(Enrollment.user_id == stu_id, Enrollment.course_id == target_course_id)
+    )
+    assert chk.scalars().first() is not None
+
+
+@pytest.mark.asyncio
+async def test_module_and_topic_reordering_validation_and_permissions(client, db_session):
+    """
+    Verifies Section 4: Module and Topic reordering validation, ordering integrity, and RBAC:
+    1. Valid permutation correctly reorders modules and topics with updated order_index.
+    2. Duplicate module or topic IDs return 400 Client Error.
+    3. External or missing module/topic IDs return 400 Client Error.
+    4. Unenrolled or non-owner users cannot reorder (403 Forbidden).
+    """
+    owner_edu = User(
+        email="reorder_owner@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Prof. Reorder",
+        role="EDUCATOR"
+    )
+    other_edu = User(
+        email="reorder_other@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Prof. Other",
+        role="EDUCATOR"
+    )
+    student = User(
+        email="reorder_student@cognipath.edu",
+        hashed_password=get_password_hash("Pass123!"),
+        full_name="Sam Student",
+        role="STUDENT"
+    )
+    db_session.add_all([owner_edu, other_edu, student])
+    await db_session.commit()
+    await db_session.refresh(owner_edu)
+    await db_session.refresh(other_edu)
+    await db_session.refresh(student)
+
+    course = Course(
+        title="Concurrent Systems",
+        code="CS501-CONC",
+        description="Concurrency control and consensus",
+        educator_id=owner_edu.id,
+        is_published=True
+    )
+    db_session.add(course)
+    await db_session.commit()
+    await db_session.refresh(course)
+
+    m1 = Module(course_id=course.id, title="Module 1: Threads", order_index=1)
+    m2 = Module(course_id=course.id, title="Module 2: Locks", order_index=2)
+    m3 = Module(course_id=course.id, title="Module 3: STM", order_index=3)
+    db_session.add_all([m1, m2, m3])
+    await db_session.commit()
+    await db_session.refresh(m1)
+    await db_session.refresh(m2)
+    await db_session.refresh(m3)
+
+    t1 = Topic(module_id=m1.id, title="Thread Basics", youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", youtube_video_id="dQw4w9WgXcQ", order_index=1)
+    t2 = Topic(module_id=m1.id, title="Thread Safety", youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", youtube_video_id="dQw4w9WgXcQ", order_index=2)
+    t3 = Topic(module_id=m1.id, title="Deadlocks", youtube_url="https://www.youtube.com/watch?v=dQw4w9WgXcQ", youtube_video_id="dQw4w9WgXcQ", order_index=3)
+    db_session.add_all([t1, t2, t3])
+    await db_session.commit()
+    await db_session.refresh(t1)
+    await db_session.refresh(t2)
+    await db_session.refresh(t3)
+
+    login_owner = await client.post("/api/v1/auth/login", data={"username": owner_edu.email, "password": "Pass123!"})
+    headers_owner = {"Authorization": f"Bearer {login_owner.json()['access_token']}"}
+
+    login_other = await client.post("/api/v1/auth/login", data={"username": other_edu.email, "password": "Pass123!"})
+    headers_other = {"Authorization": f"Bearer {login_other.json()['access_token']}"}
+
+    login_stu = await client.post("/api/v1/auth/login", data={"username": student.email, "password": "Pass123!"})
+    headers_stu = {"Authorization": f"Bearer {login_stu.json()['access_token']}"}
+
+    # 1. Duplicate module IDs -> 400
+    dup_mod = await client.put(
+        f"/api/v1/courses/{course.id}/modules/reorder",
+        json={"module_ids": [m1.id, m1.id, m2.id]},
+        headers=headers_owner
+    )
+    assert dup_mod.status_code == 400
+    assert "Duplicate module IDs" in dup_mod.json()["detail"]
+
+    # 2. Missing or external module ID -> 400
+    ext_mod = await client.put(
+        f"/api/v1/courses/{course.id}/modules/reorder",
+        json={"module_ids": [m1.id, m2.id, 999999]},
+        headers=headers_owner
+    )
+    assert ext_mod.status_code == 400
+    assert "Invalid module IDs" in ext_mod.json()["detail"]
+
+    # 3. Valid module reorder -> 200 OK
+    ok_mod = await client.put(
+        f"/api/v1/courses/{course.id}/modules/reorder",
+        json={"module_ids": [m3.id, m1.id, m2.id]},
+        headers=headers_owner
+    )
+    assert ok_mod.status_code == 200
+
+    # Verify hierarchy reflects the new order: m3 (index 1), m1 (index 2), m2 (index 3)
+    hier_res = await client.get(f"/api/v1/courses/{course.id}/hierarchy", headers=headers_owner)
+    assert hier_res.status_code == 200
+    module_order = [m["id"] for m in hier_res.json()["modules"]]
+    assert module_order == [m3.id, m1.id, m2.id]
+
+    # 4. Duplicate topic IDs -> 400
+    dup_top = await client.put(
+        f"/api/v1/courses/modules/{m1.id}/topics/reorder",
+        json={"topic_ids": [t1.id, t1.id, t2.id]},
+        headers=headers_owner
+    )
+    assert dup_top.status_code == 400
+    assert "Duplicate topic IDs" in dup_top.json()["detail"]
+
+    # 5. External or missing topic IDs -> 400
+    ext_top = await client.put(
+        f"/api/v1/courses/modules/{m1.id}/topics/reorder",
+        json={"topic_ids": [t1.id, t2.id, 888888]},
+        headers=headers_owner
+    )
+    assert ext_top.status_code == 400
+    assert "Invalid topic IDs" in ext_top.json()["detail"]
+
+    # 6. Valid topic reorder -> 200 OK
+    ok_top = await client.put(
+        f"/api/v1/courses/modules/{m1.id}/topics/reorder",
+        json={"topic_ids": [t3.id, t1.id, t2.id]},
+        headers=headers_owner
+    )
+    assert ok_top.status_code == 200
+
+    hier_res2 = await client.get(f"/api/v1/courses/{course.id}/hierarchy", headers=headers_owner)
+    m1_data = next(m for m in hier_res2.json()["modules"] if m["id"] == m1.id)
+    topic_order = [t["id"] for t in m1_data["topics"]]
+    assert topic_order == [t3.id, t1.id, t2.id]
+
+    # 7. Non-owner educator and student are blocked (403 Forbidden)
+    for h in [headers_other, headers_stu]:
+        forbidden_mod = await client.put(
+            f"/api/v1/courses/{course.id}/modules/reorder",
+            json={"module_ids": [m1.id, m2.id, m3.id]},
+            headers=h
+        )
+        assert forbidden_mod.status_code == 403
+
+        forbidden_top = await client.put(
+            f"/api/v1/courses/modules/{m1.id}/topics/reorder",
+            json={"topic_ids": [t1.id, t2.id, t3.id]},
+            headers=h
+        )
+        assert forbidden_top.status_code == 403
+
+
 

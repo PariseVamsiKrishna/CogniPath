@@ -1381,19 +1381,55 @@ async def unenroll_from_course(
     db: AsyncSession = Depends(get_db)
 ):
     """Unenroll from a course for the current student."""
-    res = await db.execute(
-        select(Enrollment).where(
-            Enrollment.user_id == current_user.id,
-            Enrollment.course_id == course_id
+    student_id = current_user.id
+    if course_id <= 0:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid course ID. Course ID must be a positive integer."
         )
-    )
-    enrollment = res.scalars().first()
-    if enrollment:
-        await db.delete(enrollment)
-        await db.commit()
-        invalidate_course_hierarchy_cache(course_id)
-        return {"status": "success", "message": "Successfully unenrolled from course."}
-    return {"status": "not_enrolled", "message": "You are not enrolled in this course."}
+
+    course_res = await db.execute(select(Course).where(Course.id == course_id))
+    course = course_res.scalars().first()
+    if not course:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Course not found."
+        )
+
+    try:
+        res = await db.execute(
+            select(Enrollment).where(
+                Enrollment.user_id == student_id,
+                Enrollment.course_id == course_id
+            )
+        )
+        enrollment = res.scalars().first()
+        if enrollment:
+            await db.delete(enrollment)
+            # Clean up student's topic completion logs for this course so future enrollment starts fresh
+            await db.execute(
+                delete(StudentActivityLog).where(
+                    StudentActivityLog.user_id == student_id,
+                    StudentActivityLog.course_id == course_id,
+                    func.upper(StudentActivityLog.action_type) == "TOPIC_COMPLETE"
+                )
+            )
+            await db.commit()
+            invalidate_course_hierarchy_cache(course_id)
+            return {"status": "success", "message": "Successfully unenrolled from course."}
+        return {"status": "not_enrolled", "message": "You are not enrolled in this course."}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        await db.rollback()
+        logger.error(
+            f"Database error during unenrollment of user {student_id} from course {course_id}: {exc}",
+            exc_info=True
+        )
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="A database error occurred while processing unenrollment. Please try again."
+        )
 
 
 @router.delete("/{course_id}", status_code=status.HTTP_200_OK)
@@ -1619,9 +1655,19 @@ async def reorder_modules(
     m_res = await db.execute(select(Module).where(Module.course_id == course_id))
     modules_by_id = {m.id: m for m in m_res.scalars().all()}
 
+    if len(req.module_ids) != len(set(req.module_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Duplicate module IDs in reorder request."
+        )
+    if set(req.module_ids) != set(modules_by_id.keys()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid module IDs: all modules of the course must be provided without duplicates or external IDs."
+        )
+
     for idx, mod_id in enumerate(req.module_ids, start=1):
-        if mod_id in modules_by_id:
-            modules_by_id[mod_id].order_index = idx
+        modules_by_id[mod_id].order_index = idx
 
     course.updated_at = datetime.now(timezone.utc)
     await db.commit()
@@ -1831,9 +1877,19 @@ async def reorder_topics(
     t_res = await db.execute(select(Topic).where(Topic.module_id == module_id))
     topics_by_id = {t.id: t for t in t_res.scalars().all()}
 
+    if len(req.topic_ids) != len(set(req.topic_ids)):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Duplicate topic IDs in reorder request."
+        )
+    if set(req.topic_ids) != set(topics_by_id.keys()):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Invalid topic IDs: all topics of the module must be provided without duplicates or external IDs."
+        )
+
     for idx, top_id in enumerate(req.topic_ids, start=1):
-        if top_id in topics_by_id:
-            topics_by_id[top_id].order_index = idx
+        topics_by_id[top_id].order_index = idx
 
     course.updated_at = datetime.now(timezone.utc)
     await db.commit()

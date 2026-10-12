@@ -40,6 +40,7 @@ export default function DashboardHome({
   onOpenExploreCatalog
 }) {
   const [courseToDelete, setCourseToDelete] = useState(null);
+  const [isUnenrolling, setIsUnenrolling] = useState(false);
   const safeEnrolled = Array.isArray(enrolledCourses) ? enrolledCourses : [];
   const safeAllCourses = Array.isArray(allCourses) ? allCourses : [];
   const firstName = user?.full_name ? user.full_name.trim().split(' ')[0] : 'Learner';
@@ -732,12 +733,18 @@ export default function DashboardHome({
           course={courseToDelete}
           isEducator={user?.role === 'EDUCATOR'}
           isCreator={false}
+          loading={isUnenrolling}
           onConfirm={async (c) => {
             const targetId = typeof c === 'object' && c !== null ? c.id : c;
-            if (onUnenrollCourse) {
-              await onUnenrollCourse(targetId);
-            } else if (onRefreshCourses) {
-              await onRefreshCourses();
+            setIsUnenrolling(true);
+            try {
+              if (onUnenrollCourse) {
+                await onUnenrollCourse(targetId);
+              } else if (onRefreshCourses) {
+                await onRefreshCourses();
+              }
+            } finally {
+              setIsUnenrolling(false);
             }
           }}
         />

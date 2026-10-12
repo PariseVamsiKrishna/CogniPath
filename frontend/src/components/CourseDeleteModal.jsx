@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { AlertTriangle, Trash2, X, ShieldAlert, CheckCircle2 } from 'lucide-react';
 
 /**
@@ -17,14 +17,19 @@ export default function CourseDeleteModal({
   course,
   isEducator = false,
   isCreator = false,
+  loading = false,
 }) {
   const [isDeleting, setIsDeleting] = useState(false);
   const [errorMsg, setErrorMsg] = useState(null);
+  const isSubmittingRef = useRef(false);
+
+  const isProcessing = Boolean(isDeleting || loading);
 
   useEffect(() => {
     if (isOpen) {
       setIsDeleting(false);
       setErrorMsg(null);
+      isSubmittingRef.current = false;
     }
   }, [isOpen]);
 
@@ -33,7 +38,8 @@ export default function CourseDeleteModal({
   const isPermanentDelete = isEducator && isCreator;
 
   const handleConfirm = async () => {
-    if (isDeleting) return;
+    if (isSubmittingRef.current || isProcessing) return;
+    isSubmittingRef.current = true;
 
     try {
       setIsDeleting(true);
@@ -45,6 +51,7 @@ export default function CourseDeleteModal({
       setErrorMsg(err.response?.data?.detail || err.message || 'Failed to delete course');
     } finally {
       setIsDeleting(false);
+      isSubmittingRef.current = false;
     }
   };
 
@@ -62,7 +69,7 @@ export default function CourseDeleteModal({
         <button
           type="button"
           onClick={onClose}
-          disabled={isDeleting}
+          disabled={isProcessing}
           className="absolute top-4 right-4 p-1.5 rounded-lg text-[#8A90B4] hover:text-[#ECEDF7] hover:bg-[#171C36] transition"
           title="Close dialog"
         >
@@ -126,7 +133,7 @@ export default function CourseDeleteModal({
           <button
             type="button"
             onClick={onClose}
-            disabled={isDeleting}
+            disabled={isProcessing}
             className="px-4 py-2 rounded-xl text-xs font-semibold text-[#8A90B4] hover:text-[#ECEDF7] hover:bg-[#171C36] transition cursor-pointer"
           >
             Cancel
@@ -134,14 +141,14 @@ export default function CourseDeleteModal({
           <button
             type="button"
             onClick={handleConfirm}
-            disabled={isDeleting}
+            disabled={isProcessing}
             className={`px-5 py-2.5 rounded-xl text-xs font-bold flex items-center gap-1.5 transition-all shadow-md cursor-pointer ${
               isPermanentDelete
                 ? 'bg-red-600 hover:bg-red-500 text-white shadow-red-600/30'
                 : 'bg-amber-600 hover:bg-amber-500 text-white shadow-amber-600/30'
             }`}
           >
-            {isDeleting ? (
+            {isProcessing ? (
               <span className="flex items-center gap-2">
                 <span className="h-3.5 w-3.5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                 Processing...

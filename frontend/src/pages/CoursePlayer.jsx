@@ -127,6 +127,7 @@ export default function CoursePlayer({
   const [courseToDelete, setCourseToDelete] = useState(null);
   const [deleteMode, setDeleteMode] = useState('delete'); // 'delete' | 'unenroll'
   const [deletingCourse, setDeletingCourse] = useState(false);
+  const deletingCourseRef = useRef(false);
 
   // Edit Course Metadata Modal State
   const [editingCourse, setEditingCourse] = useState(null);
@@ -149,8 +150,14 @@ export default function CoursePlayer({
   const [topicForm, setTopicForm] = useState({ title: '', description: '', youtube_url: '' });
   const [savingTopic, setSavingTopic] = useState(false);
 
-  // PDF Upload State per Module
-  const [uploadingModuleId, setUploadingModuleId] = useState(null);
+  // PDF Upload State per Module (Map of moduleId -> boolean to avoid race conditions with overlapping uploads)
+  const [uploadingModuleIds, setUploadingModuleIds] = useState({});
+
+  // Module & Topic Reordering Concurrency Guards
+  const [reorderingModules, setReorderingModules] = useState(false);
+  const reorderingModulesRef = useRef(false);
+  const [reorderingTopicModules, setReorderingTopicModules] = useState({});
+  const reorderingTopicsRef = useRef(new Set());
 
   useEffect(() => {
     activeModuleIdRef.current = activeModuleId;
@@ -729,13 +736,14 @@ export default function CoursePlayer({
 
   // Confirm Delete or Unenroll
   const handleConfirmDeleteOrUnenroll = async (courseObj) => {
-    if (!courseObj) return;
+    if (!courseObj || deletingCourseRef.current) return;
     const targetCourseId =
       typeof courseObj === 'object' && courseObj !== null ? courseObj.id : courseObj;
     const targetCourseTitle =
       (typeof courseObj === 'object' && courseObj !== null ? courseObj.title : null) || 'Course';
     if (targetCourseId == null || targetCourseId === '') return;
 
+    deletingCourseRef.current = true;
     setDeletingCourse(true);
     try {
       if (deleteMode === 'delete') {
@@ -757,12 +765,23 @@ export default function CoursePlayer({
             if (Array.isArray(freshEnrolled)) {
               setEnrolledList(freshEnrolled);
             } else {
-              await fetchMyEnrolledCourses();
+              try {
+                await fetchMyEnrolledCourses();
+              } catch (refreshErr) {
+                console.warn('Background fetchMyEnrolledCourses notice after unenroll:', refreshErr);
+              }
             }
           }
         } else {
           await coursesAPI.unenroll(targetCourseId);
-          await fetchMyEnrolledCourses();
+          if (isMountedRef.current) {
+            setEnrolledList((prev) => (Array.isArray(prev) ? prev : []).filter((c) => Number(c.id) !== Number(targetCourseId)));
+            try {
+              await fetchMyEnrolledCourses();
+            } catch (refreshErr) {
+              console.warn('Background fetchMyEnrolledCourses notice after unenroll:', refreshErr);
+            }
+          }
         }
         if (isMountedRef.current) {
           showBanner('success', `Unenrolled from "${targetCourseTitle}".`);
@@ -782,6 +801,7 @@ export default function CoursePlayer({
       }
       throw err;
     } finally {
+      deletingCourseRef.current = false;
       if (isMountedRef.current) {
         setDeletingCourse(false);
       }
@@ -865,10 +885,14 @@ export default function CoursePlayer({
 
   const handleMoveModule = async (modIndex, direction) => {
     const targetCourseId = hierarchy?.id;
-    if (!targetCourseId) return;
+    if (!targetCourseId || reorderingModulesRef.current) return;
     const mods = [...(hierarchy?.modules || [])];
     const targetIndex = modIndex + direction;
     if (targetIndex < 0 || targetIndex >= mods.length) return;
+
+    reorderingModulesRef.current = true;
+    setReorderingModules(true);
+
     const temp = mods[modIndex];
     mods[modIndex] = mods[targetIndex];
     mods[targetIndex] = temp;
@@ -883,6 +907,11 @@ export default function CoursePlayer({
     } catch (err) {
       if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
         showBanner('error', err.response?.data?.detail || 'Failed to reorder modules.');
+      }
+    } finally {
+      reorderingModulesRef.current = false;
+      if (isMountedRef.current) {
+        setReorderingModules(false);
       }
     }
   };
@@ -969,16 +998,21 @@ export default function CoursePlayer({
 
   const handleMoveTopic = async (moduleObj, topicIndex, direction) => {
     const targetCourseId = hierarchy?.id;
-    if (!targetCourseId) return;
+    const moduleId = moduleObj?.id;
+    if (!targetCourseId || !moduleId || reorderingTopicsRef.current.has(moduleId)) return;
     const topics = [...(moduleObj.topics || [])];
     const targetIndex = topicIndex + direction;
     if (targetIndex < 0 || targetIndex >= topics.length) return;
+
+    reorderingTopicsRef.current.add(moduleId);
+    setReorderingTopicModules((prev) => ({ ...prev, [moduleId]: true }));
+
     const temp = topics[topicIndex];
     topics[topicIndex] = topics[targetIndex];
     topics[targetIndex] = temp;
     try {
       await coursesAPI.reorderTopics(
-        moduleObj.id,
+        moduleId,
         topics.map((t) => t.id)
       );
       if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
@@ -987,6 +1021,15 @@ export default function CoursePlayer({
     } catch (err) {
       if (isMountedRef.current && Number(selectedCourseIdRef.current) === Number(targetCourseId)) {
         showBanner('error', err.response?.data?.detail || 'Failed to reorder topics.');
+      }
+    } finally {
+      reorderingTopicsRef.current.delete(moduleId);
+      if (isMountedRef.current) {
+        setReorderingTopicModules((prev) => {
+          const next = { ...prev };
+          delete next[moduleId];
+          return next;
+        });
       }
     }
   };
@@ -999,7 +1042,7 @@ export default function CoursePlayer({
       return;
     }
     const targetCourseId = hierarchy.id;
-    setUploadingModuleId(moduleId);
+    setUploadingModuleIds((prev) => ({ ...prev, [moduleId]: true }));
     try {
       const fd = new FormData();
       fd.append('title', file.name.replace(/\.pdf$/i, ''));
@@ -1015,7 +1058,11 @@ export default function CoursePlayer({
       }
     } finally {
       if (isMountedRef.current) {
-        setUploadingModuleId(null);
+        setUploadingModuleIds((prev) => {
+          const next = { ...prev };
+          delete next[moduleId];
+          return next;
+        });
       }
     }
   };
@@ -1566,7 +1613,7 @@ export default function CoursePlayer({
                       <div className="flex flex-wrap items-center gap-1.5">
                         <button
                           type="button"
-                          disabled={mIdx === 0}
+                          disabled={mIdx === 0 || reorderingModules}
                           onClick={() => handleMoveModule(mIdx, -1)}
                           className="p-1.5 rounded-lg bg-[#121826] hover:bg-slate-800 disabled:opacity-30 text-slate-300 border border-[#1e2638]"
                           title="Move Module Up"
@@ -1575,7 +1622,7 @@ export default function CoursePlayer({
                         </button>
                         <button
                           type="button"
-                          disabled={mIdx === hierarchy.modules.length - 1}
+                          disabled={mIdx === hierarchy.modules.length - 1 || reorderingModules}
                           onClick={() => handleMoveModule(mIdx, 1)}
                           className="p-1.5 rounded-lg bg-[#121826] hover:bg-slate-800 disabled:opacity-30 text-slate-300 border border-[#1e2638]"
                           title="Move Module Down"
@@ -1670,7 +1717,7 @@ export default function CoursePlayer({
                               <div className="flex items-center gap-1.5 shrink-0">
                                 <button
                                   type="button"
-                                  disabled={tIdx === 0}
+                                  disabled={tIdx === 0 || Boolean(reorderingTopicModules[mod.id])}
                                   onClick={() => handleMoveTopic(mod, tIdx, -1)}
                                   className="p-1.5 rounded-lg bg-[#0b0f19] hover:bg-slate-800 disabled:opacity-30 text-slate-300 border border-[#1e2638]"
                                   title="Move Topic Up"
@@ -1679,7 +1726,7 @@ export default function CoursePlayer({
                                 </button>
                                 <button
                                   type="button"
-                                  disabled={tIdx === mod.topics.length - 1}
+                                  disabled={tIdx === mod.topics.length - 1 || Boolean(reorderingTopicModules[mod.id])}
                                   onClick={() => handleMoveTopic(mod, tIdx, 1)}
                                   className="p-1.5 rounded-lg bg-[#0b0f19] hover:bg-slate-800 disabled:opacity-30 text-slate-300 border border-[#1e2638]"
                                   title="Move Topic Down"
@@ -1744,13 +1791,13 @@ export default function CoursePlayer({
                         <label className="px-3 py-1.5 rounded-xl bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/30 text-xs font-bold cursor-pointer transition flex items-center gap-1.5">
                           <Upload className="h-3.5 w-3.5" />
                           <span>
-                            {uploadingModuleId === mod.id ? 'Uploading PDF...' : 'Upload PDF Notes'}
+                            {Boolean(uploadingModuleIds[mod.id]) ? 'Uploading PDF...' : 'Upload PDF Notes'}
                           </span>
                           <input
                             type="file"
                             accept=".pdf,application/pdf"
                             className="hidden"
-                            disabled={uploadingModuleId === mod.id}
+                            disabled={Boolean(uploadingModuleIds[mod.id])}
                             onChange={(e) => {
                               const file = e.target.files?.[0];
                               if (file) handleUploadModulePdf(mod.id, file);
@@ -1957,12 +2004,13 @@ export default function CoursePlayer({
                       <label className="px-3.5 py-2 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white text-xs font-bold cursor-pointer transition flex items-center gap-1.5">
                         <Upload className="h-3.5 w-3.5" />
                         <span>
-                          {uploadingModuleId === activeModule.id ? 'Uploading...' : 'Upload PDF to Module'}
+                          {Boolean(uploadingModuleIds[activeModule.id]) ? 'Uploading...' : 'Upload PDF to Module'}
                         </span>
                         <input
                           type="file"
                           accept=".pdf,application/pdf"
                           className="hidden"
+                          disabled={Boolean(uploadingModuleIds[activeModule.id])}
                           onChange={(e) => {
                             const f = e.target.files?.[0];
                             if (f) handleUploadModulePdf(activeModule.id, f);

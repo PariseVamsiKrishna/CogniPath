@@ -1,7 +1,7 @@
 import axios from 'axios';
 
-const rawBase = (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL || '').trim();
-const isProd = import.meta.env.PROD;
+const rawBase = ((import.meta.env && (import.meta.env.VITE_API_BASE_URL || import.meta.env.VITE_API_URL)) || '').trim();
+const isProd = Boolean(import.meta.env && import.meta.env.PROD);
 
 if (isProd && !rawBase) {
   console.error('[COGNIPATH] CRITICAL CONFIG ERROR: VITE_API_BASE_URL environment variable is not set in production! Ensure VITE_API_BASE_URL is configured on Vercel dashboard to point to your backend API URL.');
@@ -99,6 +99,22 @@ export const authAPI = {
   },
 };
 
+export function normalizeCourseId(courseId) {
+  const raw = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
+  if (raw == null || raw === '' || typeof raw === 'boolean') return null;
+  if (typeof raw === 'number') {
+    return Number.isFinite(raw) && Number.isInteger(raw) && raw > 0 ? raw : null;
+  }
+  if (typeof raw === 'string') {
+    const trimmed = raw.trim();
+    if (/^\d+$/.test(trimmed)) {
+      const num = Number(trimmed);
+      return Number.isFinite(num) && Number.isInteger(num) && num > 0 ? num : null;
+    }
+  }
+  return null;
+}
+
 export const coursesAPI = {
   list: async () => {
     const res = await apiClient.get('/courses');
@@ -137,27 +153,27 @@ export const coursesAPI = {
     return res.data;
   },
   enroll: async (courseId) => {
-    const id = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
-    if (id == null || id === '' || Number.isNaN(Number(id))) {
-      throw new Error('A valid numeric courseId is required to enroll.');
+    const id = normalizeCourseId(courseId);
+    if (id === null) {
+      throw new Error('A valid positive integer courseId is required to enroll.');
     }
-    const res = await apiClient.post(`/courses/${Number(id)}/enroll`);
+    const res = await apiClient.post(`/courses/${id}/enroll`);
     return res.data;
   },
   unenroll: async (courseId) => {
-    const id = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
-    if (id == null || id === '' || Number.isNaN(Number(id))) {
-      throw new Error('A valid numeric courseId is required to unenroll.');
+    const id = normalizeCourseId(courseId);
+    if (id === null) {
+      throw new Error('A valid positive integer courseId is required to unenroll.');
     }
-    const res = await apiClient.post(`/courses/${Number(id)}/unenroll`);
+    const res = await apiClient.post(`/courses/${id}/unenroll`);
     return res.data;
   },
   deleteCourse: async (courseId) => {
-    const id = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
-    if (id == null || id === '' || Number.isNaN(Number(id))) {
-      throw new Error('A valid numeric courseId is required to delete a course.');
+    const id = normalizeCourseId(courseId);
+    if (id === null) {
+      throw new Error('A valid positive integer courseId is required to delete a course.');
     }
-    const res = await apiClient.delete(`/courses/${Number(id)}`);
+    const res = await apiClient.delete(`/courses/${id}`);
     return res.data;
   },
   createModule: async (courseId, moduleData) => {

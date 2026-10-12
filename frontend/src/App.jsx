@@ -1,4 +1,4 @@
-import React, { useState, useEffect, Suspense, lazy } from 'react';
+import React, { useState, useEffect, useRef, Suspense, lazy } from 'react';
 import Navbar, { SUPPORTED_LANGUAGES } from './components/Navbar';
 import Sidebar from './components/Sidebar';
 
@@ -20,7 +20,7 @@ import AcademicProfileModal from './components/AcademicProfileModal';
 import CourseCatalogModal from './components/CourseCatalogModal';
 import CourseRatingModal from './components/CourseRatingModal';
 import ErrorBoundary from './components/ErrorBoundary';
-import { coursesAPI, authAPI } from './services/api';
+import { coursesAPI, authAPI, normalizeCourseId } from './services/api';
 import { Globe, X, Check } from 'lucide-react';
 
 export default function App() {
@@ -30,6 +30,11 @@ export default function App() {
   const [ratingModalCourse, setRatingModalCourse] = useState(null);
   const [courses, setCourses] = useState([]);
   const [enrolledCourses, setEnrolledCourses] = useState([]);
+  const enrolledCoursesRef = useRef(enrolledCourses);
+  const pendingUnenrollsRef = useRef(new Set());
+  useEffect(() => {
+    enrolledCoursesRef.current = enrolledCourses;
+  }, [enrolledCourses]);
   const [myCreatedCourses, setMyCreatedCourses] = useState([]);
   const [selectedCourseId, setSelectedCourseId] = useState(null);
   const [courseWorkspaceTab, setCourseWorkspaceTab] = useState('learn');
@@ -131,18 +136,28 @@ export default function App() {
   const fetchEnrolledCourses = async (currentUser) => {
     if (!currentUser) {
       setEnrolledCourses([]);
+      enrolledCoursesRef.current = [];
       return [];
     }
 
     try {
       const data = await coursesAPI.getEnrolled();
       if (Array.isArray(data)) {
-        setEnrolledCourses(data);
-        localStorage.setItem(
-          `cognipath_enrolled_${currentUser.id || currentUser.email}`,
-          JSON.stringify(data)
-        );
-        return data;
+        // Exclude any courses that currently have an in-flight unenrollment request
+        const filtered = data.filter((c) => !pendingUnenrollsRef.current.has(Number(c.id)));
+        setEnrolledCourses(filtered);
+        enrolledCoursesRef.current = filtered;
+        if (currentUser) {
+          try {
+            localStorage.setItem(
+              `cognipath_enrolled_${currentUser.id || currentUser.email}`,
+              JSON.stringify(filtered)
+            );
+          } catch (storageErr) {
+            console.warn('[COGNIPATH] Failed to update localStorage cache:', storageErr);
+          }
+        }
+        return filtered;
       }
     } catch (err) {
       console.warn('API getEnrolled failed:', err);
@@ -150,57 +165,88 @@ export default function App() {
     }
 
     setEnrolledCourses([]);
+    enrolledCoursesRef.current = [];
     return [];
   };
 
   const handleEnrollCourse = async (courseId) => {
-    const resolvedId = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
-    await coursesAPI.enroll(resolvedId);
+    const numId = normalizeCourseId(courseId);
+    if (numId === null) {
+      throw new Error('A valid positive integer courseId is required to enroll.');
+    }
+    await coursesAPI.enroll(numId);
     const fresh = await fetchEnrolledCourses(user);
-    setSelectedCourseId(resolvedId);
+    setSelectedCourseId(numId);
     setCoursePreviewOnly(false);
     setCourseWorkspaceTab('learn');
     return fresh;
   };
 
   const handleUnenrollCourse = async (courseId) => {
-    const resolvedId = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
-    if (resolvedId == null || resolvedId === '' || Number.isNaN(Number(resolvedId))) {
-      throw new Error('A valid numeric courseId is required to unenroll.');
+    const numId = normalizeCourseId(courseId);
+    if (numId === null) {
+      throw new Error('A valid positive integer courseId is required to unenroll.');
     }
-    await coursesAPI.unenroll(resolvedId);
-    let updatedList = [];
-    setEnrolledCourses((prev) => {
-      updatedList = (Array.isArray(prev) ? prev : []).filter(
-        (c) => Number(c.id) !== Number(resolvedId)
+    if (pendingUnenrollsRef.current.has(numId)) {
+      console.warn(`[COGNIPATH] Unenroll request for course ${numId} already in flight. Ignoring duplicate.`);
+      throw new Error(`Unenrollment request for course ${numId} is already in progress.`);
+    }
+    pendingUnenrollsRef.current.add(numId);
+    try {
+      await coursesAPI.unenroll(numId);
+
+      // Synchronously update the ref immediately so subsequent reads see the removal
+      enrolledCoursesRef.current = (Array.isArray(enrolledCoursesRef.current) ? enrolledCoursesRef.current : []).filter(
+        (c) => Number(c.id) !== Number(numId)
       );
+
+      // Functional state updater guarantees React applies this removal on top of the latest state
+      setEnrolledCourses((prev) =>
+        (Array.isArray(prev) ? prev : []).filter((c) => Number(c.id) !== Number(numId))
+      );
+
+      // Separately update localStorage cache outside state updater; storage failure does not undo server unenrollment
       if (user) {
         try {
           localStorage.setItem(
             `cognipath_enrolled_${user.id || user.email}`,
-            JSON.stringify(updatedList)
+            JSON.stringify(enrolledCoursesRef.current)
           );
-        } catch (e) {}
+        } catch (storageErr) {
+          console.warn('[COGNIPATH] Failed to update localStorage cache after unenrollment:', storageErr);
+        }
       }
-      return updatedList;
-    });
-    if (Number(selectedCourseId) === Number(resolvedId)) {
-      setSelectedCourseId(null);
+
+      if (Number(selectedCourseId) === Number(numId)) {
+        setSelectedCourseId(null);
+      }
+
+      // Existing server remains authoritative for enrollment data
+      try {
+        const fresh = await fetchEnrolledCourses(user);
+        return Array.isArray(fresh) ? fresh : enrolledCoursesRef.current;
+      } catch (refreshErr) {
+        console.warn('[COGNIPATH] Background refresh of enrolled courses failed after unenrollment:', refreshErr);
+        return enrolledCoursesRef.current;
+      }
+    } finally {
+      pendingUnenrollsRef.current.delete(numId);
     }
-    const fresh = await fetchEnrolledCourses(user);
-    return Array.isArray(fresh) ? fresh : updatedList;
   };
 
   const handleDeleteCoursePermanently = async (courseId) => {
-    const resolvedId = typeof courseId === 'object' && courseId !== null ? courseId.id : courseId;
-    if (resolvedId == null || resolvedId === '' || Number.isNaN(Number(resolvedId))) {
-      throw new Error('A valid numeric courseId is required to delete a course.');
+    const numId = normalizeCourseId(courseId);
+    if (numId === null) {
+      throw new Error('A valid positive integer courseId is required to delete a course.');
     }
-    await coursesAPI.deleteCourse(resolvedId);
-    setCourses((prev) => prev.filter((c) => Number(c.id) !== Number(resolvedId)));
-    setMyCreatedCourses((prev) => prev.filter((c) => Number(c.id) !== Number(resolvedId)));
-    setEnrolledCourses((prev) => prev.filter((c) => Number(c.id) !== Number(resolvedId)));
-    if (Number(selectedCourseId) === Number(resolvedId)) {
+    await coursesAPI.deleteCourse(numId);
+    setCourses((prev) => (Array.isArray(prev) ? prev : []).filter((c) => Number(c.id) !== Number(numId)));
+    setMyCreatedCourses((prev) => (Array.isArray(prev) ? prev : []).filter((c) => Number(c.id) !== Number(numId)));
+    setEnrolledCourses((prev) => (Array.isArray(prev) ? prev : []).filter((c) => Number(c.id) !== Number(numId)));
+    enrolledCoursesRef.current = (Array.isArray(enrolledCoursesRef.current) ? enrolledCoursesRef.current : []).filter(
+      (c) => Number(c.id) !== Number(numId)
+    );
+    if (Number(selectedCourseId) === Number(numId)) {
       setSelectedCourseId(null);
     }
     await refreshAllCourses(user);
