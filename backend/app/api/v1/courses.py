@@ -2,7 +2,6 @@ import json
 import logging
 import os
 import re
-import shutil
 import uuid
 from datetime import datetime, timezone
 from urllib.parse import parse_qs, urlparse
