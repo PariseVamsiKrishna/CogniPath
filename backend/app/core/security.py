@@ -55,10 +55,11 @@ async def get_current_user(
         user_id: str = payload.get("sub")
         if user_id is None:
             raise credentials_exception
-    except JWTError:
+        user_id_int = int(user_id)
+    except (JWTError, TypeError, ValueError):
         raise credentials_exception
 
-    result = await db.execute(select(User).where(User.id == int(user_id)))
+    result = await db.execute(select(User).where(User.id == user_id_int))
     user = result.scalars().first()
     if user is None:
         raise credentials_exception
@@ -79,9 +80,10 @@ async def get_optional_current_user(
         user_id: str = payload.get("sub")
         if user_id is None:
             return None
-        result = await db.execute(select(User).where(User.id == int(user_id)))
+        user_id_int = int(user_id)
+        result = await db.execute(select(User).where(User.id == user_id_int))
         return result.scalars().first()
-    except Exception:
+    except (JWTError, TypeError, ValueError):
         return None
 
 def require_roles(*allowed_roles: str):

@@ -68,11 +68,6 @@ async def create_exam(
 
     return await get_exam_details(exam.id, db)
 
-@router.get("/{exam_id}", response_model=ExamResponse)
-async def get_exam(exam_id: int, db: AsyncSession = Depends(get_db)):
-    """Retrieve full exam details with ordered questions."""
-    return await get_exam_details(exam_id, db)
-
 async def get_exam_details(exam_id: int, db: AsyncSession) -> ExamResponse:
     res = await db.execute(select(Exam).where(Exam.id == exam_id))
     exam = res.scalars().first()
@@ -326,3 +321,8 @@ async def verify_badge(verification_hash: str, db: AsyncSession = Depends(get_db
         student_name=student.full_name if student else "Alex Kumar",
         course_title=course.title if course else "Course"
     )
+
+@router.get("/{exam_id}", response_model=ExamResponse)
+async def get_exam(exam_id: int, db: AsyncSession = Depends(get_db)):
+    """Retrieve full exam details with ordered questions."""
+    return await get_exam_details(exam_id, db)
