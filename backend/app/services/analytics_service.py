@@ -16,7 +16,6 @@ from app.models.models import (
 from app.schemas.schemas import (
     AtRiskStudent,
     EducatorDashboardOverview,
-    TopicDifficultyStat,
 )
 
 
