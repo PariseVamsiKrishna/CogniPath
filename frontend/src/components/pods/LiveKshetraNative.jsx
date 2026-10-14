@@ -226,6 +226,7 @@ export default function LiveKshetraNative({
   podTitle = 'Learning Pod',
   user = null,
   isHost = false,
+  passcode = null,
   onClose,
   initialMessages = [],
   sharedWsRef = null,        // ← If provided, reuse this WebSocket instead of opening a new one
@@ -1346,10 +1347,6 @@ export default function LiveKshetraNative({
   const stopDrawing = () => {
     if (!isDrawingRef.current) return;
     isDrawingRef.current = false;
-    const canvas = canvasRef.current;
-    if (canvas) {
-      setStrokeHistory((prev) => [...prev, canvas.toDataURL()]);
-    }
   };
 
   const clearWhiteboard = () => {

@@ -106,7 +106,15 @@ async def upload_document(
 
     # Trigger Ingestion Pipeline (Chunking -> Embedding -> ChromaDB) through asyncio.to_thread
     try:
-        chunk_count = await asyncio.to_thread(ingestion_service.process_and_index_document, course_id=course_id, document_id=doc_record.id, file_path=file_path)
+        chunk_count = await ingestion_service.process_and_index_document(
+            course_id=course_id,
+            document_id=doc_record.id,
+            doc_title=doc_record.title,
+            file_path=file_path,
+            file_type=ext,
+            topic=topic,
+            educator_id=current_user.id
+        )
         doc_record.chunk_count = chunk_count
         await db.commit()
         await db.refresh(doc_record)

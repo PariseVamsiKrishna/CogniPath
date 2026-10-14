@@ -14,11 +14,16 @@ import { coursesAPI } from '../services/api';
 export default function CourseRatingModal({
   isOpen,
   onClose,
-  courseId,
-  courseTitle = 'Course',
-  educatorName = 'Prof. Rajesh Ramanujan',
-  onRatingUpdated
+  course,
+  courseId: propCourseId,
+  courseTitle: propCourseTitle,
+  educatorName: propEducatorName,
+  onRatingUpdated,
+  onRatingSubmitted
 }) {
+  const courseId = propCourseId ?? course?.id;
+  const courseTitle = propCourseTitle || course?.title || 'Course';
+  const educatorName = propEducatorName || course?.educator_name || 'Course Instructor';
   const [hoverRating, setHoverRating] = useState(0);
   const [selectedRating, setSelectedRating] = useState(5);
   const [reviewText, setReviewText] = useState('');
@@ -78,6 +83,9 @@ export default function CourseRatingModal({
       await loadRatings();
       if (onRatingUpdated) {
         onRatingUpdated();
+      }
+      if (onRatingSubmitted) {
+        onRatingSubmitted();
       }
       setTimeout(() => {
         setSuccessMsg('');
