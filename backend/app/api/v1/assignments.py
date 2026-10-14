@@ -262,10 +262,12 @@ async def submit_assignment(
         # Mark as GRADING_FAILED so it's visible — not stuck as PENDING forever
         sub.status = "GRADING_FAILED"
         sub.ai_feedback_json = json.dumps({
-            "overall_score": 0,
-            "rubric_feedback": [],
-            "general_feedback": "Automatic grading failed. The educator will review this submission manually.",
-            "improvement_suggestions": []
+            "overall_score": 0.0,
+            "percentage": 0.0,
+            "criteria_scores": [],
+            "strengths": ["Submission received and queued for manual review"],
+            "weaknesses": ["Automated rubric evaluation encountered a temporary issue"],
+            "actionable_feedback": "Automatic grading failed. The educator will review this submission manually."
         })
         await db.commit()
         await db.refresh(sub)

@@ -923,7 +923,7 @@ async def seed_demo_data():
             host_id=educator.id,
             topic="BST Invariants & Tree Rotations",
             agenda="Collaborative walkthrough of tree rotation proofs and exam practice.",
-            passcode_hash="1234",
+            passcode_hash=get_password_hash("1234"),
             is_active=True,
             max_peers=6
         )

@@ -494,6 +494,7 @@ async def get_pod(pod_id: int, current_user: User = Depends(get_current_user), d
         ended_at=pod.ended_at,
         status=pod.status or ("ACTIVE" if pod.is_active else "COMPLETED"),
         remaining_seconds=rem_sec,
+        kshetra_meeting_code=pod.kshetra_meeting_code or f"sih-pod-{pod.id}",
         created_at=pod.created_at
     )
 

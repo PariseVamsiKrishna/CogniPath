@@ -269,7 +269,7 @@ export default function JourneyTrackCard({
             <div
               className={`absolute top-[21px] left-3 h-[2.5px] bg-gradient-to-r ${accent.trackGradient} -translate-y-1/2 z-0 transition-all duration-500`}
               style={{
-                width: `calc(${trackLineFillPercent}% * ((100% - 24px) / 100%))`
+                width: `calc((100% - 24px) * ${trackLineFillPercent / 100})`
               }}
             />
 

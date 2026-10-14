@@ -142,8 +142,10 @@ async def update_profile(
                 )
             current_user.email = profile_in.email
 
-    if current_user.role == 'ADMIN':
-        current_user.role = profile_in.role.upper()
+    requested_role = profile_in.role.upper()
+    if requested_role == "ADMIN" and current_user.role != "ADMIN":
+        raise HTTPException(status_code=403, detail="Cannot escalate to ADMIN role")
+    current_user.role = requested_role
     current_user.university = profile_in.university
     current_user.department = profile_in.department
     current_user.institutional_email = profile_in.institutional_email

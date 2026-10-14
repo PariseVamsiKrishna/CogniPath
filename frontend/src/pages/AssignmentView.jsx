@@ -108,7 +108,7 @@ export default function AssignmentView({
       if (submissionMethod === 'pdf') {
         formData.append('file', submissionPdf);
       } else {
-        formData.append('text_submission', submissionText);
+        formData.append('submission_text', submissionText);
       }
 
       const result = await assignmentsAPI.submit(selectedAssignment.id, formData);
