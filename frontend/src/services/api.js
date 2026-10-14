@@ -91,8 +91,14 @@ export const authAPI = {
     const res = await apiClient.post('/auth/register', userData);
     return res.data;
   },
-  getMe: () => apiClient.get('/auth/me'),
-  updateProfile: (data) => apiClient.put('/auth/profile', data),
+  getMe: async () => {
+    const res = await apiClient.get('/auth/me');
+    return res.data;
+  },
+  updateProfile: async (data) => {
+    const res = await apiClient.put('/auth/profile', data);
+    return res.data;
+  },
   logout: () => {
     localStorage.removeItem('cognipath_token');
     localStorage.removeItem('cognipath_user');
@@ -339,11 +345,20 @@ export const assignmentsAPI = {
 };
 
 export const documentsAPI = {
-  upload: (formData) => apiClient.post('/documents/upload', formData, {
-    headers: { 'Content-Type': 'multipart/form-data' },
-  }),
-  list: (params) => apiClient.get('/documents', { params }),
-  delete: (id) => apiClient.delete(`/documents/${id}`),
+  upload: async (formData) => {
+    const res = await apiClient.post('/documents/upload', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return res.data;
+  },
+  list: async (params) => {
+    const res = await apiClient.get('/documents', { params });
+    return res.data;
+  },
+  delete: async (id) => {
+    const res = await apiClient.delete(`/documents/${id}`);
+    return res.data;
+  },
 };
 
 export const tutorAPI = {
@@ -382,38 +397,163 @@ export const quizzesAPI = {
 };
 
 export const analyticsAPI = {
-  getEducatorOverview: (courseId) => apiClient.get(`/analytics/educator/overview?course_id=${courseId}`),
-  getStudentProgress: () => apiClient.get('/analytics/student/progress'),
+  // Student dashboard
+  getStudentOverview: async () => {
+    const res = await apiClient.get('/analytics/student/overview');
+    return res.data;
+  },
+  // Alias used in some older components
+  getStudentProgress: async () => {
+    const res = await apiClient.get('/analytics/student/overview');
+    return res.data;
+  },
+  // Educator dashboard — courseId is optional
+  getOverview: async (courseId) => {
+    const url = courseId
+      ? `/analytics/educator/overview?course_id=${courseId}`
+      : '/analytics/educator/overview';
+    const res = await apiClient.get(url);
+    return res.data;
+  },
+  // Alias used in some older components
+  getEducatorOverview: async (courseId) => {
+    const url = courseId
+      ? `/analytics/educator/overview?course_id=${courseId}`
+      : '/analytics/educator/overview';
+    const res = await apiClient.get(url);
+    return res.data;
+  },
+  // Trigger intervention for a specific student
+  intervene: async (studentId, note) => {
+    const res = await apiClient.post(
+      `/analytics/educator/intervene/${studentId}`,
+      null,
+      { params: { custom_note: note } }
+    );
+    return res.data;
+  },
 };
 
+// BUG-F03 fixed: all methods now unwrap res.data
 export const podsAPI = {
-  list: (courseId) => apiClient.get(`/pods?course_id=${courseId}`),
-  get: (id) => apiClient.get(`/pods/${id}`),
-  create: (data) => apiClient.post('/pods', data),
-  verifyPasscode: (podId, passcode) => apiClient.post(`/pods/${podId}/verify-passcode`, { passcode }),
-  getMessages: (podId) => apiClient.get(`/pods/${podId}/messages`),
-  endPod: (podId, reason) => apiClient.post(`/pods/${podId}/end`, { reason }),
-  getQuota: () => apiClient.get('/pods/educator/quota'),
+  list: async (courseId) => {
+    const res = await apiClient.get(`/pods?course_id=${courseId}`);
+    return res.data;
+  },
+  get: async (id) => {
+    const res = await apiClient.get(`/pods/${id}`);
+    return res.data;
+  },
+  create: async (data) => {
+    const res = await apiClient.post('/pods', data);
+    return res.data;
+  },
+  verifyPasscode: async (podId, passcode) => {
+    const res = await apiClient.post(`/pods/${podId}/verify-passcode`, { passcode });
+    return res.data;
+  },
+  getMessages: async (podId) => {
+    const res = await apiClient.get(`/pods/${podId}/messages`);
+    return res.data;
+  },
+  endPod: async (podId, reason) => {
+    const res = await apiClient.post(`/pods/${podId}/end`, { reason });
+    return res.data;
+  },
+  getQuota: async () => {
+    const res = await apiClient.get('/pods/educator/quota');
+    return res.data;
+  },
 };
 
+// BUG-F05 fixed: added listMessages alias, upvote, getMembers, kickMember, closeCommunity; unwrap data
 export const communitiesAPI = {
-  listChannels: (courseId) => apiClient.get(`/communities/courses/${courseId}/channels`),
-  getMessages: (channelId) => apiClient.get(`/communities/channels/${channelId}/messages`),
-  postMessage: (channelId, content) => apiClient.post(`/communities/channels/${channelId}/messages`, { content }),
+  listChannels: async (courseId) => {
+    const res = await apiClient.get(`/communities/courses/${courseId}/channels`);
+    return res.data;
+  },
+  getMessages: async (channelId) => {
+    const res = await apiClient.get(`/communities/channels/${channelId}/messages`);
+    return res.data;
+  },
+  // Alias so both getMessages and listMessages work
+  listMessages: async (channelId) => {
+    const res = await apiClient.get(`/communities/channels/${channelId}/messages`);
+    return res.data;
+  },
+  postMessage: async (channelId, content) => {
+    const res = await apiClient.post(`/communities/channels/${channelId}/messages`, { content });
+    return res.data;
+  },
+  upvote: async (messageId) => {
+    const res = await apiClient.post(`/communities/messages/${messageId}/upvote`);
+    return res.data;
+  },
+  getMembers: async (courseId) => {
+    const res = await apiClient.get(`/communities/courses/${courseId}/members`);
+    return res.data;
+  },
+  kickMember: async (courseId, memberId) => {
+    const res = await apiClient.delete(`/communities/courses/${courseId}/members/${memberId}`);
+    return res.data;
+  },
+  closeCommunity: async (courseId) => {
+    const res = await apiClient.delete(`/communities/courses/${courseId}/close`);
+    return res.data;
+  },
 };
 
+// BUG-F06 fixed: added missing query method; all methods unwrap data
 export const socraticAPI = {
-  startSession: (topic) => apiClient.post('/socratic/start', { topic }),
-  respond: (sessionId, answer) => apiClient.post(`/socratic/${sessionId}/respond`, { answer }),
+  query: async (payload) => {
+    const res = await apiClient.post('/socratic/query', payload);
+    return res.data;
+  },
+  getMindmap: async (topic) => {
+    const res = await apiClient.get(`/socratic/mindmap?topic=${encodeURIComponent(topic)}`);
+    return res.data;
+  },
+  startSession: async (topic) => {
+    const res = await apiClient.post('/socratic/start', { topic });
+    return res.data;
+  },
+  respond: async (sessionId, answer) => {
+    const res = await apiClient.post(`/socratic/${sessionId}/respond`, { answer });
+    return res.data;
+  },
 };
 
+// BUG-F04 fixed: get() now passes courseId; returns res.data; added completeAction
 export const roadmapAPI = {
-  generate: (goal) => apiClient.post('/roadmap/generate', { goal }),
-  get: () => apiClient.get('/roadmap'),
+  generate: async (goal) => {
+    const res = await apiClient.post('/roadmap/generate', { goal });
+    return res.data;
+  },
+  get: async (courseId = 1) => {
+    const res = await apiClient.get(`/roadmap?course_id=${courseId}`);
+    return res.data;
+  },
+  completeAction: async (actionId) => {
+    const res = await apiClient.post(`/roadmap/complete-action/${actionId}`);
+    return res.data;
+  },
 };
 
+// BUG-F07 fixed: renamed to getAudit, corrected HTTP method to GET, added generateBloomsQuiz
 export const curriculumAuditAPI = {
-  audit: (courseId) => apiClient.post(`/curriculum-audit/${courseId}`),
+  getAudit: async (courseId = 1) => {
+    const res = await apiClient.get(`/curriculum-audit?course_id=${courseId}`);
+    return res.data;
+  },
+  // Alias for backward compatibility
+  audit: async (courseId = 1) => {
+    const res = await apiClient.get(`/curriculum-audit?course_id=${courseId}`);
+    return res.data;
+  },
+  generateBloomsQuiz: async (topic = 'Binary Search Trees') => {
+    const res = await apiClient.get(`/curriculum-audit/blooms-quiz?topic=${encodeURIComponent(topic)}`);
+    return res.data;
+  },
 };
 
 

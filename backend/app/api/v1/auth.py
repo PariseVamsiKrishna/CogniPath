@@ -34,11 +34,15 @@ async def register(user_in: UserCreate, db: AsyncSession = Depends(get_db)):
 
     has_details = bool(user_in.university and user_in.department)
 
+    # Restrict role to STUDENT or EDUCATOR — never allow ADMIN self-registration
+    requested_role = (user_in.role or "STUDENT").upper()
+    assigned_role = requested_role if requested_role in ("STUDENT", "EDUCATOR") else "STUDENT"
+
     db_user = User(
         email=user_in.email,
         hashed_password=get_password_hash(user_in.password),
         full_name=user_in.full_name.strip(),
-        role=user_in.role.upper(),
+        role=assigned_role,
         university=user_in.university,
         department=user_in.department,
         institutional_email=user_in.institutional_email or user_in.email,

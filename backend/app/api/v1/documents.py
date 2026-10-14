@@ -1,4 +1,3 @@
-import asyncio
 import logging
 import os
 import uuid
@@ -120,6 +119,17 @@ async def upload_document(
         await db.refresh(doc_record)
     except Exception as e:
         logger.exception(e)
+        # BUG-B09 fix: roll back orphaned DB record and delete the uploaded file
+        try:
+            await db.delete(doc_record)
+            await db.commit()
+        except Exception:
+            await db.rollback()
+        if os.path.exists(file_path):
+            try:
+                os.remove(file_path)
+            except Exception:
+                pass
         raise HTTPException(status_code=500, detail="Document parsing/indexing failed.")
 
     return doc_record

@@ -29,7 +29,6 @@ from app.schemas.schemas import (
 from app.services.assignment_service import assignment_service
 
 logger = logging.getLogger("cognipath.assignments_api")
-logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/assignments", tags=["Assignment Engine & AI Auto-Evaluation"])
 
@@ -294,12 +293,30 @@ async def list_student_submissions(
     current_user: User = Depends(get_current_user)
 ):
     """List all assignment submissions for a student with IDOR check."""
-    if current_user.role not in ("EDUCATOR", "ADMIN") and current_user.id != student_id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied: Cannot view submissions of another student")
+    # Students can only see their own submissions
+    if current_user.id == student_id:
+        res = await db.execute(
+            select(AssignmentSubmission).where(AssignmentSubmission.student_id == student_id)
+        )
+    elif current_user.role == "ADMIN":
+        res = await db.execute(
+            select(AssignmentSubmission).where(AssignmentSubmission.student_id == student_id)
+        )
+    elif current_user.role == "EDUCATOR":
+        # BUG-B07 fix: educators may only see submissions for assignments in their own courses
+        res = await db.execute(
+            select(AssignmentSubmission)
+            .join(Assignment, AssignmentSubmission.assignment_id == Assignment.id)
+            .join(Module, Assignment.module_id == Module.id)
+            .join(Course, Module.course_id == Course.id)
+            .where(
+                AssignmentSubmission.student_id == student_id,
+                Course.educator_id == current_user.id
+            )
+        )
+    else:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Access denied")
 
-    res = await db.execute(
-        select(AssignmentSubmission).where(AssignmentSubmission.student_id == student_id)
-    )
     subs = res.scalars().all()
     out = []
     for s in subs:

@@ -754,8 +754,8 @@ export default function CoursePlayer({
           await fetchMyCreatedCourses();
         }
         if (isMountedRef.current) {
-          setCreatedList((prev) => prev.filter((c) => Number(c.id) !== Number(targetCourseId)));
-          setEnrolledList((prev) => prev.filter((c) => Number(c.id) !== Number(targetCourseId)));
+          setCreatedList((prev) => (Array.isArray(prev) ? prev : []).filter((c) => Number(c.id) !== Number(targetCourseId)));
+          setEnrolledList((prev) => (Array.isArray(prev) ? prev : []).filter((c) => Number(c.id) !== Number(targetCourseId)));
           showBanner('success', `Course "${targetCourseTitle}" was permanently deleted.`);
         }
       } else {

@@ -284,6 +284,11 @@ export default function LiveKshetraNative({
   const [copiedLink, setCopiedLink] = useState(false);
   const [toastMessage, setToastMessage] = useState('');
 
+  const toastTimerRef = useRef(null);
+  const copyCodeTimerRef = useRef(null);
+  const copyLinkTimerRef = useRef(null);
+  const reactionTimersRef = useRef(new Set());
+
   // Media Streams & Audio Meter Refs
   const localVideoRef = useRef(null);
   const localStreamRef = useRef(null);
@@ -345,12 +350,15 @@ export default function LiveKshetraNative({
       gain.connect(ctx.destination);
       osc.start();
       osc.stop(ctx.currentTime + duration);
+      const totalTime = (duration + 0.1) * 1000;
+      setTimeout(() => ctx.close().catch(() => {}), totalTime);
     } catch (e) {}
   };
 
   const showToast = (msg) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(''), 3500);
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    toastTimerRef.current = setTimeout(() => setToastMessage(''), 3500);
   };
 
   // Media readiness state
@@ -442,6 +450,11 @@ export default function LiveKshetraNative({
     return () => {
       isMounted = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+      if (copyCodeTimerRef.current) clearTimeout(copyCodeTimerRef.current);
+      if (copyLinkTimerRef.current) clearTimeout(copyLinkTimerRef.current);
+      reactionTimersRef.current.forEach((t) => clearTimeout(t));
+      reactionTimersRef.current.clear();
       if (localStreamRef.current) {
         localStreamRef.current.getTracks().forEach((t) => t.stop());
       }
@@ -772,7 +785,11 @@ export default function LiveKshetraNative({
             const id = Date.now() + Math.random();
             const xPos = 20 + Math.random() * 60;
             setFloatingReactions((prev) => [...prev, { id, emoji: data.emoji, x: xPos }]);
-            setTimeout(() => { setFloatingReactions((prev) => prev.filter((r) => r.id !== id)); }, 2400);
+            const tId = setTimeout(() => {
+              setFloatingReactions((prev) => prev.filter((r) => r.id !== id));
+              reactionTimersRef.current.delete(tId);
+            }, 2400);
+            reactionTimersRef.current.add(tId);
           }
         } else if (data.type === 'KICKED_BY_HOST') {
           console.warn(`[LiveKshetra] Removed from room: ${data.reason || 'Removed by host'}`);
@@ -1162,9 +1179,11 @@ export default function LiveKshetraNative({
       }));
     }
 
-    setTimeout(() => {
+    const tId = setTimeout(() => {
       setFloatingReactions((prev) => prev.filter((r) => r.id !== id));
+      reactionTimersRef.current.delete(tId);
     }, 2400);
+    reactionTimersRef.current.add(tId);
   };
 
   // ---------------------------------------------------------------------------
@@ -1425,14 +1444,16 @@ export default function LiveKshetraNative({
   const copyMeetingCode = () => {
     navigator.clipboard.writeText(cleanCode);
     setCopiedCode(true);
-    setTimeout(() => setCopiedCode(false), 2000);
+    if (copyCodeTimerRef.current) clearTimeout(copyCodeTimerRef.current);
+    copyCodeTimerRef.current = setTimeout(() => setCopiedCode(false), 2000);
   };
 
   const copyDirectLink = () => {
     const url = `${window.location.origin}${window.location.pathname}?room=${cleanCode}#join=${cleanCode}`;
     navigator.clipboard.writeText(url);
     setCopiedLink(true);
-    setTimeout(() => setCopiedLink(false), 2000);
+    if (copyLinkTimerRef.current) clearTimeout(copyLinkTimerRef.current);
+    copyLinkTimerRef.current = setTimeout(() => setCopiedLink(false), 2000);
   };
 
   return (

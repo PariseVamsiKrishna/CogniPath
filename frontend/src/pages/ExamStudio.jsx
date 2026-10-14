@@ -89,8 +89,8 @@ export default function ExamStudio({
     async function loadCourses() {
       try {
         const [enrolledRes, createdRes, exploreRes] = await Promise.all([
-          coursesAPI.getMyEnrolled().catch(() => []),
-          isEducator || user?.role === 'ADMIN' ? coursesAPI.getMyCreated().catch(() => []) : Promise.resolve([]),
+          coursesAPI.getEnrolled().catch(() => []),
+          isEducator || user?.role === 'ADMIN' ? coursesAPI.getMyCourses().catch(() => []) : Promise.resolve([]),
           coursesAPI.explore({ include_enrolled: true }).catch(() => []),
         ]);
         if (cancelled) return;
@@ -165,19 +165,19 @@ export default function ExamStudio({
   // 4. Timer countdown during student test
   useEffect(() => {
     let timer;
-    if (testActive && timeLeftSecs > 0 && !submissionResult) {
+    if (testActive && !submissionResult) {
       timer = setInterval(() => {
-        setTimeLeftSecs((t) => {
-          if (t <= 1) {
-            handleAutoSubmit();
-            return 0;
-          }
-          return t - 1;
-        });
+        setTimeLeftSecs((prev) => (prev > 0 ? prev - 1 : 0));
       }, 1000);
     }
     return () => clearInterval(timer);
-  }, [testActive, timeLeftSecs, submissionResult]);
+  }, [testActive, submissionResult]);
+
+  useEffect(() => {
+    if (timeLeftSecs === 0 && activeExam && testActive) {
+      handleAutoSubmit();
+    }
+  }, [timeLeftSecs, activeExam, testActive]);
 
   const fetchExams = async (cId) => {
     try {
@@ -212,7 +212,7 @@ export default function ExamStudio({
 
       // Pre-load AI suggestions if in builder mode
       if (isEditMode) {
-        fetchAiSuggestions(data.title);
+        fetchAiSuggestions(data.title, data);
       }
     } catch (err) {
       console.error('Failed to get exam details:', err);
@@ -220,13 +220,13 @@ export default function ExamStudio({
   };
 
   // Generate MCQs from RAG video concepts & notes
-  const fetchAiSuggestions = async (topicTitle) => {
+  const fetchAiSuggestions = async (topicTitle, examData = activeExam) => {
     try {
       setLoadingAi(true);
       const res = await examsAPI.suggestAI({
         course_id: selectedCourseId,
-        module_id: activeExam?.module_id || null,
-        topic: topicTitle || activeExam?.title || 'Course Concepts',
+        module_id: examData?.module_id || null,
+        topic: topicTitle || examData?.title || 'Course Concepts',
         count: 4,
         difficulty: 'Intermediate'
       });

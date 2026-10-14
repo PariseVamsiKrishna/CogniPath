@@ -55,6 +55,7 @@ export default function LiveKshetraStudio({
   const previewVideoRef = useRef(null);
   const previewStreamRef = useRef(null);
   const animFrameRef = useRef(null);
+  const audioCtxRef = useRef(null);
 
   const isEducator = user?.role === 'EDUCATOR';
   const userName = user?.full_name || 'Learner';
@@ -90,6 +91,7 @@ export default function LiveKshetraStudio({
         // Audio level analyser
         try {
           const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+          audioCtxRef.current = audioCtx;
           const analyser = audioCtx.createAnalyser();
           analyser.fftSize = 32;
           const source = audioCtx.createMediaStreamSource(stream);
@@ -118,6 +120,7 @@ export default function LiveKshetraStudio({
     return () => {
       isMounted = false;
       if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+      audioCtxRef.current?.close().catch(() => {});
       if (previewStreamRef.current) {
         previewStreamRef.current.getTracks().forEach((t) => t.stop());
       }
@@ -143,6 +146,7 @@ export default function LiveKshetraStudio({
   // Instant meeting handler
   const handleStartInstantMeeting = () => {
     const code = generateMeetingCode();
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     // Stop green room preview stream before entering call
     if (previewStreamRef.current) {
       previewStreamRef.current.getTracks().forEach((t) => t.stop());
@@ -179,6 +183,7 @@ export default function LiveKshetraStudio({
       return;
     }
 
+    if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
     if (previewStreamRef.current) {
       previewStreamRef.current.getTracks().forEach((t) => t.stop());
     }
@@ -484,6 +489,10 @@ export default function LiveKshetraStudio({
                 type="button"
                 onClick={() => {
                   setShowScheduleModal(false);
+                  if (animFrameRef.current) cancelAnimationFrame(animFrameRef.current);
+                  if (previewStreamRef.current) {
+                    previewStreamRef.current.getTracks().forEach((t) => t.stop());
+                  }
                   setIsMeetingCreator(true);
                   setActiveMeetingCode(scheduledCode);
                 }}

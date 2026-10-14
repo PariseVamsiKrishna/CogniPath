@@ -74,11 +74,10 @@ class RAGService:
             
             context_parts.append(f"--- Document: {doc_title} (Page {page_num}) ---\n{doc}")
             citations.append(Citation(
-                document_id=meta.get("document_id", 0),
-                doc_title=doc_title,
-                page_number=page_num,
-                chunk_text=doc[:200] + "..." if len(doc) > 200 else doc,
-                relevance_score=round(max(0.0, 1.0 - float(dist)), 3)
+                source_title=doc_title,
+                page_or_chunk=f"Page {page_num}",
+                snippet=doc[:200] + "..." if len(doc) > 200 else doc,
+                similarity_score=round(max(0.0, 1.0 - float(dist)), 3)
             ))
 
         formatted_context = "\n\n".join(context_parts) if context_parts else "No specific course documents uploaded yet for this topic."
@@ -100,7 +99,7 @@ class RAGService:
                 system_prompt = SYSTEM_TUTOR_PROMPT.format(context_text=context_text)
                 prompt_content = f"{system_prompt}\n\n<user_question>\n{query}\n</user_question>\nTarget Response Language: {target_language}"
 
-                models_to_try = [settings.GEMINI_MODEL_NAME, "gemini-2.5-flash", "gemini-flash-latest"]
+                models_to_try = [settings.GEMINI_MODEL_NAME, "gemini-2.0-flash", "gemini-1.5-flash"]
                 for m in models_to_try:
                     try:
                         resp = await asyncio.to_thread(
