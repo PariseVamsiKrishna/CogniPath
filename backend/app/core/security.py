@@ -86,7 +86,11 @@ async def get_optional_current_user(
         user_id: str = payload.get("sub")
         if user_id is None:
             return None
-        result = await db.execute(select(User).where(User.id == int(user_id)))
+        # BUG-B26 fix: sub may be a numeric ID string or an email — handle both
+        try:
+            result = await db.execute(select(User).where(User.id == int(user_id)))
+        except ValueError:
+            result = await db.execute(select(User).where(User.email == user_id))
         return result.scalars().first()
     except Exception:
         return None

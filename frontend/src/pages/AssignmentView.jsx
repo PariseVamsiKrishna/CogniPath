@@ -22,6 +22,7 @@ export default function AssignmentView({
   courseId = 1,
   user
 }) {
+  const activeId = courseId || 1;
   const [modules, setModules] = useState([]);
   const [selectedModuleId, setSelectedModuleId] = useState(null);
   const [assignments, setAssignments] = useState([]);
@@ -49,8 +50,9 @@ export default function AssignmentView({
   const isEducator = user?.role === 'EDUCATOR';
 
   useEffect(() => {
+    if (!activeId) return;
     loadCourseModules();
-  }, [courseId]);
+  }, [activeId]);
 
   useEffect(() => {
     if (selectedModuleId) {
@@ -59,9 +61,10 @@ export default function AssignmentView({
   }, [selectedModuleId]);
 
   const loadCourseModules = async () => {
+    if (!activeId) return;
     try {
       setLoading(true);
-      const data = await coursesAPI.getHierarchy(courseId);
+      const data = await coursesAPI.getHierarchy(activeId);
       if (data.modules && data.modules.length > 0) {
         setModules(data.modules);
         setSelectedModuleId(data.modules[0].id);
@@ -142,7 +145,7 @@ export default function AssignmentView({
   const handleCriterionChange = (idx, field, value) => {
     setCreateRubric(prev => {
       const updated = [...prev];
-      updated[idx][field] = value;
+      updated[idx] = { ...updated[idx], [field]: value };
       return updated;
     });
   };

@@ -71,10 +71,13 @@ async def generate_spaced_quiz(
             )
 
     if quiz and force_regenerate:
+        # BUG-B08 fix: only educators/admins may wipe and regenerate shared quiz questions
+        if current_user.role not in ("EDUCATOR", "ADMIN"):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Only educators can force-regenerate quiz questions."
+            )
         # Delete old questions so we can regenerate fresh ones
-        await db.execute(
-            select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id)
-        )
         old_qs = (await db.execute(
             select(QuizQuestion).where(QuizQuestion.quiz_id == quiz.id)
         )).scalars().all()

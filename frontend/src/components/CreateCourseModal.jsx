@@ -73,6 +73,39 @@ export default function CreateCourseModal({
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  const resetForm = () => {
+    setTitle('');
+    setTargetBranch('Computer Science & Engineering (CSE)');
+    setDifficulty('Medium');
+    setDescription('');
+    setThumbnailUrl('');
+    setIsPublished(true);
+    setPreviewTopicId(null);
+    setModules([
+      {
+        id: 'mod_1',
+        title: 'Module 1: Foundations & Core Concepts',
+        description: 'Foundational concepts, architecture, and practical principles.',
+        pdfFile: null,
+        pdfTitle: '',
+        topics: [
+          {
+            id: 'top_1_1',
+            title: 'Lecture 1: Introduction & System Overview',
+            description: 'Comprehensive conceptual walkthrough and implementation overview.',
+            youtube_url: 'https://www.youtube.com/watch?v=qH6clASSS54'
+          }
+        ]
+      }
+    ]);
+    setError('');
+  };
+
+  const handleClose = () => {
+    resetForm();
+    if (onClose) onClose();
+  };
+
   if (!isOpen) return null;
 
   const handleAddModule = () => {
@@ -269,6 +302,7 @@ export default function CreateCourseModal({
       if (onCourseCreated) {
         onCourseCreated(newCourse, { openCurriculumStudio: true });
       }
+      resetForm();
       onClose();
     } catch (err) {
       console.error('Failed to create course:', err);
@@ -317,7 +351,7 @@ export default function CreateCourseModal({
 
           <button
             type="button"
-            onClick={onClose}
+            onClick={handleClose}
             className="p-1.5 rounded-xl text-slate-400 hover:text-white hover:bg-slate-800 transition"
           >
             <X className="h-5 w-5" />
@@ -696,7 +730,7 @@ export default function CreateCourseModal({
             <div className="flex items-center gap-3">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleClose}
                 disabled={loading}
                 className="px-4 py-2.5 rounded-xl text-xs font-bold text-slate-400 hover:text-white hover:bg-slate-800 transition"
               >

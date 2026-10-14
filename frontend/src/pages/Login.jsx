@@ -297,10 +297,11 @@ export default function Login({ onLoginSuccess, onBackToHome, initialRole = 'STU
       profile_completed: true
     };
 
-    // Store in local account registry so this user can always sign in anytime
+    // Store in local account registry — NEVER persist the password
+    const { password: _pw, ...payloadWithoutPassword } = payload;
     const localAccount = {
       id: Date.now(),
-      ...payload,
+      ...payloadWithoutPassword,
       profile_completed: true
     };
     try {

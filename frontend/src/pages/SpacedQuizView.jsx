@@ -126,16 +126,20 @@ export default function SpacedQuizView({
   const availableCourses = enrolledCourses;
   const activeCourse = availableCourses.find((c) => c.id === courseId) || availableCourses[0];
 
-  if (!activeCourse) {
-    return (
-      <div className="flex h-[calc(100vh-4rem)] items-center justify-center p-8 text-center text-[#8A90B4]">
-        Enroll in a course to see flashcards for that subject.
-      </div>
-    );
-  }
+  // ── All hooks must be declared unconditionally (Rules of Hooks) ──
+  const [loadingCards, setLoadingCards] = useState(false);
+  const [dynamicDeck, setDynamicDeck] = useState(null);
+  const [viewMode, setViewMode] = useState(defaultMode);
+  const [cardIndex, setCardIndex] = useState(0);
+  const [isFlipped, setIsFlipped] = useState(false);
+  const [reviewedCards, setReviewedCards] = useState({});
+  const [activeQuiz, setActiveQuiz] = useState(null);
+  const [answers, setAnswers] = useState({});
+  const [submissionResult, setSubmissionResult] = useState(null);
+  const [loading, setLoading] = useState(false);
 
   const getCourseCategoryKey = () => {
-    const text = `${activeCourse.title || ''} ${activeCourse.code || ''}`.toLowerCase();
+    const text = `${activeCourse?.title || ''} ${activeCourse?.code || ''}`.toLowerCase();
     if (text.includes('database') || text.includes('dbms') || text.includes('sql')) return 'dbms';
     if (text.includes('web') || text.includes('html') || text.includes('react')) return 'web';
     if (text.includes('data') || text.includes('algo') || text.includes('cs101')) return 'dsa';
@@ -143,9 +147,6 @@ export default function SpacedQuizView({
   };
 
   const categoryKey = getCourseCategoryKey();
-
-  const [loadingCards, setLoadingCards] = useState(false);
-  const [dynamicDeck, setDynamicDeck] = useState(null);
 
   const fetchCards = async (force = false) => {
     if (!activeCourse?.id) return;
@@ -210,23 +211,16 @@ export default function SpacedQuizView({
     return () => { isMounted = false; };
   }, [activeCourse?.id]);
 
-  const currentDeck = dynamicDeck || COURSE_FLASHCARDS[categoryKey] || COURSE_FLASHCARDS.default;
-  const currentKeyPoints = COURSE_SYLLABUS_POINTS[categoryKey] || COURSE_SYLLABUS_POINTS.default;
-
-  // View mode: 'flashcards', 'quiz', 'points'
-  const [viewMode, setViewMode] = useState(defaultMode);
-
-  // Flashcard State
-  const [cardIndex, setCardIndex] = useState(0);
-  const [isFlipped, setIsFlipped] = useState(false);
-  const [reviewedCards, setReviewedCards] = useState({});
-
+  // Reset card state whenever the active course changes
   useEffect(() => {
     setCardIndex(0);
     setIsFlipped(false);
     setReviewedCards({});
     setDynamicDeck(null);
   }, [activeCourse?.id]);
+
+  const currentDeck = dynamicDeck || COURSE_FLASHCARDS[categoryKey] || COURSE_FLASHCARDS.default;
+  const currentKeyPoints = COURSE_SYLLABUS_POINTS[categoryKey] || COURSE_SYLLABUS_POINTS.default;
 
   const activeCard = currentDeck[cardIndex] || currentDeck[0];
 
@@ -248,11 +242,7 @@ export default function SpacedQuizView({
     handleNextCard();
   };
 
-  // Spaced Repetition Quiz State
-  const [activeQuiz, setActiveQuiz] = useState(null);
-  const [answers, setAnswers] = useState({});
-  const [submissionResult, setSubmissionResult] = useState(null);
-  const [loading, setLoading] = useState(false);
+  // (activeQuiz, answers, submissionResult, loading are already declared above with all other hooks)
 
   const startQuiz = async (topic) => {
     setLoading(true);
@@ -345,6 +335,13 @@ export default function SpacedQuizView({
 
   return (
     <div className="p-4 sm:p-6 lg:p-8 max-w-6xl mx-auto space-y-6 text-[#ECEDF7]">
+      {/* Empty state — no enrolled courses */}
+      {!activeCourse && (
+        <div className="flex h-[calc(100vh-4rem)] items-center justify-center p-8 text-center text-[#8A90B4]">
+          Enroll in a course to see flashcards for that subject.
+        </div>
+      )}
+      {activeCourse && (<>
       {/* Top Banner with Course Switcher */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 bg-[#12162B] border border-[#262C4C] p-5 sm:p-6 rounded-2xl shadow-xl">
         <div className="space-y-1">
@@ -696,6 +693,7 @@ export default function SpacedQuizView({
           </div>
         </div>
       )}
+      </>)}
     </div>
   );
 }

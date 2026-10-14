@@ -276,6 +276,9 @@ Each object must have EXACTLY these fields:
                 model_text = (q.correct_answer or "").strip().lower()
                 # Check for significant keyword overlap
                 keywords = [w for w in model_text.split() if len(w) > 4]
+                # BUG-B20 fix: if all model words are short (e.g. "O(1)", "FIFO"), use all words
+                if not keywords:
+                    keywords = model_text.split()
                 match_count = sum(1 for kw in keywords if kw in ans_text)
                 is_correct = bool(ans_text) and match_count >= max(1, len(keywords) // 3)
 

@@ -46,21 +46,41 @@ export default function CourseCatalogModal({
   const [enrollError, setEnrollError] = useState('');
   const [enrollingCourseId, setEnrollingCourseId] = useState(null);
   const fetchReqIdRef = useRef(0);
+  const searchTimerRef = useRef(null);
 
   useEffect(() => {
     if (isOpen) {
       fetchCourses();
     }
-  }, [isOpen, searchQuery, selectedBranch, selectedDifficulty, sortBy, enrolledCourses]);
+    return () => {
+      if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    };
+  }, [isOpen, selectedBranch, selectedDifficulty, sortBy, enrolledCourses]);
 
-  const fetchCourses = async () => {
+  const handleSearchChange = (e) => {
+    const val = e.target.value;
+    setSearchQuery(val);
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    searchTimerRef.current = setTimeout(() => {
+      fetchCourses(val);
+    }, 300);
+  };
+
+  const handleClearSearch = () => {
+    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    setSearchQuery('');
+    fetchCourses('');
+  };
+
+  const fetchCourses = async (overrideQuery) => {
     const reqId = ++fetchReqIdRef.current;
     setLoading(true);
     setError('');
     setEnrollError('');
     try {
+      const q = overrideQuery !== undefined ? overrideQuery : searchQuery;
       const data = await coursesAPI.explore({
-        q: searchQuery.trim() || undefined,
+        q: q.trim() || undefined,
         target_branch: selectedBranch !== 'All' ? selectedBranch : undefined,
         difficulty: selectedDifficulty !== 'All' ? selectedDifficulty : undefined,
         sort_by: sortBy
@@ -170,13 +190,13 @@ export default function CourseCatalogModal({
               <input
                 type="text"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={handleSearchChange}
                 placeholder="Search by course title, code, branch, educator, or university..."
                 className="w-full pl-11 pr-9 py-2.5 rounded-2xl bg-[#121826] border border-[#1e2638] text-xs text-white placeholder-slate-500 focus:outline-none focus:border-indigo-500 transition"
               />
               {searchQuery && (
                 <button
-                  onClick={() => setSearchQuery('')}
+                  onClick={handleClearSearch}
                   className="absolute right-3.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white"
                 >
                   <X className="h-4 w-4" />
@@ -447,6 +467,7 @@ export default function CourseCatalogModal({
               {(searchQuery || selectedBranch !== 'All' || selectedDifficulty !== 'All') && (
                 <button
                   onClick={() => {
+                    if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
                     setSearchQuery('');
                     setSelectedBranch('All');
                     setSelectedDifficulty('All');

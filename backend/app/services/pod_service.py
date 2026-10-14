@@ -18,7 +18,11 @@ class PodConnectionManager:
     def create_background_task(self, coro):
         task = asyncio.create_task(coro)
         self.background_tasks.add(task)
-        task.add_done_callback(self.background_tasks.discard)
+        def _on_done(t: asyncio.Task):
+            self.background_tasks.discard(t)
+            if not t.cancelled() and t.exception() is not None:
+                logger.error("Background pod task failed", exc_info=t.exception())
+        task.add_done_callback(_on_done)
         return task
 
     """Manages active WebRTC signaling, chat messages, host moderation events, and session lifecycle per Learning Pod."""

@@ -57,6 +57,27 @@ async def list_course_channels(course_id: int, current_user: User = Depends(get_
 @router.get("/channels/{channel_id}/messages", response_model=list[CommunityMessageResponse])
 async def list_channel_messages(channel_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Retrieve message feed for a channel."""
+    # BUG-B04 fix: verify user is enrolled in the channel's course (or is educator/admin)
+    ch_res = await db.execute(select(CommunityChannel).where(CommunityChannel.id == channel_id))
+    channel = ch_res.scalars().first()
+    if not channel:
+        raise HTTPException(status_code=404, detail="Channel not found")
+
+    if current_user.role not in ("ADMIN",):
+        # Check if educator owns the course
+        course_res = await db.execute(select(Course).where(Course.id == channel.course_id))
+        course = course_res.scalars().first()
+        is_owner = course and course.educator_id == current_user.id
+        if not is_owner:
+            enr_res = await db.execute(
+                select(Enrollment).where(
+                    Enrollment.user_id == current_user.id,
+                    Enrollment.course_id == channel.course_id
+                )
+            )
+            if not enr_res.scalars().first():
+                raise HTTPException(status_code=403, detail="Not enrolled in this course community")
+
     result = await db.execute(
         select(CommunityMessage)
         .where(CommunityMessage.channel_id == channel_id)

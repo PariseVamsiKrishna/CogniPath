@@ -1,3 +1,4 @@
+import asyncio
 import json
 import logging
 import os
@@ -1996,22 +1997,30 @@ async def upload_module_resource(
     written_bytes = 0
     first_bytes = b""
     try:
-        with open(file_path, "wb") as buffer:
-            while chunk := await file.read(1024 * 1024):
-                if len(first_bytes) < 5:
-                    first_bytes += chunk[: 5 - len(first_bytes)]
-                written_bytes += len(chunk)
-                if written_bytes > max_bytes:
-                    raise HTTPException(
-                        status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
-                        detail="File size exceeds maximum limit of 20 MB"
-                    )
-                buffer.write(chunk)
+        chunks = []
+        while chunk := await file.read(1024 * 1024):
+            if len(first_bytes) < 5:
+                first_bytes += chunk[: 5 - len(first_bytes)]
+            written_bytes += len(chunk)
+            if written_bytes > max_bytes:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail="File size exceeds maximum limit of 20 MB"
+                )
+            chunks.append(chunk)
+
         if written_bytes == 0 or not first_bytes.startswith(b"%PDF"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid or empty PDF file."
             )
+
+        def _write():
+            with open(file_path, "wb") as buffer:
+                for c in chunks:
+                    buffer.write(c)
+
+        await asyncio.to_thread(_write)
     except Exception:
         if os.path.exists(file_path):
             try:

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   X,
   Star,
@@ -32,6 +32,7 @@ export default function CourseRatingModal({
   const [ratingsSummary, setRatingsSummary] = useState(null);
   const [successMsg, setSuccessMsg] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
+  const timerRef = useRef(null);
 
   useEffect(() => {
     if (isOpen && courseId) {
@@ -42,6 +43,9 @@ export default function CourseRatingModal({
       setErrorMsg('');
       loadRatings(courseId);
     }
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
   }, [isOpen, courseId]);
 
   const loadRatings = async (targetCourseId = courseId) => {
@@ -87,7 +91,8 @@ export default function CourseRatingModal({
       if (onRatingSubmitted) {
         onRatingSubmitted();
       }
-      setTimeout(() => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+      timerRef.current = setTimeout(() => {
         setSuccessMsg('');
       }, 3500);
     } catch (err) {

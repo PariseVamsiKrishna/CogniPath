@@ -158,6 +158,19 @@ async def tutor_chat(
     if not user_query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty.")
 
+    # BUG-B11 fix: verify the student is enrolled (educators/admins are exempt)
+    if current_user.role == "STUDENT":
+        from sqlalchemy.future import select as sa_select
+        from app.models.models import Enrollment
+        enr_res = await db.execute(
+            sa_select(Enrollment).where(
+                Enrollment.user_id == current_user.id,
+                Enrollment.course_id == req.course_id
+            )
+        )
+        if not enr_res.scalars().first():
+            raise HTTPException(status_code=403, detail="Must be enrolled in this course to use the AI Tutor.")
+
     # 2. If query is in regional language, translate to English for semantic vector lookup
     query_in_en = user_query
     if req.target_language != "en":

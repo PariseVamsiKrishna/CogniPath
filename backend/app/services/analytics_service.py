@@ -38,10 +38,18 @@ class EducatorAnalyticsService:
         course_ids = [c.id for c in courses]
 
         if not course_ids:
-            # Fallback to all courses if educator hasn't authored their own yet
-            course_query = await db.execute(select(Course))
-            courses = course_query.scalars().all()
-            course_ids = [c.id for c in courses]
+            # BUG-B10 fix: never fall back to all-courses query (cross-tenant leak)
+            # Return an empty overview instead
+            return EducatorDashboardOverview(
+                total_students=0,
+                active_students_last_week=0,
+                average_class_score=0.0,
+                total_courses=0,
+                total_documents_indexed=0,
+                at_risk_count=0,
+                at_risk_students=[],
+                topic_difficulties=[]
+            )
 
         # 2. Count enrolled students
         enrollment_query = await db.execute(
@@ -146,23 +154,17 @@ class EducatorAnalyticsService:
                     risk_reasons=risk_reasons
                 ))
 
-        # 5. Topic Difficulty Heatmap
-        topic_stats = [
-            TopicDifficultyStat(topic="Binary Search Trees & Rebalancing", failure_rate=42.5, average_score=57.5, doubt_query_count=38),
-            TopicDifficultyStat(topic="Attention Mechanism & Transformers", failure_rate=38.0, average_score=62.0, doubt_query_count=45),
-            TopicDifficultyStat(topic="Dynamic Programming & Memoization", failure_rate=48.2, average_score=51.8, doubt_query_count=62),
-            TopicDifficultyStat(topic="Backpropagation & Gradient Descent", failure_rate=29.4, average_score=70.6, doubt_query_count=21),
-            TopicDifficultyStat(topic="Graph Algorithms (Dijkstra/A*)", failure_rate=33.1, average_score=66.9, doubt_query_count=29)
-        ]
+        # 5. Topic Difficulty Heatmap — use only real data (empty if none computed yet)
+        topic_stats: list = []
 
-        overall_avg = round(sum(all_student_scores) / max(1, len(all_student_scores)), 1) if all_student_scores else 68.4
+        overall_avg = round(sum(all_student_scores) / max(1, len(all_student_scores)), 1) if all_student_scores else 0.0
 
         return EducatorDashboardOverview(
-            total_students=max(total_students, 28),
-            active_students_last_week=max(active_student_count, 22),
+            total_students=total_students,
+            active_students_last_week=active_student_count,
             average_class_score=overall_avg,
-            total_courses=max(len(courses), 2),
-            total_documents_indexed=max(total_docs, 5),
+            total_courses=len(courses),
+            total_documents_indexed=total_docs,
             at_risk_count=len(at_risk_list),
             at_risk_students=at_risk_list,
             topic_difficulties=topic_stats

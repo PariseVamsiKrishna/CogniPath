@@ -22,6 +22,7 @@ from app.core.database import AsyncSessionLocal, get_db
 from app.core.security import get_current_user, get_password_hash, verify_password
 from app.models.models import (
     EducatorPodQuota,
+    Enrollment,
     LearningPod,
     PodBlacklist,
     PodMessage,
@@ -84,9 +85,14 @@ async def list_pods(course_id: int, current_user: User = Depends(get_current_use
     pods = result.scalars().all()
 
     responses = []
+    host_ids = list({p.host_id for p in pods})
+    users_map = {}
+    if host_ids:
+        users_res = await db.execute(select(User).where(User.id.in_(host_ids)))
+        users_map = {u.id: u for u in users_res.scalars().all()}
+
     for p in pods:
-        host_res = await db.execute(select(User).where(User.id == p.host_id))
-        host = host_res.scalars().first()
+        host = users_map.get(p.host_id)
 
         rem_sec = None
         if p.expires_at:
@@ -295,7 +301,7 @@ async def get_educator_quota(
 
 
 @router.get("/kshetra-embed/{code}", response_class=HTMLResponse)
-async def get_kshetra_embed(code: str):
+async def get_kshetra_embed(code: str, current_user: User = Depends(get_current_user)):
     """
     Live Kshetra Native Bridge.
     Seamlessly mounts and bridges room sessions directly within CogniPath without external dependencies.
@@ -389,7 +395,7 @@ async def get_kshetra_embed(code: str):
 
 
 @router.get("/kshetra-meta/{code}")
-async def get_kshetra_meta(code: str):
+async def get_kshetra_meta(code: str, current_user: User = Depends(get_current_user)):
     """Returns direct join URL, embed URL, and meeting code for any Live Kshetra room."""
     if not re.match(r'^[a-zA-Z0-9\-]+$', code): raise HTTPException(400)
     clean_code = code.strip().replace(" ", "-").lower()
@@ -534,6 +540,34 @@ async def end_pod_for_everyone(
 @router.get("/{pod_id}/messages", response_model=list[PodMessageSchema])
 async def get_pod_messages(pod_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
     """Retrieve message history for a learning pod."""
+    # BUG-B05 fix: verify user has access to this pod
+    pod_res = await db.execute(select(LearningPod).where(LearningPod.id == pod_id))
+    pod = pod_res.scalars().first()
+    if not pod:
+        raise HTTPException(status_code=404, detail="Pod not found")
+
+    if current_user.role != "ADMIN" and pod.host_id != current_user.id:
+        # Check blacklist
+        bl_res = await db.execute(
+            select(PodBlacklist).where(
+                PodBlacklist.pod_id == pod_id,
+                PodBlacklist.user_id == current_user.id
+            )
+        )
+        if bl_res.scalars().first():
+            raise HTTPException(status_code=403, detail="You have been removed from this pod")
+
+        # Check course enrollment
+        if pod.course_id:
+            enr_res = await db.execute(
+                select(Enrollment).where(
+                    Enrollment.user_id == current_user.id,
+                    Enrollment.course_id == pod.course_id
+                )
+            )
+            if not enr_res.scalars().first():
+                raise HTTPException(status_code=403, detail="Must be enrolled in the course to access pod history")
+
     result = await db.execute(
         select(PodMessage).where(PodMessage.pod_id == pod_id).order_by(PodMessage.created_at.asc())
     )
