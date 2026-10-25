@@ -73,15 +73,18 @@ def _pod_to_response(pod: LearningPod, host_name: str) -> PodResponse:
 
 
 @router.get("", response_model=list[PodResponse])
-async def list_pods(course_id: int, current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)):
-    """List all active learning pods for a specific course with host details and duration info."""
+async def list_pods(
+    course_id: int | None = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """List all active learning pods (optionally filtered by course) with host details and duration info."""
     now = datetime.now(timezone.utc)
-    result = await db.execute(
-        select(LearningPod).where(
-            LearningPod.course_id == course_id,
-            LearningPod.is_active
-        ).order_by(LearningPod.created_at.desc())
-    )
+    stmt = select(LearningPod).where(LearningPod.is_active)
+    if course_id is not None:
+        stmt = stmt.where(LearningPod.course_id == course_id)
+    stmt = stmt.order_by(LearningPod.created_at.desc())
+    result = await db.execute(stmt)
     pods = result.scalars().all()
 
     responses = []

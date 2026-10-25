@@ -437,7 +437,8 @@ export const analyticsAPI = {
 // BUG-F03 fixed: all methods now unwrap res.data
 export const podsAPI = {
   list: async (courseId) => {
-    const res = await apiClient.get(`/pods?course_id=${courseId}`);
+    const url = courseId ? `/pods?course_id=${courseId}` : '/pods';
+    const res = await apiClient.get(url);
     return res.data;
   },
   get: async (id) => {

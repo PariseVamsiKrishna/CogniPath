@@ -40,6 +40,7 @@ async def init_db():
                 "ALTER TABLE courses ADD COLUMN target_branch VARCHAR(255) DEFAULT 'Computer Science & Engineering (CSE)'",
                 "ALTER TABLE courses ADD COLUMN is_published BOOLEAN DEFAULT 1 NOT NULL",
                 "ALTER TABLE courses ADD COLUMN updated_at TIMESTAMP",
+                "ALTER TABLE educator_pod_quotas ADD COLUMN weekly_created INTEGER DEFAULT 0 NOT NULL",
             ]
             for stmt in sqlite_migrations:
                 try:
@@ -52,6 +53,7 @@ async def init_db():
                 "ALTER TABLE courses ADD COLUMN IF NOT EXISTS target_branch VARCHAR(255) DEFAULT 'Computer Science & Engineering (CSE)'",
                 "ALTER TABLE courses ADD COLUMN IF NOT EXISTS is_published BOOLEAN DEFAULT TRUE NOT NULL",
                 "ALTER TABLE courses ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ DEFAULT NOW()",
+                "ALTER TABLE educator_pod_quotas ADD COLUMN IF NOT EXISTS weekly_created INTEGER DEFAULT 0 NOT NULL",
             ]
             for stmt in pg_migrations:
                 try:

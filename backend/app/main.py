@@ -99,7 +99,7 @@ app.add_middleware(
     # allow_origin_regex removed — wildcard regex + allow_credentials=True is a full CSRF bypass
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS", "PATCH"],
-    allow_headers=["Authorization", "Content-Type", "Accept"],
+    allow_headers=["*"],
 )
 
 # Request Timing & Process Time Header Middleware
