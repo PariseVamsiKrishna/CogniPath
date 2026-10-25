@@ -16,6 +16,12 @@ elif database_url.startswith("postgres://"):
 engine_kwargs = {"echo": False}
 if database_url.startswith("sqlite"):
     engine_kwargs["connect_args"] = {"check_same_thread": False}
+elif "asyncpg" in database_url:
+    # Disable prepared statement caching for Supabase / PgBouncer connection poolers
+    engine_kwargs["connect_args"] = {
+        "statement_cache_size": 0,
+        "prepared_statement_cache_size": 0,
+    }
 
 engine = create_async_engine(database_url, **engine_kwargs)
 AsyncSessionLocal = async_sessionmaker(bind=engine, class_=AsyncSession, expire_on_commit=False)
@@ -62,5 +68,13 @@ async def init_db():
                 except Exception as mig_err:
                     logger.debug(f"Additive column migration notice: {mig_err}")
     except Exception as e:
+        err_msg = str(e)
+        if "tenant" in err_msg.lower() or "ENOTFOUND" in err_msg or "puamvixoldsxphuivssh" in err_msg:
+            logger.error(
+                "CRITICAL: Supabase connection failed — tenant/user not found. "
+                "Your Supabase project is likely PAUSED due to inactivity or the project reference ID is invalid. "
+                "Please go to https://supabase.com/dashboard/project/puamvixoldsxphuivssh and click 'Restore project' (or unpause), "
+                "or update DATABASE_URL in your Render environment variables."
+            )
         logger.error(f"Failed to initialize database: {e}")
         raise
